@@ -6,6 +6,25 @@
 //! data contract at `reports/2026-09-15-190000-g026-cluster-map-data-contract.md`,
 //! which was itself derived by running a node rather than by reading anything.
 //!
+//! # The topology layer (G090 SG6)
+//!
+//! Over the same answer, and over two more named subjects, the map draws the
+//! topology — the layer the contract at
+//! `reports/2026-11-18-104500-g090-sg6-topology-data-contract.md` settles field
+//! by field, also derived by running a node. Realms are group boxes from
+//! `INFO FOR TOPOLOGY`, with the engine's own survival verdict labelled as its
+//! verdict; members are placed by the region the member row carries — the
+//! domain each member stands in is accepted and validated by the engine but
+//! answers no INFO field, so domains render as the scheme's declared labels and
+//! never as member placement. Cross-cluster links are labelled edges from
+//! `INFO FOR REPLICATIONS`, the far side drawn as its endpoint (a link crosses
+//! to another cluster, whose inside this node's catalog does not hold), and the
+//! confirmed position rendered only where the registry holds one — process-local
+//! truth, labelled as what it is, absent read as "no confirmation held" and
+//! never as zero. Split tables are a glyph row from `cluster.balanced`, counted
+//! on the measuring leader's last pass. None of it is inferred; each element
+//! says which kind of truth it is, the way the peer lamps already do.
+//!
 //! # Three lamps, not one badge
 //!
 //! A role is three INDEPENDENT bits — serving, writable, coordinating — so there
@@ -109,6 +128,58 @@ interface Balanced {
     readonly table?: unknown;
     readonly shards?: readonly { readonly id?: unknown; readonly records?: unknown; readonly complete?: unknown }[];
     readonly last_act?: unknown;
+}
+
+/** One realm's survival arithmetic, as `INFO FOR TOPOLOGY` answers it. */
+interface RealmLoss {
+    readonly survived?: unknown;
+    readonly voters_left?: unknown;
+    readonly voters_needed?: unknown;
+}
+
+/** One member a realm's row carries, as `INFO FOR TOPOLOGY` renders it. */
+interface RealmMember {
+    readonly name?: unknown;
+    readonly endpoint?: unknown;
+    readonly node?: unknown;
+    readonly region?: unknown;
+}
+
+/** One realm of the declared scheme, as `INFO FOR TOPOLOGY` answers it. */
+interface Realm {
+    readonly name?: unknown;
+    readonly domains?: readonly unknown[];
+    readonly loss?: RealmLoss;
+    readonly members?: readonly RealmMember[];
+}
+
+/** The declared scheme, as `INFO FOR TOPOLOGY <name>` answers it. */
+interface Scheme {
+    readonly name?: unknown;
+    readonly survives_realm_loss?: unknown;
+    readonly satisfied?: unknown;
+    readonly realms?: readonly Realm[];
+}
+
+/**
+ * One cross-cluster link, as `INFO FOR REPLICATIONS` lists it, with the
+ * confirmed positions `INFO FOR REPLICATION <name>` holds — `null` when the
+ * registry answered none or could not be read, never an invented zero.
+ */
+export interface Link {
+    readonly row: Record<string, unknown>;
+    readonly confirmed: string | null;
+}
+
+/**
+ * The topology layer's inputs, both derived by running a node (the SG6
+ * contract): `topology` is the scheme answer, or `null` when the subject
+ * answered `null` — no scheme declared — which the map says rather than
+ * drawing an empty diagram that would read as a fault.
+ */
+export interface Layout {
+    readonly topology?: Scheme | null;
+    readonly links?: readonly Link[];
 }
 
 /** What `INFO FOR NODE` answered, in the shape the map reads. */
@@ -322,19 +393,166 @@ function placement(peer: Peer): string | null {
 }
 
 /**
- * Each balanced table with its shards' records as the last pass counted them,
- * `≥` where the count stopped at the bound, and the last act — or `null` on a
- * node that does not count.
+ * The split tables, as a glyph row: one entry per balanced table, one pill per
+ * shard with the records the last pass counted (`≥` where the count stopped at
+ * the bound), and the last act in the balancer's own words — or `null` on a
+ * node that counts nothing. Counted on the measuring leader, and labelled as
+ * that kind of truth, never as an observation of the whole cluster.
  */
-function balancedTables(balanced: readonly Balanced[] | undefined): string | null {
-    const each = (balanced ?? []).map((one) => {
-        const shards = (one.shards ?? [])
-            .map((shard) => `${shard.complete === false ? "≥" : ""}${told(shard.records) ?? "?"}`)
-            .join(" / ");
+function glyphs(balanced: readonly Balanced[] | undefined): HTMLElement | null {
+    const tables = balanced ?? [];
+    if (tables.length === 0) {
+        return null;
+    }
+    const row = made("div", "glyphs");
+    const label = made("p", "glyphs-truth faint");
+    label.textContent =
+        "split tables, counted on the leader's last pass — not re-measured for this screen";
+    row.appendChild(label);
+    for (const one of tables) {
+        const glyph = made("div", "glyph");
+        const name = made("span", "glyph-name");
+        name.textContent = told(one.table) ?? "?";
+        glyph.appendChild(name);
+        for (const shard of one.shards ?? []) {
+            const pill = made("span", "glyph-shard");
+            pill.textContent = `${shard.complete === false ? "≥" : ""}${told(shard.records) ?? "?"}`;
+            pill.title = `shard ${told(shard.id) ?? "?"}`;
+            glyph.appendChild(pill);
+        }
         const act = told(one.last_act);
-        return `${told(one.table) ?? "?"}: ${shards}${act === null ? "" : ` (last: ${act})`}`;
+        if (act !== null) {
+            const said = made("span", "glyph-act faint");
+            said.textContent = act;
+            glyph.appendChild(said);
+        }
+        row.appendChild(glyph);
+    }
+    return row;
+}
+
+/**
+ * The declared topology, as realm group boxes.
+ *
+ * Placement is by what the member row carries — the realm's own `members`
+ * array, whose rows say `region` — and the map goes no finer: the domain a
+ * member stands in is accepted by the engine but answers no INFO field (the
+ * SG6 contract names that gap), so domains render as the scheme's declared
+ * labels, never as placement somebody inferred. The survival verdict is the
+ * engine's arithmetic, drawn with its numbers and labelled as its verdict.
+ */
+function topology(scheme: Scheme, seen: Seen): HTMLElement {
+    const layer = made("section", "topology");
+    const head = made("h3", "topology-name");
+    const called = told(scheme.name);
+    head.textContent = called === null ? "The declared topology" : `Topology ${called}`;
+    layer.appendChild(head);
+    const verdict = made("p", "topology-verdict");
+    const satisfied = scheme.satisfied === true;
+    verdict.textContent =
+        (scheme.survives_realm_loss === true
+            ? "claims to survive the loss of any one realm — "
+            : "") +
+        (satisfied
+            ? "the engine's verdict now: the claim holds against the membership as it stands"
+            : `the engine's verdict now: not satisfied — the scheme reports the gap, it does not close it`);
+    layer.appendChild(verdict);
+
+    const boxes = made("div", "realms");
+    const placed = new Set<string>();
+    for (const realm of scheme.realms ?? []) {
+        const box = made("div", "realm");
+        const title = made("h4");
+        title.textContent = told(realm.name) ?? "(unnamed realm)";
+        box.appendChild(title);
+        const domains = (realm.domains ?? []).map(told).filter((d): d is string => d !== null);
+        if (domains.length > 0) {
+            const tags = made("p", "realm-domains faint");
+            tags.textContent = `domains: ${domains.join(", ")}`;
+            box.appendChild(tags);
+        }
+        for (const member of realm.members ?? []) {
+            const who = made("div", "realm-member");
+            who.textContent = told(member.name) ?? told(member.endpoint) ?? "?";
+            const where = told(member.region);
+            if (where !== null) {
+                who.title = `member, placed by its region '${where}'`;
+            }
+            box.appendChild(who);
+            const id = bare(member.node);
+            if (id !== null) {
+                placed.add(id);
+            }
+        }
+        const loss = realm.loss;
+        if (loss !== undefined) {
+            const line = made("p", "realm-loss faint");
+            const said =
+                loss.survived === true
+                    ? `loss of this realm: still elects — ${told(loss.voters_left) ?? "?"} of ${told(loss.voters_needed) ?? "?"} voters left`
+                    : "loss of this realm: the claim does not survive it";
+            line.textContent = said;
+            box.appendChild(line);
+        }
+        boxes.appendChild(box);
+    }
+    layer.appendChild(boxes);
+    // Peers no realm claims sit outside every box, in a row beneath — declared
+    // members of the cluster whose placement is the absence of a label, drawn
+    // as that absence and not filed under a realm by guesswork.
+    const loose = (seen.cluster?.peers ?? []).filter((peer) => {
+        const id = bare(peer.node);
+        return id === null || !placed.has(id);
     });
-    return each.length === 0 ? null : each.join("; ");
+    if (loose.length > 0) {
+        const row = made("div", "realm-loose");
+        const tag = made("p", "faint");
+        tag.textContent = "members no realm claims:";
+        row.appendChild(tag);
+        for (const peer of loose) {
+            const who = made("div", "realm-member loose");
+            who.textContent = peer.name ?? "(unnamed peer)";
+            row.appendChild(who);
+        }
+        layer.appendChild(row);
+    }
+    return layer;
+}
+
+/**
+ * One cross-cluster link, as a labelled edge.
+ *
+ * The far side renders as its endpoint — this node's catalog holds its own
+ * rows and what the link registries report, not the other cluster's inside.
+ * The confirmed position is process-local truth the registry holds or does
+ * not; an absent reading renders as "no confirmation held", never as zero.
+ */
+function linkEdge(link: Link): HTMLElement {
+    const row = link.row;
+    const name = told(row["name"]) ?? "(unnamed link)";
+    const direction = row["direction"] === "inbound" ? "receives" : "serves";
+    const endpoint = told(row["endpoint"]);
+    const edge = made("div", "link-edge");
+    const head = made("span", "link-word");
+    head.textContent = `${name} — this cluster ${direction}`;
+    edge.appendChild(head);
+    if (endpoint !== null) {
+        const at = made("span", "link-endpoint");
+        at.textContent = endpoint;
+        edge.appendChild(at);
+    }
+    if (row["paused"] === true) {
+        const held = made("span", "link-paused");
+        held.textContent = "paused";
+        edge.appendChild(held);
+    }
+    const said =
+        link.confirmed ??
+        "no confirmation held — the registry's reading lives in the shipping process";
+    const reading = made("span", "link-confirmed faint");
+    reading.textContent = said;
+    edge.appendChild(reading);
+    return edge;
 }
 
 /** How the transactions across leaders this node coordinated ended. */
@@ -353,8 +571,8 @@ function copied(upstream: Upstream | null | undefined): string | null {
     return `${told(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
 }
 
-/** Draw the cluster as this node sees it. */
-export function draw(into: HTMLElement, seen: Seen): void {
+/** Draw the cluster as this node sees it, with the topology layer over it. */
+export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
     const cluster = seen.cluster ?? {};
     const mine = seen.roles ?? [];
     const wanted = cluster.desired ?? null;
@@ -389,7 +607,6 @@ export function draw(into: HTMLElement, seen: Seen): void {
                 "balances leaderships",
                 cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null,
             ),
-            fact("balanced tables, records per shard", balancedTables(cluster.balanced)),
             wanted === null ? null : fact("declared for it", wanted.join(", ")),
         ],
         "self",
@@ -403,6 +620,30 @@ export function draw(into: HTMLElement, seen: Seen): void {
         },
     );
     into.appendChild(self);
+
+    // The topology layer, over the same figures: realms as group boxes, links
+    // as labelled edges, split tables as a glyph row. `topology: null` is the
+    // subject's own answer when nobody has declared a scheme — said in words,
+    // because an empty diagram would read as a fault the engine never named.
+    // Undefined means the question was not put (the read was refused), which
+    // is a different silence and draws nothing.
+    if (layout?.topology !== undefined) {
+        if (layout.topology === null) {
+            const absent = made("p", "topology-absent faint");
+            absent.textContent =
+                "No topology scheme is declared on this cluster — realms are not named, so the map draws the cluster as it stands rather than an empty diagram that would read as a fault.";
+            into.appendChild(absent);
+        } else {
+            into.appendChild(topology(layout.topology, seen));
+        }
+    }
+    for (const link of layout?.links ?? []) {
+        into.appendChild(linkEdge(link));
+    }
+    const split = glyphs(cluster.balanced);
+    if (split !== null) {
+        into.appendChild(split);
+    }
 
     for (const peer of cluster.peers ?? []) {
         into.appendChild(

@@ -87,26 +87,28 @@ mod store;
 mod tailmarks;
 mod tally;
 mod topic;
+mod topology;
 mod transaction;
 mod vault;
 mod views;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, AutoSplit, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog,
-    ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition,
-    EdgeOrder, EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition,
-    FailoverStamp, Feed, FeedDeclaration, FieldDefinition, FieldReference, FieldShape, GEO_FIELD,
-    GrantDefinition, GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState,
-    HashPartitioning, Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind,
-    LeadershipDefinition, Mapped, NamespaceDefinition, OnDelete, OnFailure, Partitioning,
+    AnalyzerDefinition, Authority, AutoSplit, AutoSplitSetting, CLAIMED_BY_CONSUMER,
+    CLAIMED_BY_INSTANCE, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT,
+    EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember, EventDeclaration,
+    Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration, FieldDefinition,
+    FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Greeter,
+    GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
+    IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
+    MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
     PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
     RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role, RollupCompute,
     RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
     SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StorageKind, StoredKind,
-    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, UNIT_WEIGHT,
-    UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write, governing,
-    names_a_peer, the_row_a_greeting_binds,
+    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, TopologyDefinition,
+    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
+    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write,
+    check_topology, governing, names_a_peer, the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.
@@ -166,6 +168,7 @@ pub use tessari_encoding::{
 /// The category [`Error::category`] answers, re-exported so a caller can match it
 /// without reaching below this crate.
 pub use tessari_kv::ErrorCategory;
+pub use topology::{Realm, Topology};
 pub use transaction::{
     AcrossPart, Committed, Expansion, FieldedPostings, Neighbour, PlacesNearest, RecordAddress,
     RecordWalk, Region, Savepoint, SearchCounts, StoredRecord, TopicTrim, Transaction,

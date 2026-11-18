@@ -36,6 +36,7 @@ fn unbound(name: &str) -> ReplicaDefinition {
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 
@@ -82,6 +83,7 @@ fn a_region_is_stored_only_when_stated_and_read_back() {
     );
     let placed = ReplicaDefinition {
         region: Some("eu".to_owned()),
+        domain: None,
         ..unbound("placed")
     };
     assert_eq!(

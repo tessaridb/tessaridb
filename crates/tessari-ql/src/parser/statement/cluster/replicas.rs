@@ -177,6 +177,14 @@ impl Parser<'_> {
         } else {
             None
         };
+        // The domain within that region: which failure domain of the realm the
+        // member stands in. Last for `REGION`'s reason — every declaration
+        // written before it reads as it did.
+        let domain = if self.eat_word("domain") {
+            Some(self.text("the domain, as text")?.0)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplica {
             name,
             endpoint,
@@ -190,6 +198,7 @@ impl Parser<'_> {
             preferred,
             fingerprint,
             region,
+            domain,
             if_not_exists,
         })
     }
@@ -246,9 +255,17 @@ impl Parser<'_> {
                 self.text("the region, as text, or `NONE`")?.0,
             )));
         }
+        if self.eat_word("domain") {
+            if self.eat_keyword(Keyword::None) {
+                return Ok(ReplicaChange::Domain(None));
+            }
+            return Ok(ReplicaChange::Domain(Some(
+                self.text("the domain, as text, or `NONE`")?.0,
+            )));
+        }
         Err(self.error_here(
-            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT`, `HTTP AT` or `REGION` — the one clause \
-             that changes",
+            "`LEADS`, `AT`, `ROLES`, `CLIENTS AT`, `HTTP AT`, `REGION` or `DOMAIN` — \
+             the one clause that changes",
         ))
     }
 

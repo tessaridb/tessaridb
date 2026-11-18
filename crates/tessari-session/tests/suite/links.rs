@@ -565,6 +565,124 @@ fn the_loop_honors_pause_between_passes_and_ships_again_on_resume() {
 }
 
 #[test]
+fn the_loop_persists_the_confirmed_position_and_a_fresh_loop_resumes_from_it() {
+    // The cursor round-trip: a confirming run leaves the floor in the row, and
+    // the next run seeds the registry from the row — a restart resumes near
+    // where the relationship stood instead of re-shipping from the origin.
+    let source = store_with_a_link();
+    let mut session = Session::new(&source);
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let definition = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &definition, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let floor = source.links().floors("east");
+    assert!(!floor.is_empty(), "the pass confirmed a floor");
+    // The cursor that matters is the own log's — the log whose home is the
+    // link's database reach — beside the parent (store) log's floor the same
+    // pass also holds.
+    let (own_log, own_floor) = floor
+        .iter()
+        .copied()
+        .find(|(log, _)| log.home == definition.database)
+        .expect("the own log's floor");
+
+    // Stop the loop before it has served a tick: the stop itself lands the cursor.
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let seen = ChannelSink::new();
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        move |_| {
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
+
+    let mut reading = source.begin().now().unwrap();
+    let row = Catalog::new(&mut reading)
+        .replications()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|held| held.name == "east")
+        .expect("the row");
+    assert_eq!(
+        row.position,
+        Some(own_floor),
+        "the stop wrote the confirmed floor to the row"
+    );
+    drop(reading);
+
+    // A fresh loop seeds from the row: a write after the seed ships alone —
+    // the pass resumes one past the cursor instead of re-reading the confirmed
+    // history.
+    source.links().drop_link("east");
+    let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
+    let seen = ChannelSink::new();
+    let task = std::future::poll_fn({
+        let source = source.clone();
+        let seen = seen.clone();
+        move |_| {
+            let mut serving = seen.clone();
+            let stop_rx = stop_rx.clone();
+            let source = source.clone();
+            std::task::Poll::Ready(tokio::spawn(async move {
+                serve_links(&source, &mut serving, stop_rx).await
+            }))
+        }
+    })
+    .now();
+    session
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let shipped = (0..250).find_map(|_| {
+        let found = seen
+            .drain()
+            .into_iter()
+            .find(|(_, envelope)| envelope.log == own_log)
+            .map(|(_, envelope)| envelope);
+        if found.is_some() {
+            return found;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        None
+    });
+    let shipped = shipped.expect("the seeded loop served the link's own log");
+    assert_eq!(
+        shipped.from,
+        Sequence::new(own_floor.get().saturating_add(1)),
+        "the pass resumed one past the persisted cursor, not at the origin"
+    );
+    assert_eq!(
+        shipped.records.len(),
+        1,
+        "the seeded pass shipped only the record the cursor had not seen"
+    );
+    (async {
+        stop_tx.send(true).ok();
+        task.await
+    })
+    .now()
+    .unwrap()
+    .unwrap();
+}
+
+#[test]
 fn a_batch_applied_twice_leaves_the_copy_unchanged() {
     // C2's injection proof: at-least-once means a batch CAN arrive twice, and
     // idempotent application is what makes that a bookkeeping fact instead of
@@ -600,6 +718,113 @@ fn a_batch_applied_twice_leaves_the_copy_unchanged() {
         1,
         "a batch applied twice landed once: {records:?}"
     );
+}
+
+#[test]
+fn a_shipped_empty_record_at_an_applied_position_is_a_noop_not_a_divergence() {
+    // D-SG4-12, in miniature: a clustered receiving side holds its OWN record
+    // at position 1 of the line log — every cluster writes its membership and
+    // its leadership renewals there — while the shipment offers the source's
+    // record at the same position filtered to nothing, because the record is
+    // outside the link's reach. Both records say the reach has no content at
+    // this position; the copy's own record stands and the confirmation moves.
+    let target = Store::open(backend()).now().unwrap();
+    let mut session = Session::new(&target);
+    session
+        .run_now("DEFINE NAMESPACE own; DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS;")
+        .unwrap();
+    let line = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == Reach::Store)
+        .expect("the store's own store log");
+    let envelope = Envelope {
+        origin: [7_u8; 16],
+        log: line,
+        from: Sequence::new(1),
+        records: vec![(
+            Sequence::new(1),
+            tessari_encoding::LogRecord::new(Vec::new()),
+        )],
+    };
+    let applied = intake(&target, envelope).now().unwrap();
+    assert_eq!(
+        applied,
+        Sequence::new(1),
+        "the confirmation answers the position"
+    );
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE own; INFO FOR NAMESPACE;")
+        .unwrap();
+    assert!(
+        matches!(
+            outcomes.last(),
+            Some(tessari_session::Outcome::Value { .. })
+        ),
+        "the copy's own record at that position stands — the namespace resolves: {outcomes:?}"
+    );
+}
+
+#[test]
+fn a_shipped_empty_record_at_a_fresh_position_keeps_the_arithmetic() {
+    // The other half of D-SG4-12: skipping is only for already-applied
+    // positions. An empty marker at a fresh position still extends the log —
+    // positions are arithmetic, and the record after it must not read as a gap.
+    let target = Store::open(backend()).now().unwrap();
+    let mut session = Session::new(&target);
+    session
+        .run_now("DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let line = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| {
+            log.home == Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1))
+        })
+        .expect("the store's own database log");
+    let write = |at: u64, text: &str| {
+        tessari_encoding::LogRecord::new(vec![tessari_encoding::Mutation {
+            namespace: NamespaceId::new(1),
+            database: tessari_types::DatabaseId::new(1),
+            table: tessari_types::TableId::new(1),
+            id: tessari_types::RecordId::from(format!("orders:{at}")),
+            shard: None,
+            value: tessari_encoding::StampedValue::new(tessari_encoding::RecordValue::Present(
+                tessari_encoding::encode_payload(&tessari_types::Value::from(text)).into_bytes(),
+            )),
+        }])
+    };
+    let envelope = Envelope {
+        origin: [7_u8; 16],
+        log: line,
+        from: Sequence::new(2),
+        records: vec![
+            (
+                Sequence::new(2),
+                tessari_encoding::LogRecord::new(Vec::new()),
+            ),
+            (Sequence::new(3), write(2, "shipped")),
+        ],
+    };
+    let applied = intake(&target, envelope).now().unwrap();
+    assert_eq!(
+        applied,
+        Sequence::new(3),
+        "the empty marker extended the log, no gap"
+    );
+    let mut reading = Session::new(&target);
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the SELECT did not answer records");
+    };
+    assert_eq!(records.len(), 2, "the record after the marker landed");
 }
 
 #[test]

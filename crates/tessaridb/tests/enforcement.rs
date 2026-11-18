@@ -1200,7 +1200,17 @@ const TABLES: &[Table] = &[
         // snapshot that request's `BACKUP STATE` was allowed to take: the
         // session's sink runs after the statement's own check (store-wide
         // reach), exactly as `GET /backup`'s spool does.
-        expected: 9,
+        //
+        // 10 since a cross-cluster link's shipment rides the client door (tag
+        // 40). Classified **enforced**: the frame admits by the pair's token
+        // alone — `receive_link` verifies the presented token against the
+        // inbound row's digest and expiry before anything is applied, refusing
+        // `Unauthenticated` otherwise — and the batch then applies through the
+        // follower intake, an apply and not a transaction: the read-only gate
+        // (`WritesToAReplica`) is checked at a local commit, which an applier
+        // never makes. It carries no statement and no session authority, and
+        // answers only the position durably applied through.
+        expected: 10,
         count: |text| variants(&block(text, "pub(crate) enum Kind")),
     },
     Table {
@@ -1428,7 +1438,7 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // what it can change is a process-local derived registry the commit path
     // itself re-derives on every record — a caller holding it can no more
     // weaken the gate than a caller holding the write gate can.
-    assert_eq!(total, 177, "the counted tables no longer sum to 177");
+    assert_eq!(total, 178, "the counted tables no longer sum to 178");
 }
 
 /// Every `.rs` file under a directory.

@@ -4,8 +4,8 @@ use super::{
     Answer, ColumnDeclaration, ConsumerSource, CreateTarget, Credential, EdgeClause, Edit, Expr,
     FieldMapping, FieldPath, GroupClauses, Identity, InfoSubject, Name, NamespaceChange, OnFailure,
     RangeExpr, ReachRef, RecordTarget, Select, SetBound, SetCondition, SpaceBound, StoreKind,
-    TableChange, TableExpiry, TableRef, TopicClauses, TrimBound, UserChange, UserGrant,
-    WriteExpiry, Written,
+    TableChange, TableExpiry, TableRef, TopicClauses, TopologyChange, TopologyRealm, TrimBound,
+    UserChange, UserGrant, WriteExpiry, Written,
 };
 use crate::token::Span;
 use tessari_types::{
@@ -78,6 +78,11 @@ pub enum StatementKind {
         /// and whether a request may ask for fewer (ADR-0106 D2) — `None` when
         /// the statement said nothing, which is not a stated level.
         acknowledge: Option<Acknowledgement>,
+        /// Whether the tables born here inherit the store's baked balancing
+        /// bounds (`SPLIT AUTOMATICALLY`) — `None` when the statement said
+        /// nothing, which leaves new tables unsplit unless their own
+        /// declaration says otherwise.
+        auto_split: Option<bool>,
     },
     /// `DEFINE DATABASE orders`
     DefineDatabase {
@@ -762,6 +767,44 @@ pub enum StatementKind {
         /// Absent is off, because the statement replaces the set.
         balance_leaderships: bool,
     },
+    /// `DEFINE TOPOLOGY main REALM 'dc-a' [DOMAIN 'az-1', …] … [SURVIVES REALM LOSS]`
+    /// — the realm/domain structure a cluster is arranged over, and the
+    /// survival claim stated for it, as catalog data (the failover policy's
+    /// reason: which realms exist and what their loss would do is a
+    /// cluster-wide fact, so it is a statement and a replicated row).
+    ///
+    /// **Replaces the set, and one per cluster**: a second `DEFINE TOPOLOGY`
+    /// while one is held is refused naming the scheme it would replace. The
+    /// realms here are the raw clauses; the checks that need the membership —
+    /// the claim arithmetic, the copies-span-realms fit, the acknowledge fit —
+    /// run where the replicas and namespaces are readable, at the catalog's
+    /// write of the row.
+    DefineTopology {
+        /// The name the scheme is known by.
+        name: Name,
+        /// One clause per realm, at least one.
+        realms: Vec<TopologyRealm>,
+        /// `SURVIVES REALM LOSS`: the claim that losing any one realm leaves a
+        /// cluster that still elects and still holds every acknowledged
+        /// write. Absent means the structure is declared with no claim made.
+        survives_realm_loss: bool,
+    },
+    /// `ALTER TOPOLOGY main ADD REALM 'dc-d' [DOMAIN 'az-1', …]` ·
+    /// `ALTER TOPOLOGY main DROP REALM 'dc-c'` — one realm of the scheme per
+    /// statement, amended in place for [`ReplicaChange`]'s reason.
+    AlterTopology {
+        /// The scheme the clause moves.
+        name: Name,
+        /// The one clause that changes.
+        change: TopologyChange,
+    },
+    /// `DROP TOPOLOGY main` — the scheme whole. The member rows' labels are
+    /// untouched: they read as what they are, labels, until a new scheme
+    /// declares them.
+    DropTopology {
+        /// The scheme to drop.
+        name: Name,
+    },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
     /// node from the moment the catalog reaches it (ADR-0108 D6).
     RevokeCertificate {
@@ -824,6 +867,12 @@ pub enum StatementKind {
         /// The region the peer stands in (`REGION 'eu'`), when said — what a
         /// `LOCAL MAJORITY` counts its voters by .
         region: Option<String>,
+        /// The domain within that region (`DOMAIN 'az-1'`), when said — which
+        /// failure domain of the realm the member stands in. Optional and
+        /// last, so every declaration written before it reads as it did; a
+        /// domain is a position within a realm, so a row naming no region has
+        /// no domain to name.
+        domain: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

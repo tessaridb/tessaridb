@@ -456,6 +456,136 @@ fn a_bounded_read_this_node_cannot_answer_is_redirected_over_the_wire() {
     assert_eq!(answers.len(), 3);
 }
 
+/// A link's shipment crosses a real socket: the pair's token admits it, a token
+/// that is not the row's confirms nothing, and the copy the shipment lands on
+/// stays read-only by its declaration.
+#[test]
+fn a_link_ships_its_database_over_the_wire_and_the_copy_stays_read_only() {
+    use tessari_session::Session;
+    use tessari_storage::{Catalog, ChannelSink, Links, intake, serve_once};
+    use tessari_wire::Shipping;
+
+    // The source cluster: one database holding its data, and the outbound half
+    // of the link aimed at a placeholder the ALTER below moves.
+    let source = Db::in_memory().now().unwrap();
+    let mut writing = Session::new(source.store());
+    writing
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+             CREATE orders:1 = { item: 'book' }; \
+             DEFINE REPLICATION east TO 'nowhere:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    let definition = {
+        let mut reading = source.store().begin().now().unwrap();
+        Catalog::new(&mut reading)
+            .replications()
+            .now()
+            .unwrap()
+            .into_iter()
+            .find(|held| held.name == "east")
+            .expect("the link the script declared")
+    };
+
+    // The receiving cluster, bootstrapped the deferred-D8 way: the copy the log
+    // built, applied in place — the namespace, the database, the table and the
+    // record arrive inside the stream, so the declaration below resolves to the
+    // source's ids. Then the inbound half, and the token that binds the pair.
+    let target = Arc::new(Db::in_memory().now().unwrap());
+    let mut served = ChannelSink::new();
+    serve_once(source.store(), &definition, &Links::new(), &mut served)
+        .now()
+        .unwrap();
+    for (_, envelope) in served.drain() {
+        intake(target.store(), envelope).now().unwrap();
+    }
+    let mut reading = Session::new(target.store());
+    reading
+        .run_now("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;")
+        .unwrap();
+    let answered = reading
+        .run_now("CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;")
+        .unwrap();
+    let token = match answered.last() {
+        Some(tessari_session::Outcome::Value(Value::String(held))) => held.clone(),
+        other => panic!("the token statement answered: {other:?}"),
+    };
+
+    // The receiving cluster serves on a socket the operating system picked.
+    let (_node, address) = started(Node::bind(Arc::clone(&target), "127.0.0.1:0").unwrap());
+    writing
+        .run_now(&format!("ALTER REPLICATION east AT '{address}';"))
+        .unwrap();
+
+    // A token that is not the row's is refused, and confirms nothing: the
+    // registry holds no position, so the whole unconfirmed history crosses on
+    // the next pass — the at-least-once boundary.
+    // SAFETY: the test process is the only reader of this variable, and the
+    // only test in this binary that names this link.
+    unsafe { std::env::set_var("TESSARIDB_LINK_TOKEN_EAST", "00".repeat(32)) };
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .expect("a runtime");
+    let mut shipping = Shipping::new(source.store().clone());
+    let refused = runtime
+        .block_on(serve_once(
+            source.store(),
+            &definition,
+            source.store().links(),
+            &mut shipping,
+        ))
+        .expect_err("a token that is not the row's confirms nothing");
+    assert!(
+        refused.to_string().contains("offered token"),
+        "the refusal is the token's: {refused}"
+    );
+    assert!(
+        source.store().links().floors("east").is_empty(),
+        "the refused pass confirmed nothing: {refused}"
+    );
+
+    // The real token, a write made after the link is up, and the pass that
+    // ships it: the re-shipped history no-ops on identical bytes, and the new
+    // record lands.
+    // SAFETY: as above — this test alone names the variable.
+    unsafe { std::env::set_var("TESSARIDB_LINK_TOKEN_EAST", &token) };
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut shipping = Shipping::new(source.store().clone());
+    let shipped = runtime
+        .block_on(serve_once(
+            source.store(),
+            &definition,
+            source.store().links(),
+            &mut shipping,
+        ))
+        .expect("the pass confirmed");
+    assert!(shipped > 0, "the pass shipped the unconfirmed batch");
+
+    let outcomes = reading
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let records = match outcomes.last() {
+        Some(tessari_session::Outcome::Records { records, .. }) => records,
+        other => panic!("the copy answers records: {other:?}"),
+    };
+    assert_eq!(
+        records.len(),
+        2,
+        "the copy holds what the source has written: {records:?}"
+    );
+    let refused = reading
+        .run_now("CREATE orders:3 = { item: 'sneaky' };")
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("read-only"),
+        "the copy refuses its own divergent writes: {refused}"
+    );
+}
+
 /// Serve `node` on a runtime of this test's own: the node creates none.
 fn serve_until_the_test_ends(node: &Node) {
     let runtime = tokio::runtime::Builder::new_multi_thread()

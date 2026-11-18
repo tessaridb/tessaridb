@@ -41,6 +41,7 @@ fn row(name: &str, node: [u8; NODE_ID_LEN], kafka: Option<&str>) -> ReplicaDefin
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 

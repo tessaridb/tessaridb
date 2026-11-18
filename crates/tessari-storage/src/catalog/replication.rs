@@ -20,7 +20,7 @@
 use std::collections::BTreeMap;
 
 use tessari_encoding::{decode_payload, encode_payload};
-use tessari_types::{Number, RecordId, Value};
+use tessari_types::{Number, RecordId, Sequence, Value};
 
 use super::authority::{Reach, ReachCodec};
 use super::definition::{field_name, object};
@@ -34,6 +34,7 @@ const FIELD_REMOTE: &str = "remote";
 const FIELD_INBOUND: &str = "inbound";
 const FIELD_PAUSED: &str = "paused";
 const FIELD_JOIN: &str = "join";
+const FIELD_POSITION: &str = "position";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
@@ -80,12 +81,28 @@ pub struct ReplicationDefinition {
     /// (`CREATE LINK TOKEN`), as its digest and its expiry; cleared by the
     /// binding that spends it.
     pub join: Option<JoinTicket>,
+    /// The confirmed position on an OUTBOUND row: the sequence the remote
+    /// cluster has durably applied, as far as this cluster has been told.
+    /// `None` is the row the driver has not shipped from yet — the link
+    /// starts at the log's origin, the way a new follower does, and the whole
+    /// history crosses the seam once. Written only when the driver has
+    /// something to say, so a row declared before positions existed keeps its
+    /// bytes. At-least-once means a restart re-ships from here rather than
+    /// from the origin, and the apply is idempotent by identity.
+    pub position: Option<Sequence>,
 }
 
 impl ReplicationDefinition {
     /// The value written to the catalog.
-    #[must_use]
-    pub fn to_value(&self) -> Value {
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when the confirmed position is past
+    /// `i64::MAX`, the widest integer a stored value holds. Refused rather than
+    /// truncated, for [`super::topology`]'s reason: a wrapped cursor reads as
+    /// behind the origin, and a resumed link would re-ship history the remote
+    /// holds.
+    pub fn to_value(&self) -> Result<Value> {
         let mut fields = BTreeMap::from([
             (FIELD_NAME.to_owned(), Value::from(self.name.as_str())),
             (
@@ -115,7 +132,18 @@ impl ReplicationDefinition {
                 ])),
             );
         }
-        Value::Object(fields)
+        if let Some(position) = self.position {
+            let held = i64::try_from(position.get()).map_err(|_| Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_POSITION,
+                found: "number",
+            })?;
+            fields.insert(
+                FIELD_POSITION.to_owned(),
+                Value::Number(Number::Integer(held)),
+            );
+        }
+        Ok(Value::Object(fields))
     }
 
     /// Read a definition back.
@@ -141,6 +169,25 @@ impl ReplicationDefinition {
             inbound: flag_in(fields, FIELD_INBOUND)?,
             paused: flag_in(fields, FIELD_PAUSED)?,
             join: join_in(fields)?,
+            position: match fields.get(FIELD_POSITION) {
+                None => None,
+                Some(Value::Number(Number::Integer(held))) => {
+                    Some(Sequence::new(u64::try_from(*held).map_err(|_| {
+                        Error::CatalogMalformed {
+                            entity: ENTITY,
+                            field: FIELD_POSITION,
+                            found: "number",
+                        }
+                    })?))
+                }
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_POSITION,
+                        found: "not a number",
+                    });
+                }
+            },
         })
     }
 }
@@ -227,7 +274,7 @@ impl Catalog<'_, '_> {
                 name: definition.name.clone(),
             });
         }
-        self.write_replication(&definition);
+        self.write_replication(&definition)?;
         Ok(definition)
     }
 
@@ -244,14 +291,17 @@ impl Catalog<'_, '_> {
     }
 
     /// Write a row at the key its own name gives it (ADR-0077).
-    fn write_replication(&mut self, definition: &ReplicationDefinition) {
+    /// Persist `definition`, refused rather than written when its confirmed
+    /// position cannot be stored (see [`ReplicationDefinition::to_value`]).
+    fn write_replication(&mut self, definition: &ReplicationDefinition) -> Result<()> {
         self.transaction.put(
             system::address(
                 system::REPLICATIONS,
                 RecordId::from(definition.name.as_str()),
             ),
-            encode_payload(&definition.to_value()).into_bytes(),
+            encode_payload(&definition.to_value()?).into_bytes(),
         );
+        Ok(())
     }
 
     /// Wait on a link token for `name`'s row (`CREATE LINK TOKEN`).
@@ -262,7 +312,7 @@ impl Catalog<'_, '_> {
             return Ok(false);
         };
         definition.join = Some(ticket);
-        self.write_replication(&definition);
+        self.write_replication(&definition)?;
         Ok(true)
     }
 
@@ -293,7 +343,7 @@ impl Catalog<'_, '_> {
             return Ok(false);
         };
         amend(&mut definition);
-        self.write_replication(&definition);
+        self.write_replication(&definition)?;
         Ok(true)
     }
 
@@ -323,5 +373,73 @@ impl Catalog<'_, '_> {
         }
         found.sort_by(|left, right| left.name.cmp(&right.name));
         Ok(found)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    // Test assertions are exactly where a panic is the correct outcome.
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use tessari_types::{NamespaceId, Sequence};
+
+    use super::*;
+
+    fn outbound() -> ReplicationDefinition {
+        ReplicationDefinition {
+            name: "prod_dr".to_owned(),
+            endpoint: "dr:9080".to_owned(),
+            database: Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(2)),
+            remote: None,
+            inbound: false,
+            paused: false,
+            join: None,
+            position: None,
+        }
+    }
+
+    #[test]
+    fn a_definition_without_a_position_reads_back_byte_identical() {
+        // The field lands after the declaration did: a row written before it
+        // exists keeps its bytes, and the absent cursor reads as the driver
+        // starting the link at the log's origin.
+        let definition = outbound();
+        let read = ReplicationDefinition::from_value(&definition.to_value().expect("encodable"))
+            .expect("a row without a position reads back");
+
+        assert_eq!(read, definition);
+        assert_eq!(read.position, None);
+    }
+
+    #[test]
+    fn a_confirmed_position_round_trips_through_the_stored_value() {
+        // The shipper's resume cursor: written when the remote confirms an
+        // apply, read back at restart so the link continues where it was
+        // acknowledged rather than re-shipping from the origin.
+        let mut definition = outbound();
+        definition.position = Some(Sequence::new(8128));
+        let read = ReplicationDefinition::from_value(&definition.to_value().expect("encodable"))
+            .expect("a row with a position reads back");
+
+        assert_eq!(read, definition);
+        assert_eq!(read.position, Some(Sequence::new(8128)));
+    }
+
+    #[test]
+    fn a_position_that_is_not_a_number_is_refused_not_read_as_absent() {
+        // Anything present that is not a number is a row that was edited, and
+        // reading it as *no cursor* would re-ship a history the remote holds.
+        let mut value = match outbound().to_value().expect("encodable") {
+            Value::Object(fields) => fields,
+            other => panic!("a definition encodes as an object, got {other:?}"),
+        };
+        value.insert(FIELD_POSITION.to_owned(), Value::from("8128"));
+        let refused = ReplicationDefinition::from_value(&Value::Object(value))
+            .expect_err("a text position read back");
+
+        assert!(
+            matches!(refused, Error::CatalogMalformed { .. }),
+            "expected the malformed refusal, got {refused}"
+        );
     }
 }

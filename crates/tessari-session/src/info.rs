@@ -90,6 +90,14 @@ impl Session<'_> {
         subject: &InfoSubject,
         span: Span,
     ) -> Result<Outcome> {
+        // The one subject whose unset answer is `null` rather than an empty
+        // report — the M17 rule that `cluster.failover` answers by: built-in
+        // nothing is not a policy, and an empty object would read as a scheme
+        // that declares nothing, which is a different fact from a scheme that
+        // never arrived. The arm bypasses the object wrap below.
+        if let InfoSubject::Topology(name) = subject {
+            return self.info_topology(transaction, name, span).await;
+        }
         let report = match subject {
             InfoSubject::Store => self.info_store(transaction).await?,
             InfoSubject::Namespace => self.info_namespace(transaction, span).await?,
@@ -134,6 +142,10 @@ impl Session<'_> {
                 self.info_replication(transaction, name, span).await?
             }
             InfoSubject::Replications => self.info_replications(transaction).await?,
+            InfoSubject::Topologies => self.info_topologies(transaction).await?,
+            // Handled above the match: the unset answer is `null`, not an
+            // empty report, and the wrap below would force an object.
+            InfoSubject::Topology(_) => unreachable!("handled above the match"),
         };
         Ok(Outcome::Value(Value::Object(report)))
     }

@@ -29,7 +29,7 @@ use tessari_types::{
 
 use super::ShardMap;
 use crate::error::{Error, Result};
-pub use auto_split::AutoSplit;
+pub use auto_split::{AutoSplit, AutoSplitSetting};
 pub use declarations::{
     EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
     VaultDeclaration, VectorDeclaration, ViewDeclaration,
@@ -107,6 +107,7 @@ const FIELD_DISTANCE: &str = "distance";
 const FIELD_REPLICATION: &str = "replication";
 const FIELD_REPLICATION_CLASS: &str = "replication_class";
 const FIELD_ACKNOWLEDGE: &str = "acknowledge";
+const FIELD_AUTO_SPLIT_DEFAULT: &str = "auto_split_default";
 const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
@@ -165,6 +166,21 @@ pub struct NamespaceDefinition {
     /// the namespace), and reporting that derivation as a decision would make a
     /// configured namespace and an unconfigured one give the same answer.
     pub acknowledge: Option<Acknowledgement>,
+    /// Whether the tables born here inherit the store's baked balancing
+    /// bounds (`ALTER NAMESPACE … SPLIT AUTOMATICALLY`), and whether that
+    /// default was later withdrawn (`SPLIT MANUALLY`).
+    ///
+    /// `None` is **never stated** and reads as off wherever it is asked,
+    /// which is what every namespace written before the clause did and what
+    /// a table with no balancing policy has always meant. It is kept apart
+    /// from a stated off for its neighbours' reason: withdrawing a default is
+    /// a decision somebody took after considering it, and reporting that as
+    /// silence would make a namespace that weighed the question and one that
+    /// never heard it give the same answer.
+    ///
+    /// Written **only when stated**, so a namespace that said nothing encodes
+    /// to the exact object it encoded to before the field existed.
+    pub auto_split_default: Option<bool>,
 }
 
 /// A database within a namespace.
@@ -204,6 +220,12 @@ impl NamespaceDefinition {
         }
         if let Some(acknowledge) = self.acknowledge {
             fields.insert(FIELD_ACKNOWLEDGE.to_owned(), acknowledge.to_value());
+        }
+        if let Some(auto_split_default) = self.auto_split_default {
+            fields.insert(
+                FIELD_AUTO_SPLIT_DEFAULT.to_owned(),
+                Value::Bool(auto_split_default),
+            );
         }
         Value::Object(fields)
     }
@@ -252,12 +274,27 @@ impl NamespaceDefinition {
                 },
             )?),
         };
+        // Refused rather than read as unstated, for its neighbours' reason: a
+        // marker a later build wrote, read as nothing here, would balance
+        // tables the operator never asked this build to touch.
+        let auto_split_default = match fields.get(FIELD_AUTO_SPLIT_DEFAULT) {
+            None => None,
+            Some(Value::Bool(held)) => Some(*held),
+            Some(_) => {
+                return Err(Error::CatalogMalformed {
+                    entity: "namespace",
+                    field: FIELD_AUTO_SPLIT_DEFAULT,
+                    found: "a split default that is not on or off",
+                });
+            }
+        };
         Ok(Self {
             id: NamespaceId::new(field_id(fields, FIELD_ID, "namespace")?),
             name: field_name(fields, "namespace")?,
             replication,
             class,
             acknowledge,
+            auto_split_default,
         })
     }
 }

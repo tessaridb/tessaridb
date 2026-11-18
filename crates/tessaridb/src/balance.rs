@@ -34,8 +34,8 @@ use std::collections::BTreeMap;
 use std::time::Instant;
 
 use tessari_storage::{
-    Catalog, LogId, SampledShard, SampledTable, ShardMap, ShardSpan, TableDefinition, Transaction,
-    Window,
+    AutoSplit, AutoSplitSetting, Catalog, LogId, SampledShard, SampledTable, ShardMap, ShardSpan,
+    TableDefinition, Transaction, Window,
 };
 use tessari_types::{Reach, RecordId, Sequence, ShardId, TableId};
 
@@ -127,10 +127,19 @@ impl Db {
         let rates = self.writes_since(&tables, samples).await?;
         let mut published = Vec::with_capacity(named.len());
         for (name, table) in named {
-            let (Some(policy), Some(map)) = (table.auto_split, table.shards.as_ref()) else {
+            let AutoSplitSetting::Policy(policy) = table.auto_split else {
                 continue;
             };
             let above = usize::try_from(policy.above).unwrap_or(usize::MAX);
+            // Every balanced table holds a shard map: a table created under
+            // an inheriting default-on namespace is born with one (the
+            // split/merge-by-default design), and an explicit policy cannot
+            // be set on a table without one. A table that predates its
+            // namespace's default stays untouched — the act that would split
+            // it is refused by name (ADR-0095).
+            let Some(map) = table.shards.as_ref() else {
+                continue;
+            };
             let measured = self.measure(&table, map, above, &rates).await?;
             let mut sampled = SampledTable {
                 name,
@@ -143,63 +152,65 @@ impl Db {
                     .zip(shard.writes_per_second)
                     .is_some_and(|(bound, rate)| rate > bound)
             };
-            let held = map.spans().count();
-            let act = if let Some(shard) = measured
-                .iter()
-                .find(|shard| shard.records > above || busy(shard))
-            {
-                let at_max = policy
-                    .max_shards
-                    .and_then(|max| usize::try_from(max).ok())
-                    .is_some_and(|max| held >= max);
-                if at_max {
-                    // The declaration says the table may not grow past this
-                    // many shards; an over-bound shard stays over its bounds
-                    // rather than the act crossing the count it declared.
-                    balanced.last_refusal = Some(format!(
-                        "table `{}`: a shard is past its bounds but the table \
-                         already holds the shards its declaration allows",
-                        table.name
-                    ));
-                    None
-                } else if shard.records > above {
-                    // The first id of the right half: half the bound into a
-                    // shard that is too big.
-                    let into = above / 2;
-                    self.nth_record(&table, map, shard.id, into.max(1))
-                        .await?
-                        .map(Act::Split)
-                } else {
-                    // Split where the traffic says the mass sits, so both
-                    // halves serve about half the measured writes; a thin
-                    // sample — fewer than two keys — says nothing the record
-                    // median does not, and falls back to it.
-                    let traffic_point = shard
-                        .traffic
-                        .get(shard.traffic.len() / 2)
-                        .filter(|_| shard.traffic.len() >= 2)
-                        .cloned();
-                    match traffic_point {
-                        Some(point) => Some(Act::Split(point)),
-                        None => {
-                            let into = shard.records / 2;
-                            self.nth_record(&table, map, shard.id, into.max(1))
-                                .await?
-                                .map(Act::Split)
+            let act = {
+                let held = map.spans().count();
+                if let Some(shard) = measured
+                    .iter()
+                    .find(|shard| shard.records > above || busy(shard))
+                {
+                    let at_max = policy
+                        .max_shards
+                        .and_then(|max| usize::try_from(max).ok())
+                        .is_some_and(|max| held >= max);
+                    if at_max {
+                        // The declaration says the table may not grow past this
+                        // many shards; an over-bound shard stays over its bounds
+                        // rather than the act crossing the count it declared.
+                        balanced.last_refusal = Some(format!(
+                            "table `{}`: a shard is past its bounds but the table \
+                                 already holds the shards its declaration allows",
+                            table.name
+                        ));
+                        None
+                    } else if shard.records > above {
+                        // The first id of the right half: half the bound into a
+                        // shard that is too big.
+                        let into = above / 2;
+                        self.nth_record(&table, map, shard.id, into.max(1))
+                            .await?
+                            .map(Act::Split)
+                    } else {
+                        // Split where the traffic says the mass sits, so both
+                        // halves serve about half the measured writes; a thin
+                        // sample — fewer than two keys — says nothing the record
+                        // median does not, and falls back to it.
+                        let traffic_point = shard
+                            .traffic
+                            .get(shard.traffic.len() / 2)
+                            .filter(|_| shard.traffic.len() >= 2)
+                            .cloned();
+                        match traffic_point {
+                            Some(point) => Some(Act::Split(point)),
+                            None => {
+                                let into = shard.records / 2;
+                                self.nth_record(&table, map, shard.id, into.max(1))
+                                    .await?
+                                    .map(Act::Split)
+                            }
                         }
                     }
+                } else {
+                    let below = usize::try_from(policy.merge_below).unwrap_or(usize::MAX);
+                    let min_held = usize::try_from(policy.min_shards).unwrap_or(usize::MAX);
+                    measured
+                        .windows(2)
+                        .find(|pair| {
+                            held > min_held
+                                && pair.iter().all(|shard| shard.complete)
+                                && pair[0].records.saturating_add(pair[1].records) < below
+                        })
+                        .map(|pair| Act::Merge(pair[0].id, pair[1].id))
                 }
-            } else {
-                let below = usize::try_from(policy.merge_below).unwrap_or(usize::MAX);
-                let min_held = usize::try_from(policy.min_shards).unwrap_or(usize::MAX);
-                measured
-                    .windows(2)
-                    .find(|pair| {
-                        held > min_held
-                            && pair.iter().all(|shard| shard.complete)
-                            && pair[0].records.saturating_add(pair[1].records) < below
-                    })
-                    .map(|pair| Act::Merge(pair[0].id, pair[1].id))
             };
             let Some(act) = act else {
                 published.push((table.id, sampled));
@@ -243,18 +254,35 @@ impl Db {
         let catalog = Catalog::new(&mut reading);
         let mut found = Vec::new();
         for namespace in catalog.namespaces().await? {
+            // The default the namespace states decides what its inherited
+            // tables balance by; an explicit policy or a stated `SPLIT
+            // MANUALLY` beats it either way.
+            let inherited = namespace
+                .auto_split_default
+                .unwrap_or(false)
+                .then_some(AutoSplitSetting::Policy(AutoSplit::BARED));
             for database in catalog.databases_in(namespace.id).await? {
                 found.extend(
                     catalog
                         .tables_in(namespace.id, database.id)
                         .await?
                         .into_iter()
-                        .filter(|table| table.auto_split.is_some() && table.shards.is_some())
-                        .map(|table| {
-                            (
-                                format!("{}.{}.{}", namespace.name, database.name, table.name),
-                                table,
-                            )
+                        // A table without a shard map predates the machinery
+                        // or its namespace's default; either way the act that
+                        // would split it is refused by name (ADR-0095), and
+                        // the pass leaves it untouched.
+                        .filter(|table| table.shards.is_some())
+                        .filter_map(|mut table| {
+                            if matches!(table.auto_split, AutoSplitSetting::Inherited) {
+                                table.auto_split = inherited?;
+                            }
+                            match table.auto_split {
+                                AutoSplitSetting::Policy(_) => Some((
+                                    format!("{}.{}.{}", namespace.name, database.name, table.name),
+                                    table,
+                                )),
+                                _ => None,
+                            }
                         }),
                 );
             }
@@ -341,8 +369,9 @@ impl Db {
         let reading = self.store().begin().await?;
         let mut measured = Vec::new();
         for span in map.spans() {
+            let whole = window_of(&span);
             let (records, complete) =
-                count(&reading, table, &span, above.saturating_add(1)).await?;
+                count(&reading, table, &whole, above.saturating_add(1)).await?;
             let traffic = rates
                 .as_ref()
                 .and_then(|rates| rates.get(&(table.id, span.id)));
@@ -370,22 +399,42 @@ impl Db {
             return Ok(None);
         };
         let reading = self.store().begin().await?;
-        let mut seen = 0_usize;
-        let mut after: Option<RecordId> = None;
-        let found = loop {
-            let page = page(&reading, table, &span, after.as_ref()).await?;
-            let Some((last, _)) = page.last() else {
-                break None;
-            };
-            let left = n.saturating_sub(seen);
-            if let Some((point, _)) = page.get(left) {
-                break Some(point.clone());
-            }
-            seen = seen.saturating_add(page.len());
-            after = Some(last.clone());
-        };
+        let whole = window_of(&span);
+        let found = nth(&reading, table, &whole, n).await?;
         reading.rollback();
         Ok(found)
+    }
+}
+
+/// The `n`th live record of a window (from zero), if it holds that many.
+async fn nth(
+    reading: &Transaction<'_>,
+    table: &TableDefinition,
+    window: &Window<'_>,
+    n: usize,
+) -> Result<Option<RecordId>> {
+    let mut seen = 0_usize;
+    let mut after: Option<RecordId> = None;
+    let found = loop {
+        let rows = page(reading, table, window, after.as_ref()).await?;
+        let Some((last, _)) = rows.last() else {
+            break None;
+        };
+        let left = n.saturating_sub(seen);
+        if let Some((point, _)) = rows.get(left) {
+            break Some(point.clone());
+        }
+        seen = seen.saturating_add(rows.len());
+        after = Some(last.clone());
+    };
+    Ok(found)
+}
+
+/// A shard's span as the open-ended window the walk reads by.
+fn window_of<'a>(span: &ShardSpan<'a>) -> Window<'a> {
+    Window {
+        from: span.from,
+        to: span.to.map(|to| (to, false)),
     }
 }
 
@@ -417,18 +466,18 @@ impl Measured {
     }
 }
 
-/// The live records of a shard, counted to `limit`, and whether the count
+/// The live records of a window, counted to `limit`, and whether the count
 /// reached its end.
 async fn count(
     reading: &Transaction<'_>,
     table: &TableDefinition,
-    span: &ShardSpan<'_>,
+    window: &Window<'_>,
     limit: usize,
 ) -> Result<(usize, bool)> {
     let mut counted = 0_usize;
     let mut after: Option<RecordId> = None;
     loop {
-        let found = page(reading, table, span, after.as_ref()).await?;
+        let found = page(reading, table, window, after.as_ref()).await?;
         counted = counted.saturating_add(found.len());
         let Some((last, _)) = found.last() else {
             return Ok((counted, true));
@@ -443,11 +492,11 @@ async fn count(
     }
 }
 
-/// One page of a shard's live records, after `after`.
+/// One page of a window's live records, after `after`.
 async fn page(
     reading: &Transaction<'_>,
     table: &TableDefinition,
-    span: &ShardSpan<'_>,
+    window: &Window<'_>,
     after: Option<&RecordId>,
 ) -> Result<Vec<(RecordId, Vec<u8>)>> {
     Ok(reading
@@ -455,10 +504,7 @@ async fn page(
             table.namespace,
             table.database,
             table.id,
-            Window {
-                from: span.from,
-                to: span.to.map(|to| (to, false)),
-            },
+            *window,
             after,
             PAGE,
         )

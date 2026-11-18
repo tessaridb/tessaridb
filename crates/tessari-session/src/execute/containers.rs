@@ -16,10 +16,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         name: &Name,
         if_not_exists: bool,
-        (replication, class, acknowledge): (
+        (replication, class, acknowledge, auto_split): (
             Option<Replication>,
             Option<ReplicationClass>,
             Option<Acknowledgement>,
+            Option<bool>,
         ),
     ) -> Result<Outcome> {
         if if_not_exists
@@ -78,6 +79,19 @@ impl Session<'_> {
                 .set_acknowledgement(definition.id, acknowledge)
                 .await?;
         }
+        if let Some(on) = auto_split {
+            // Through the setter an `ALTER NAMESPACE … SPLIT` uses, for its
+            // neighbours' reason: one write path, whichever statement carried
+            // the clause.
+            Catalog::new(transaction)
+                .set_auto_split_default(definition.id, on)
+                .await?;
+        }
+        // The clauses the statement set may move what the topology relations
+        // read (the copies a namespace asks for, the level it acknowledges), so
+        // the relations run here as they do at every member-row write.
+        self.checked_against_membership(transaction, None, name.span)
+            .await?;
         Ok(Outcome::Done)
     }
 
@@ -114,7 +128,16 @@ impl Session<'_> {
                     .set_acknowledgement(namespace, acknowledge)
                     .await?;
             }
+            NamespaceChange::AutoSplit(on) => {
+                Catalog::new(transaction)
+                    .set_auto_split_default(namespace, on)
+                    .await?;
+            }
         }
+        // For `define_namespace`'s reason: the new replication or acknowledge
+        // level is exactly a write the topology relations read.
+        self.checked_against_membership(transaction, None, name.span)
+            .await?;
         Ok(Outcome::Done)
     }
 

@@ -255,6 +255,14 @@ impl Effect {
             // but one writes to `META` about this box and the other writes a
             // catalog record the whole cluster must hold.
             StatementKind::DefineFailover { .. } => Self::Write,
+            // The scheme is a write for the policy's reason: the row is a
+            // catalog record, commits with the rest of the script, and reaches
+            // every node through the ordinary apply path — a scheme that
+            // reached one node and not another would be a layout half the
+            // cluster validates and half does not.
+            StatementKind::DefineTopology { .. }
+            | StatementKind::AlterTopology { .. }
+            | StatementKind::DropTopology { .. } => Self::Write,
             // A catalog record every replica applies by raising its own stamp
             // (ADR-0118), for the reason a failover policy is a write.
             StatementKind::FinalizeFormat => Self::Write,

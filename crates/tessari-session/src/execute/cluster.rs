@@ -1,7 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
 use tessari_encoding::Roles;
-use tessari_ql::{Name, Span};
+use tessari_ql::{Name, Span, TopologyChange, TopologyRealm};
 use tessari_storage::{
     Catalog, ConsumerDefinition, Feed, Mapped, OnFailure, ReplicaDefinition, Transaction,
 };
@@ -131,6 +131,182 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
+    /// `DEFINE TOPOLOGY main REALM 'dc-a' … [SURVIVES REALM LOSS]` — the
+    /// scheme this cluster is arranged over, as a log record, for the failover
+    /// policy's reason: the claim a layout makes is a cluster-wide fact.
+    ///
+    /// # One scheme per cluster
+    ///
+    /// A second `DEFINE TOPOLOGY` while one is held is refused naming the
+    /// scheme it would replace — a second row would be a second answer to a
+    /// question that admits one. Amending is `ALTER TOPOLOGY`'s job.
+    ///
+    /// # The checks that run here, and the ones that do not
+    ///
+    /// The structural checks — a realm or domain named twice, an empty name,
+    /// no realms at all — are the checked value's own, run through
+    /// `Realm::stated` / `Topology::stated`, for [`Self::define_failover`]'s
+    /// reason: one place knows the directions. The relations that need the
+    /// membership — the claim arithmetic, the copies-span-realms fit, the
+    /// acknowledge fit — are checked against the rows the scheme governs
+    /// before the row is written, and re-checked on every member-row write
+    /// that can move them.
+    pub(super) async fn define_topology(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        realms: &[TopologyRealm],
+        survives_realm_loss: bool,
+        span: Span,
+    ) -> Result<Outcome> {
+        let catalog = Catalog::new(transaction);
+        if let Some(held) = catalog.topology().await? {
+            return Err(Error::TopologyAlreadyDeclared {
+                held: held.name,
+                written: name.text.clone(),
+                span,
+            });
+        }
+        let refused = |why: tessari_storage::Error| Error::TopologyRefused {
+            reason: why.to_string(),
+            span,
+        };
+        let stated = realms
+            .iter()
+            .map(|realm| tessari_storage::Realm::stated(realm.name.clone(), realm.domains.clone()))
+            .collect::<std::result::Result<Vec<_>, _>>()
+            .map_err(refused)?;
+        let topology =
+            tessari_storage::Topology::stated(stated, survives_realm_loss).map_err(refused)?;
+        // The structural checks ran on the value; the membership relations run
+        // against the rows the scheme is about to govern — a declare is
+        // refused when the membership it meets does not hold the claim.
+        self.checked_against_membership(transaction, Some(&topology), span)
+            .await?;
+        self.refuse_a_format_the_store_does_not_hold(
+            "DEFINE TOPOLOGY",
+            tessari_encoding::FormatVersion::DECLARED_TOPOLOGY,
+        )
+        .await?;
+        // Nobody has set one — the first scheme is version zero, for
+        // `define_failover`'s reason: the number counts settings under a
+        // leadership, and this is the first.
+        let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+        Catalog::new(transaction).set_topology(name.text.clone(), topology, epoch, 0)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `ALTER TOPOLOGY main ADD REALM 'dc-d' [DOMAIN 'az-1', …]` ·
+    /// `ALTER TOPOLOGY main DROP REALM 'dc-c'` — one realm of the scheme per
+    /// statement, amended in place and re-stated whole: the structural checks
+    /// run on the scheme that results, because a set is judged whole or not at
+    /// all.
+    pub(super) async fn alter_topology(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        change: &TopologyChange,
+        span: Span,
+    ) -> Result<Outcome> {
+        let held = Catalog::new(transaction)
+            .topology()
+            .await?
+            .ok_or_else(|| Error::Unknown {
+                entity: "topology",
+                name: name.text.clone(),
+                span,
+            })?;
+        // The row is the scheme's, and the scheme has a name: amending under
+        // another name would move a scheme the statement did not name, and the
+        // trail would record a name the row does not hold.
+        if held.name != name.text {
+            return Err(Error::Unknown {
+                entity: "topology",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        let mut realms: Vec<tessari_storage::Realm> = held.topology.realms().to_vec();
+        match change {
+            TopologyChange::AddRealm { name, domains } => {
+                realms.push(
+                    tessari_storage::Realm::stated(name.clone(), domains.clone()).map_err(
+                        |why| Error::TopologyRefused {
+                            reason: why.to_string(),
+                            span,
+                        },
+                    )?,
+                );
+            }
+            TopologyChange::DropRealm(dropped) => {
+                let kept = realms.len();
+                realms.retain(|realm| realm.name() != dropped);
+                if realms.len() == kept {
+                    return Err(Error::Unknown {
+                        entity: "realm of this topology",
+                        name: dropped.clone(),
+                        span,
+                    });
+                }
+            }
+        }
+        let topology =
+            tessari_storage::Topology::stated(realms, held.topology.survives_realm_loss())
+                .map_err(|why| Error::TopologyRefused {
+                    reason: why.to_string(),
+                    span,
+                })?;
+        // Amending a realm moves the claim's arithmetic — the restated scheme
+        // is checked against the membership before it replaces the row, for
+        // `define_topology`'s reason.
+        self.checked_against_membership(transaction, Some(&topology), span)
+            .await?;
+        self.refuse_a_format_the_store_does_not_hold(
+            "ALTER TOPOLOGY",
+            tessari_encoding::FormatVersion::DECLARED_TOPOLOGY,
+        )
+        .await?;
+        let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+        Catalog::new(transaction).set_topology(
+            held.name,
+            topology,
+            epoch,
+            held.version.saturating_add(1),
+        )?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP TOPOLOGY main` — the scheme whole. The member rows are untouched:
+    /// their `REGION` and `DOMAIN` labels read as what they are — labels —
+    /// until a new scheme declares them.
+    pub(super) async fn drop_topology(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        // The name is read before anything is removed, for the alter's reason:
+        // dropping under another name would remove a scheme the statement did
+        // not name.
+        let held = Catalog::new(transaction)
+            .topology()
+            .await?
+            .ok_or_else(|| Error::Unknown {
+                entity: "topology",
+                name: name.text.clone(),
+                span,
+            })?;
+        if held.name != name.text {
+            return Err(Error::Unknown {
+                entity: "topology",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Catalog::new(transaction).drop_topology().await?;
+        Ok(Outcome::Done)
+    }
+
     /// `REVOKE CERTIFICATE '<sha256>'` — a row every node holds, from which
     /// its peer link refuses the certificate in both directions (ADR-0108 D6).
     ///
@@ -207,7 +383,13 @@ impl Session<'_> {
                 releasing: false,
                 preferred: peer.preferred,
                 region: peer.region.map(str::to_owned),
+                domain: peer.domain.map(str::to_owned),
             })
+            .await?;
+        // The row is visible to the check because both run in this transaction,
+        // and a refusal aborts the transaction with the statement — the row a
+        // refused declare leaves behind is the one the script rolls back.
+        self.checked_against_membership(transaction, None, peer.name.span)
             .await?;
         Ok(Outcome::Done)
     }
@@ -290,6 +472,7 @@ impl Session<'_> {
                 inbound: declared.inbound,
                 paused: false,
                 join: None,
+                position: None,
             })
             .await?;
         Ok(Outcome::Done)
@@ -522,6 +705,11 @@ impl Session<'_> {
                     .amend_replica(&name.text, |row| row.region.clone_from(region))
                     .await?
             }
+            ReplicaChange::Domain(domain) => {
+                Catalog::new(transaction)
+                    .amend_replica(&name.text, |row| row.domain.clone_from(domain))
+                    .await?
+            }
         };
         if !amended {
             return Err(Error::Unknown {
@@ -530,7 +718,110 @@ impl Session<'_> {
                 span,
             });
         }
+        // The amendment is visible to the check for `define_replica`'s reason.
+        self.checked_against_membership(transaction, None, span)
+            .await?;
         Ok(Outcome::Done)
+    }
+
+    /// The relations R1–R4 against the membership as it stands, when a scheme
+    /// is held.
+    ///
+    /// Assembles the views from the catalog rows this transaction sees — a row
+    /// a replica statement just wrote is visible because the check runs inside
+    /// the same transaction, and a refusal aborts that transaction with the
+    /// statement. `stated` carries the scheme a topology statement is about to
+    /// store; replica statements pass `None` and the check reads the held row.
+    /// With no scheme held there is nothing to check: labels are labels until
+    /// a scheme declares them.
+    pub(super) async fn checked_against_membership(
+        &self,
+        transaction: &mut Transaction<'_>,
+        stated: Option<&tessari_storage::Topology>,
+        span: Span,
+    ) -> Result<()> {
+        let catalog = Catalog::new(transaction);
+        let held = catalog.topology().await?;
+        let Some(topology) = stated.or(held.as_ref().map(|held| &held.topology)) else {
+            return Ok(());
+        };
+        let (members, namespaces, leader_region) = self.membership_views(transaction).await?;
+        tessari_storage::check_topology(topology, &members, &namespaces, leader_region.as_deref())
+            .map_err(|why| Error::TopologyRefused {
+                reason: why.to_string(),
+                span,
+            })
+    }
+
+    /// The membership and the namespaces as the topology relations and the
+    /// read-back both read them: one view per member row plus the node this
+    /// runs on, and one view per tenancy namespace.
+    ///
+    /// Shared by the checked relations and `INFO FOR TOPOLOGY` so the answer a
+    /// refusal names and the answer a report renders can never be two
+    /// assemblies that drift. The node the call runs on holds the namespaces
+    /// it leads — on the write path the store line; when its own row is not
+    /// declared it is still its own electorate, which is what a store with no
+    /// membership genuinely holds.
+    pub(crate) async fn membership_views(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<(
+        Vec<tessari_storage::MemberView>,
+        Vec<tessari_storage::NamespaceView>,
+        Option<String>,
+    )> {
+        let catalog = Catalog::new(transaction);
+        let identity = self.store.node_identity().await?;
+        let rows = catalog.replicas().await?;
+        let mut members = Vec::with_capacity(rows.len().saturating_add(1));
+        let mut own: Option<tessari_storage::MemberView> = None;
+        for row in &rows {
+            let view = tessari_storage::MemberView {
+                row: row.name.clone(),
+                region: row.region.clone(),
+                domain: row.domain.clone(),
+                coordinating: row.roles.has(tessari_encoding::Roles::COORDINATING),
+                holds: holds_of(&row.replicates),
+            };
+            if row.node == Some(identity.id) {
+                own = Some(view);
+            } else {
+                members.push(view);
+            }
+        }
+        let (leader_region, own) = match own {
+            Some(view) => (view.region.clone(), view),
+            None => (
+                None,
+                tessari_storage::MemberView {
+                    row: "this node".to_owned(),
+                    region: None,
+                    domain: None,
+                    coordinating: true,
+                    holds: tessari_storage::MemberHolds::Store,
+                },
+            ),
+        };
+        members.push(own);
+        let namespaces = catalog
+            .namespaces()
+            .await?
+            .iter()
+            .map(|namespace| {
+                let copies = match &namespace.replication {
+                    Some(tessari_types::Replication::Factor(factor)) => factor.get(),
+                    _ => 1,
+                };
+                tessari_storage::NamespaceView {
+                    id: namespace.id,
+                    name: namespace.name.clone(),
+                    copies,
+                    acknowledge: namespace.acknowledge.map(|stated| stated.level),
+                }
+            })
+            .collect::<Vec<_>>();
+        Ok((members, namespaces, leader_region))
     }
 
     /// Declare a consumer, after checking everything it names actually exists.
@@ -675,5 +966,20 @@ pub(super) const fn failure_policy(written: tessari_ql::OnFailure) -> OnFailure 
     match written {
         tessari_ql::OnFailure::Stop => OnFailure::Stop,
         tessari_ql::OnFailure::Quarantine => OnFailure::Quarantine,
+    }
+}
+
+/// Which namespaces a member row's subscription hands it copies of, as the
+/// relations read it.
+fn holds_of(reach: &Option<tessari_types::Reach>) -> tessari_storage::MemberHolds {
+    let Some(reach) = reach else {
+        return tessari_storage::MemberHolds::Nothing;
+    };
+    match reach {
+        tessari_types::Reach::Store => tessari_storage::MemberHolds::Store,
+        tessari_types::Reach::Namespace(id) | tessari_types::Reach::Database(id, _) => {
+            tessari_storage::MemberHolds::Namespaces(vec![*id])
+        }
+        tessari_types::Reach::Shard(id, ..) => tessari_storage::MemberHolds::Namespaces(vec![*id]),
     }
 }

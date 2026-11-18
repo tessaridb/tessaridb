@@ -115,6 +115,7 @@ fn peer(roles: Roles, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 

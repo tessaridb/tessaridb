@@ -9,7 +9,9 @@ use tessari_types::{
     Acknowledge, Acknowledgement, Duration, Number, Replication, ReplicationClass, parse_uuid,
 };
 
-use crate::ast::{ReachRef, ReplicaChange, ReplicationChange, StatementKind};
+use crate::ast::{
+    ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange, TopologyRealm,
+};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
@@ -301,6 +303,84 @@ impl Parser<'_> {
             lease,
             balance_leaderships,
         })
+    }
+
+    /// `DEFINE TOPOLOGY main REALM 'dc-a' [DOMAIN 'az-1', …] … [SURVIVES REALM LOSS]`
+    ///
+    /// One `REALM` clause per realm, at least one, each naming the realm as
+    /// text — the same text a member row names with `REGION`, for the reason
+    /// `REGION` is text: `dc-a` is a label, not an identifier. The claim is
+    /// last and optional, and absent means the structure is declared with no
+    /// claim made — silence is a third state, not the weakest claim.
+    ///
+    /// The structural checks (a realm named twice, a domain named twice, an
+    /// empty name, no realms at all) are NOT made here. They are made by
+    /// `Realm::stated` / `Topology::stated`, which is the only way to build
+    /// the checked value, so the refusal names the direction and there is
+    /// exactly one place that knows the directions — the same split
+    /// [`Self::define_failover`] keeps for the policy's relations.
+    pub(super) fn define_topology(&mut self) -> Result<StatementKind> {
+        let name = self.name()?;
+        let mut realms = vec![self.realm_clause()?];
+        while self.peek_word("realm") {
+            realms.push(self.realm_clause()?);
+        }
+        let survives_realm_loss = if self.eat_word("survives") {
+            self.expect_word("realm", "`REALM` after `SURVIVES`")?;
+            self.expect_word("loss", "`LOSS` after `SURVIVES REALM`")?;
+            true
+        } else {
+            false
+        };
+        Ok(StatementKind::DefineTopology {
+            name,
+            realms,
+            survives_realm_loss,
+        })
+    }
+
+    /// One `REALM` clause of a topology statement — the name, and the
+    /// `DOMAIN` list when one stands. Read for `DEFINE TOPOLOGY` and
+    /// `ALTER TOPOLOGY … ADD REALM`, so the two cannot come to accept
+    /// different spellings of one clause.
+    pub(in crate::parser::statement) fn realm_clause(&mut self) -> Result<TopologyRealm> {
+        if !self.eat_word("realm") {
+            return Err(self.error_here("`REALM` and a realm's name — at least one"));
+        }
+        let name = self.text("the realm's name, as text")?.0;
+        let domains = if self.eat_word("domain") {
+            let mut named = vec![self.text("a domain's name, as text")?.0];
+            while self.eat_punct(Punct::Comma) {
+                named.push(self.text("a domain's name, as text")?.0);
+            }
+            named
+        } else {
+            Vec::new()
+        };
+        Ok(TopologyRealm { name, domains })
+    }
+
+    /// The one clause an `ALTER TOPOLOGY` changes, read by the readers
+    /// `DEFINE TOPOLOGY` uses for the same clause (Q-892's rule, on the
+    /// scheme the way it runs on a member row).
+    pub(in crate::parser::statement) fn topology_change(&mut self) -> Result<TopologyChange> {
+        if self.eat_word("add") {
+            let TopologyRealm { name, domains } = self.realm_clause()?;
+            return Ok(TopologyChange::AddRealm { name, domains });
+        }
+        // `DROP` is reserved (it leads the drop statements), so it arrives as
+        // a keyword; `ADD` is contextual, read as a word. Both halves are
+        // checked because the clause is spelled the same whichever token kind
+        // the lexer hands over.
+        if self.eat_word("drop") || self.eat_keyword(Keyword::Drop) {
+            if !self.eat_word("realm") {
+                return Err(self.error_here("`REALM` after `DROP`"));
+            }
+            return Ok(TopologyChange::DropRealm(
+                self.text("the realm's name, as text")?.0,
+            ));
+        }
+        Err(self.error_here("`ADD REALM` or `DROP REALM` — the one clause that changes"))
     }
 
     /// One named period of a failover policy, refused with its own word.

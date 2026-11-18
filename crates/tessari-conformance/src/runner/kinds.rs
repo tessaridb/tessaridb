@@ -200,6 +200,8 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::RecipientIsNotAName { .. } => "RecipientIsNotAName",
         Error::ReplicationUnstated { .. } => "ReplicationUnstated",
         Error::FailoverRefused { .. } => "FailoverRefused",
+        Error::TopologyRefused { .. } => "TopologyRefused",
+        Error::TopologyAlreadyDeclared { .. } => "TopologyAlreadyDeclared",
         Error::AcknowledgeBelowNamespace { .. } => "AcknowledgeBelowNamespace",
         Error::MajorityUnreachable { .. } => "MajorityUnreachable",
         Error::LocalMajorityWithoutRegion { .. } => "LocalMajorityWithoutRegion",

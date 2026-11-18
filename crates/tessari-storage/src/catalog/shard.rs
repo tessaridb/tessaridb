@@ -106,6 +106,25 @@ pub(crate) enum Unsplittable {
 }
 
 impl ShardMap {
+    /// One shard covering the whole identity space: how a table created
+    /// under an inheriting default-on namespace is born split (the
+    /// split/merge-by-default design). The filing invariant an unsplit
+    /// table's records cannot retroactively gain (ADR-0095 — a map added
+    /// after records exist leaves them in a log no shard names) is honored
+    /// at the birth instead: the map exists before the first record, so
+    /// every write is filed under a shard from the start, and the ordinary
+    /// split act does the rest once the shard outgrows the bound.
+    pub(crate) fn whole() -> Self {
+        Self {
+            version: 0,
+            shards: vec![Shard {
+                id: ShardId::new(1),
+                from: None,
+            }],
+            retired: Vec::new(),
+        }
+    }
+
     /// The map `SPLIT AT points` declares, or `None` for no points at all.
     ///
     /// Ids run from `1` in key order. Points must already be in strictly

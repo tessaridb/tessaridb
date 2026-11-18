@@ -1221,6 +1221,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `30` | `TOPIC_CLOCKS` | each topic's clock: the instant its newest message was appended, never lower than the one before (row `ns/db/table`, ADR-0133) |
 | `31` | `FEED_SCAN_STATES` | where each declared feed's initial scan has reached: its snapshot sequence, resume position, and whether the table is exhausted (row `table id + feed name`, FEAT-S1) |
 | `32` | `REPLICATIONS` | each outbound replication's declaration: the remote cluster's endpoint, the database shipped to it, the database's name there, whether the stream is paused, and the link token awaiting a bind (row `replication name`) |
+| `33` | `TOPOLOGY` | the realm/domain scheme the cluster is arranged over: the scheme's name, its realms with their domains, the survival claim, and the leadership pair that orders the row (one row, key `scheme`) |
 
 ## 10. Format versions
 
@@ -1245,6 +1246,7 @@ and is rewritten at open only where the row below says so.
 | `11` | a table may be declared `STORE COLUMN` (G082, ADR-0137) — the columnar projection's keys (§6.6) ride the record keyspace under tags a build before it reads as nothing it knows; the storage-kind field on a table definition is not surface, but the keys its tables write are | opened as is and keeps its stamp; a columnar definition is refused (`FormatNotFinalized`) until the store is finalized |
 | `12` | key kinds `0x47` and `0x48`: the per-column planner statistics and the table write counter they are freshened against (G083) — node-local facts a build before it neither reads nor writes; nothing a pre-12 build does changes or is changed by them | opened as is and keeps its stamp |
 | `13` | the catalog keeps an outbound replication's declaration in system table `32` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `32` | opened as is and keeps its stamp; `DEFINE REPLICATION` is refused (`FormatNotFinalized`) until the store is finalized |
+| `14` | the catalog keeps the declared realm/domain topology in system table `33` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `33` | opened as is and keeps its stamp; `DEFINE TOPOLOGY` is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

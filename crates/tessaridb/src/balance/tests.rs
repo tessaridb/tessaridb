@@ -1,4 +1,7 @@
-#![allow(clippy::unwrap_used)]
+// bgv-allow(panic, cast_possible_truncation): test-only module; a panic is
+// how a test reports its failure, and the casts build fixed test identities
+// from their position, as in fault_tests.rs.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::cast_possible_truncation)]
 
 use tessari_session::Outcome;
 use tessari_session::RunNow;
@@ -253,8 +256,12 @@ fn both_halves_serve_the_continued_traffic_within_the_stated_ratio() {
     );
     let hotter = served.iter().copied().max().unwrap_or(0);
     let cooler = served.iter().copied().min().unwrap_or(0);
+    // Both rates are floor(count * 1000 / elapsed_ms) of counts 3 and 2 over
+    // the same window, so the true ratio is exactly 3:2 and the floors can
+    // each lose just under one — the cross-multiplied comparison owes a +2
+    // truncation allowance (measured: elapsed 3 ms gives 1000 vs 666).
     assert!(
-        hotter.saturating_mul(2) <= cooler.saturating_mul(3),
+        hotter.saturating_mul(2) <= cooler.saturating_mul(3).saturating_add(2),
         "the busier half serves at most 3/5 (the stated 60/40): {served:?}"
     );
 }
@@ -493,6 +500,323 @@ fn a_table_at_its_min_shard_count_is_not_merged_further() {
     let (_, merged) = passes(&db, &mut ShardSamples::default());
     assert!(merged >= 1);
     assert_eq!(per_shard(&db).len(), 1);
+}
+
+#[test]
+fn bare_split_automatically_takes_the_baked_bounds() {
+    // The bounds a bare declaration bakes: the merge bound at a fifth of the
+    // split bound, the pairing the declare-time oscillation guard accepts with
+    // margin, and no writes bound — the load question is measured separately
+    // before any default carries it.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    orders(&db, "SPLIT AUTOMATICALLY", 0);
+    let outcomes = db
+        .session()
+        .run_now(&format!("{TENANCY} INFO FOR TABLE orders;"))
+        .expect("INFO FOR TABLE answers");
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        unreachable!("INFO FOR TABLE answers a value");
+    };
+    let policy = fields.get("auto_split").cloned();
+    assert_eq!(
+        policy.map(|held| format!("{held:?}")),
+        Some(format!(
+            "{:?}",
+            Value::Object(
+                [
+                    ("above".to_owned(), Value::from(1_000_000_i64)),
+                    ("merge_below".to_owned(), Value::from(200_000_i64)),
+                ]
+                .into_iter()
+                .collect()
+            )
+        ))
+    );
+    let Some(Value::String(script)) = fields.get("definition") else {
+        unreachable!("a table reports its definition");
+    };
+    let copy = Db::in_memory().now().expect("an in-memory store opens");
+    copy.session()
+        .run_now(&format!("{DECLARED} {script}"))
+        .expect("the restored definition runs");
+    assert_eq!(table(&copy).auto_split, table(&db).auto_split);
+}
+
+#[test]
+fn bare_split_automatically_on_an_unsplit_table_is_refused_by_name() {
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE plain (n int) IDENTITY uuid SPREAD;"
+        ))
+        .expect("the table defines");
+    let refused = db
+        .session()
+        .run_now(&format!("{TENANCY} ALTER TABLE plain SPLIT AUTOMATICALLY;"));
+    assert!(
+        matches!(
+            refused,
+            Err(tessari_session::Error::Store(
+                tessari_storage::Error::AutoSplitOnAnUnsplitTable { .. }
+            ))
+        ),
+        "{refused:?}"
+    );
+}
+
+#[test]
+fn one_bound_written_still_requires_the_pair() {
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE plain (n int) IDENTITY uuid SPREAD SPLIT AT '80'; \
+             ALTER TABLE plain SPLIT AUTOMATICALLY ABOVE 100 RECORDS;"
+        ))
+        .unwrap_err();
+}
+
+#[test]
+fn a_namespace_default_merges_what_its_inherited_tables_hold() {
+    // The baked policy an inherited table balances by, visible at a tiny
+    // scale: two neighbours under 200,000 records together merge.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5';",
+        )
+        .expect("the namespace states its default");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert!(
+        merged >= 1,
+        "the inherited default merged the two quiet neighbours"
+    );
+}
+
+#[test]
+fn a_tables_own_policy_beats_the_namespace_default() {
+    // An explicit declaration is the operator's answer and wins: a merge
+    // bound of 20 leaves two shards holding 25 records alone, where the
+    // inherited 200,000 would have merged them.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5'; \
+             ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100 RECORDS MERGE BELOW 20 RECORDS;",
+        )
+        .expect("the table declares its own bounds");
+    let creates = " CREATE events = { n: 1 };".repeat(25);
+    db.session()
+        .run_now(&format!("{TENANCY}{creates}"))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(merged, 0, "the explicit merge bound wins over the default");
+}
+
+#[test]
+fn a_stated_split_manually_beats_the_namespace_default() {
+    // Withdrawing is a stated off, and a stated off survives the default: two
+    // quiet shards stay two under a default-on namespace.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD SPLIT AT '5'; \
+             ALTER TABLE events SPLIT MANUALLY;",
+        )
+        .expect("the opt-out states off");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (_, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(merged, 0, "the stated off wins over the default");
+}
+
+#[test]
+fn skewed_traffic_splits_where_the_mass_sits_and_the_halves_are_uneven() {
+    // U2 (the dossier's open question): the load cut splits where the middle
+    // of the measured write keys sits, and under a skewed stream that point
+    // is not the record median — so the halves differ in size. Zipf writes:
+    // position k takes 40/k updates over forty positions, so the sample's
+    // median lands low and the measured spread below is the honest answer
+    // the worksheet records. The assertion is the design's guarantee (the
+    // traffic median of concentrated writes sits below the uniform one),
+    // not a number fitted to the run.
+    let db = Db::in_memory().now().unwrap();
+    hot_table(
+        &db,
+        "SPLIT AUTOMATICALLY ABOVE 100000 RECORDS OR 1 WRITES PER SECOND \
+         MERGE BELOW 2 RECORDS",
+    );
+    let mut samples = ShardSamples::default();
+    // The first pass only learns where each shard's log stands.
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 0);
+    let writes: String = (1..=40_u32)
+        .map(|k| {
+            let count = (40 / k).max(1);
+            (0..count)
+                .map(|_| format!("UPDATE hot:uuid '{}' SET n = 100;", hot_id(k as u8)))
+                .collect::<String>()
+        })
+        .collect();
+    db.session()
+        .run_now(&format!("{TENANCY} {writes}"))
+        .unwrap();
+    assert_eq!(db.balance_shards(&mut samples).now().unwrap().split, 1);
+    let table = table_named(&db, "hot");
+    let map = table.shards.expect("the split left a map");
+    let outcomes = db
+        .session()
+        .run_now(&format!("{TENANCY} SELECT * FROM hot;"))
+        .unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the table reads back");
+    };
+    let sizes: Vec<usize> = map
+        .spans()
+        .map(|span| {
+            records
+                .iter()
+                .filter(|(id, _)| map.shard_of(id) == span.id)
+                .count()
+        })
+        .collect();
+    // The declared boundary above the data leaves an empty third shard; the
+    // two populated halves are the measured answer.
+    println!("zipf halves, records per shard: {sizes:?}");
+    let populated: Vec<usize> = sizes.iter().copied().filter(|held| *held > 0).collect();
+    assert_eq!(populated.len(), 2, "one populated split: {sizes:?}");
+    assert!(
+        populated.first().is_some_and(|held| *held < 20),
+        "the traffic median cuts below the record median: {sizes:?}"
+    );
+}
+
+#[test]
+fn the_bared_policy_is_the_stores_published_bounds() {
+    // The pair the allow-commented widening in `AutoSplit::BARED` stands on,
+    // pinned: the same numbers the parser fills a bare declaration with, and
+    // the pairing the declare-time oscillation guard accepts.
+    let bared = tessari_storage::AutoSplit::BARED;
+    assert_eq!(
+        bared.above,
+        u64::from(tessari_types::BARE_SPLIT_ABOVE_RECORDS)
+    );
+    assert_eq!(
+        bared.merge_below,
+        u64::from(tessari_types::BARE_SPLIT_MERGE_RECORDS)
+    );
+    assert_eq!(bared.min_shards, 1);
+    assert!(bared.max_shards.is_none());
+    assert!(
+        bared.merge_below.saturating_mul(2) < bared.above,
+        "the baked pair keeps the oscillation guard's margin"
+    );
+}
+
+#[test]
+fn a_table_born_under_a_default_splits_when_it_outgrows_the_bound() {
+    // D-SG5-4 as amended: the table is BORN split under an inheriting
+    // default-on namespace — one shard covering everything, so its records
+    // are filed under a shard from the first write (ADR-0095's filing
+    // invariant can only be honored at the birth) — and the ordinary split
+    // machinery does the rest once the shard outgrows the baked bound.
+    // Writes go in small transactions: a transaction is 3-4x faster per
+    // record, and a small buffer keeps the scanner linear.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD;",
+        )
+        .expect("the inherited table defines, born split");
+    let born = table_named(&db, "events");
+    assert!(
+        born.shards.is_some(),
+        "a table born under the default holds a shard map"
+    );
+    for _ in 0..5_250 {
+        let creates = " CREATE events = { n: 1 };".repeat(200);
+        db.session()
+            .run_now(&format!("{TENANCY} BEGIN;{creates} COMMIT;"))
+            .expect("a batch lands");
+    }
+    let (split, _) = passes(&db, &mut ShardSamples::default());
+    assert!(
+        split >= 1,
+        "the born shard earned its first split past the bound"
+    );
+    let grown = table_named(&db, "events");
+    let held = grown.shards.map(|map| map.spans().count()).unwrap_or(0);
+    assert!(held >= 2, "the split left {held} shards");
+}
+
+#[test]
+fn a_born_split_table_under_the_bound_keeps_its_single_shard() {
+    // Below the bound the born shard is left exactly as born: one shard, no
+    // act.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; \
+             USE NAMESPACE prod; DEFINE DATABASE shop; USE DATABASE shop; \
+             DEFINE TABLE events (n int) IDENTITY uuid SPREAD;",
+        )
+        .expect("the inherited table defines, born split");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (split, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(split, 0);
+    assert_eq!(merged, 0);
+    let held = table_named(&db, "events")
+        .shards
+        .map(|map| map.spans().count())
+        .unwrap_or(0);
+    assert_eq!(held, 1, "below the bound the born shard stays one");
+}
+
+#[test]
+fn a_table_that_predates_the_default_stays_unsplit() {
+    // The other arm of the amendment, measured: a table born before its
+    // namespace turned the default on is not retro-fitted — the act that
+    // would split it is refused by name (ADR-0095), and the default does
+    // not do silently what the engine refuses to do.
+    let db = Db::in_memory().now().expect("an in-memory store opens");
+    db.session()
+        .run_now(&format!(
+            "{DECLARED} DEFINE TABLE events (n int) IDENTITY uuid SPREAD;"
+        ))
+        .expect("the table defines, born unsplit");
+    db.session()
+        .run_now("ALTER NAMESPACE prod SPLIT AUTOMATICALLY;")
+        .expect("the namespace turns its default on");
+    db.session()
+        .run_now(&format!(
+            "{TENANCY} CREATE events = {{ n: 1 }}; CREATE events = {{ n: 2 }};"
+        ))
+        .expect("the records write");
+    let (split, merged) = passes(&db, &mut ShardSamples::default());
+    assert_eq!(split, 0);
+    assert_eq!(merged, 0);
+    assert!(
+        table_named(&db, "events").shards.is_none(),
+        "the pre-existing unsplit table stays untouched"
+    );
 }
 
 #[test]

@@ -2569,11 +2569,20 @@ change handled.
 ### A table that splits and merges itself: `ALTER TABLE … SPLIT AUTOMATICALLY`
 
 ```
+ALTER TABLE events SPLIT AUTOMATICALLY;
 ALTER TABLE events SPLIT AUTOMATICALLY ABOVE 100000 RECORDS
     OR 500 WRITES PER SECOND
     MERGE BELOW 20000 RECORDS
     MIN 2 SHARDS MAX 16 SHARDS;
 ALTER TABLE events SPLIT MANUALLY;
+```
+
+A namespace can ask for every table born into it:
+
+```
+DEFINE NAMESPACE app SPLIT AUTOMATICALLY;
+ALTER NAMESPACE app SPLIT AUTOMATICALLY;
+ALTER NAMESPACE app SPLIT MANUALLY;
 ```
 
 A split table can ask the cluster to keep its shards within bounds. The node
@@ -2588,7 +2597,20 @@ about half the measured load; and two neighbouring shards holding fewer than
 together are merged. At most one change per table per pass, and each is exactly
 the `ALTER TABLE … SPLIT AT` or `MERGE SHARD` an operator would type: it is in
 the log, every node applies it, a feed over the table ends with the usual refusal,
-and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked.
+and the node logs it. `SPLIT MANUALLY` stops it. It is off unless asked — or unless the
+namespace asked for it: a bare `SPLIT AUTOMATICALLY` bakes the store's
+published bounds (a shard splits past a million records, neighbours under
+two hundred thousand together merge, and no writes bound rides by default),
+and a table created under a default-on namespace is born with one shard
+covering it, so its records are filed under the map from the first write. A
+table that declared its own bounds keeps them; a stated `SPLIT MANUALLY`
+keeps its silence even under a default-on namespace; and a table that was
+unsplit before its namespace's default arrived is not retro-fitted — the
+filing a map needs can only happen at a table's birth, which is why the
+advice for splitting an existing unsplit table is to declare one and move
+the records. `INFO FOR NAMESPACE` reports the default as
+`auto_split_default`, and a silent table under a stated default reports
+`auto_split: inherited`.
 
 `MIN n SHARDS` and `MAX n SHARDS` bound how few and how many shards the
 balancing passes may leave the table with: a shard past its bounds is not
@@ -11037,6 +11059,120 @@ without the clause turns the balancer off; `cluster.failover.balance_leaderships
 says which.
 
 
+### The layout a cluster is arranged over
+
+A `REGION` on a member row is a free-text label — an acknowledge level counts
+it, and nothing more. What the cluster cannot do with labels alone is
+**validate a layout**: it does not know which rows form a realm, how many
+failure domains a realm spans, or whether the voters would survive the loss the
+operator is arranging against. A stated topology is that knowledge as catalog
+data, for the failover policy's reason — which realms exist and what their loss
+would do is a cluster-wide fact, so it is a statement and a replicated row:
+
+```
+DEFINE TOPOLOGY main
+    REALM 'dc-a' DOMAIN 'az-1', 'az-2'
+    REALM 'dc-b' DOMAIN 'az-1', 'az-2'
+    REALM 'dc-c' DOMAIN 'az-1', 'az-2'
+    SURVIVES REALM LOSS;
+```
+
+- One `REALM` clause per realm, at least one, each naming the realm as text —
+  the same text a member row names with `REGION`. `DOMAIN` is optional and
+  names the failure domains within the realm (racks, availability zones), as
+  text, comma-separated.
+- `SURVIVES REALM LOSS` is the claim: losing any one realm still leaves a
+  cluster that elects and still holds every acknowledged write. Absent means
+  the structure is declared with no claim made — silence is a third state, not
+  the weakest claim and not the strongest.
+- **The statement replaces the set, and there is one topology per cluster.** A
+  second `DEFINE TOPOLOGY` while one is held is refused naming the scheme it
+  would replace, the way a second answer to a question that admits one is a
+  second answer and not an amendment.
+
+A member row joins a realm-domain with the shipped region plus one new clause:
+
+```
+DEFINE REPLICA n1 AT 'a:9001' ROLES coordinating, writable REPLICATES STORE
+    REGION 'dc-a' DOMAIN 'az-1';
+ALTER REPLICA n1 DOMAIN 'az-2';
+ALTER REPLICA n1 DOMAIN NONE;
+```
+
+`DOMAIN` is optional and last, and it says which domain of the row's region the
+member stands in. `DOMAIN NONE` clears it. A domain without a region is refused
+— a domain is a position within a realm, and a row that names no realm names no
+position within one.
+
+The scheme is **checked as a set** when it is written and on every write that
+changes what the check reads — declaring or amending the topology, placing or
+amending a member row's region, domain or roles. Four relations hold, and a
+write that breaks one is refused **with the relation and its direction named**:
+
+1. **No orphan labels.** Every `REGION` and `DOMAIN` on a member row names a
+   realm or domain the topology declares. The refusal names the label and the
+   scheme that does not hold it.
+2. **The claim arithmetic.** For `SURVIVES REALM LOSS`, for every realm: the
+   voters outside that realm still hold a majority of the membership. A cluster
+   that loses a realm must still elect. The refusal names the realm whose loss
+   breaks the claim and the voters it leaves against the majority it needs.
+3. **Copies span realms.** Every namespace kept on more than one node holds
+   copies in at least two realms — a claim of realm-loss survival with every
+   copy in one realm is a fiction. The refusal names the namespace and the
+   single realm holding all its copies.
+4. **Acknowledge fit.** A namespace at `ACKNOWLEDGE LOCAL MAJORITY` has voters
+   in the leader's region. This is the per-row refusal
+   (`LocalMajorityWithoutRegion`) elevated to a set-level check against the
+   declared realms; the refusal names the namespace and its region's voter
+   count.
+
+A namespace nobody asked about is not checked: the scheme checks what the
+operator **declared**, and never invents a claim. Like the failover policy, the
+row carries the leadership it was written under and which setting under that
+leadership it was, and a higher pair installs.
+
+**What the scheme deliberately does not do.** It does not move data, elect
+leaders, or gate writes. Placement stays `LEADS`, `LEADS PREFERRED` and
+`BALANCE LEADERSHIPS`; the acknowledge levels stay the shipped floor. The scheme
+reports the gap between the claim and the layout — the read-back says
+`satisfied: false` with the relation named — and the operator closes the gap
+with the shipped statements. Enforcement at write time would make the topology
+a second authority over leadership, and two authorities is how the split-brain
+the lease prevents arrives through the mechanism meant to prevent it — the
+failover policy's own argument, one layer up.
+
+The scheme amends by the realm and is dropped whole:
+
+```
+ALTER TOPOLOGY main ADD REALM 'dc-d' DOMAIN 'az-1';
+ALTER TOPOLOGY main DROP REALM 'dc-c';
+DROP TOPOLOGY main;
+```
+
+`ADD REALM` takes the same clause `DEFINE` does; `DROP REALM` refuses when the
+realm it names is not declared, and re-stating the realms always runs the
+structural checks — a topology with no realms declares nothing. `ALTER` and
+`DROP` name the scheme; amending a scheme nobody has declared is refused naming
+that. Dropping the scheme never touches member rows: their labels read as what
+they are — labels — until a new scheme declares them again.
+
+**The read-back.** `INFO FOR TOPOLOGY main` answers the scheme, its realms with
+their domains, the member rows assigned to each realm, and the survival verdict
+computed live against the membership as it stands — per realm, `loss.survived`
+with the voters it leaves against the majority it needs. The namespaces the
+relations check report their fit: how many realms the copies span, and, for
+`LOCAL MAJORITY`, how many voters the leader's region holds. `satisfied` is the
+claim against the membership right now, and when it is `false`, `relation` names
+which one does not hold — the scheme reports the gap between the claim and the
+layout, it does not close it: a member row's removal is not re-checked, and the
+read-back says what the removal cost. The answer is `null` when nobody has
+declared a scheme — an empty object would read as a scheme that declares
+nothing, which is a different fact from a scheme that never arrived.
+`INFO FOR TOPOLOGIES` lists the declared schemes by name. The console's cluster
+view — the table and the tree, the per-server drill-down — renders from this
+answer and nothing else.
+
+
 ### A peer certificate the cluster no longer accepts
 
 A node's peer certificate proves it is a member, and a certificate that leaked,
@@ -11300,7 +11436,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.47.0", "build": "0.47.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.48.0", "build": "0.48.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -11473,10 +11609,23 @@ keeps the digest and the expiry, so the catalog — in every backup and on every
 node — holds nothing that binds a link by itself, and a second token for the row
 replaces the first, which is how a lost one is withdrawn.
 
+**The live wire runs from the receiving cluster's token.** The node that serves
+the outbound links presents the token on every shipment, read from its process
+environment — `TESSARIDB_LINK_TOKEN_<NAME>`, the join token's precedent: a
+secret enters through the environment and never through the catalog. The token
+is created where the copy lives, on the inbound row, and carried to the shipping
+cluster's operator by hand; the shipment itself rides the client door as its own
+frame, one connection per batch, and is answered with the position the far side
+has durably applied through — the confirmation the at-least-once boundary is
+drawn at. A token that does not match the row's digest, or has expired, is
+refused as `Unauthenticated` before anything is applied, and the unconfirmed
+batch simply crosses again on the next pass.
+
 **`PAUSED` and `RESUMED` are the operability surface**: a stopped stream is a
-statement, not a process to hunt down. Pausing a link that has no driver yet is
-inert and answers `ok` — the surface lands before the machinery, so an operator
-can read back what they declared before anything acts on it.
+statement, not a process to hunt down. The serving loop re-reads the catalog
+every pass, so pausing holds the stream at the next tick rather than at the
+next restart, and a link declared after the node came up starts serving without
+anything being told.
 
 `REPLICATION` is read as a contextual word like `REPLICA`, so a table called
 `replication` keeps its name everywhere but directly after `DEFINE`.

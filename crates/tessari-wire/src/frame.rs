@@ -65,7 +65,18 @@ pub(crate) const MAJOR: u8 = 1;
 /// major one: a value nested inside an array carries no length of its own, so an
 /// unknown one cannot be stepped over.
 ///
-/// # Why this is 3
+/// # Why this is 8
+///
+/// 8 since a cross-cluster link's shipment crosses the client door
+/// ([`Kind::Link`]): a node at 8 answers a link ask, and a shipper offers one
+/// only to a node that said 8 or more.
+///
+/// # Why it was 7
+///
+/// 7 since the request began carrying presented vault keys and the keyed vault
+/// acts answered them (ADR-0136).
+///
+/// # Why it was 3
 ///
 /// 3 since a refusal carries its class (ADR-0117 D3): a node at 3 starts the
 /// refusal body it sends a client of 3 or more with the class byte.
@@ -82,7 +93,7 @@ pub(crate) const MAJOR: u8 = 1;
 /// sends is worse than the gap**: a peer that believed this build could redirect
 /// would have been believing something false. This build sends one, so the minor
 /// moves with the sender and not with the frame.
-pub(crate) const MINOR: u8 = 7;
+pub(crate) const MINOR: u8 = 8;
 
 /// The minor at which a peer can be sent a [`Kind::Elsewhere`] frame.
 ///
@@ -131,6 +142,17 @@ pub(crate) const KEYED: u8 = 7;
 
 /// This build's node reads the keys this build's client sends.
 const _: () = assert!(MINOR >= KEYED);
+
+/// The minor at which a node answers a [`Kind::Link`] frame — a cross-cluster
+/// link's shipment.
+///
+/// Asked by the shipper before it offers one, for [`VAULT`]'s reason: a node
+/// below it closes the connection on a kind it does not know, which would read
+/// as a network fault rather than as the version gap it is.
+pub(crate) const LINKED: u8 = 8;
+
+/// This build's node answers the link shipments this build's shipper sends.
+const _: () = assert!(MINOR >= LINKED);
 
 /// The minor at which a client is sent a refusal's class (ADR-0117 D3).
 ///
@@ -249,6 +271,17 @@ pub(crate) enum Kind {
     /// that ends the request (ADR-0125 D2) — only to a request that asked, so no
     /// earlier client is ever sent one.
     Part,
+    /// One cross-cluster link's shipment: the pair's token, the database in the
+    /// receiving cluster's spelling, and one envelope of the source's log —
+    /// answered with the position the far side has durably applied through.
+    ///
+    /// Numbered **40**: the peer link holds 39 (`StateEntries`), which the
+    /// comment beside `Progress` predates. The shipment rides the client door
+    /// rather than the peer link for the reason the peer link gives about
+    /// itself: admission there is a member certificate, and the shipping
+    /// cluster is not a member of the cluster it ships to — the pair's token is
+    /// the credential instead.
+    Link,
 }
 
 impl Kind {
@@ -263,6 +296,7 @@ impl Kind {
             Self::Vault => 17,
             Self::Progress => 37,
             Self::Part => 38,
+            Self::Link => 40,
         }
     }
 
@@ -277,6 +311,7 @@ impl Kind {
             17 => Some(Self::Vault),
             37 => Some(Self::Progress),
             38 => Some(Self::Part),
+            40 => Some(Self::Link),
             // 6-12 belong to the peer link and are refused here on purpose, so a
             // peer frame arriving on the client port closes the connection
             // instead of being misread. Everything else is simply unclaimed, and

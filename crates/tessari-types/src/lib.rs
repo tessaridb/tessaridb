@@ -71,3 +71,14 @@ pub use text::{article, parse_uuid, string_to_literal, uuid_to_text};
 pub use time::{Datetime, Duration};
 pub use value::{RecordRef, Value, ValueRange};
 pub use write_kind::WriteKind;
+
+/// The split bound the store bakes into a bare `SPLIT AUTOMATICALLY` and an
+/// inherited namespace default: a shard holding more records than this is
+/// split. The single home for the number, so the parser that fills a bare
+/// declaration and the balancer that resolves an inherited one cannot drift
+/// apart.
+pub const BARE_SPLIT_ABOVE_RECORDS: u32 = 1_000_000;
+/// The merge bound paired with [`BARE_SPLIT_ABOVE_RECORDS`]: neighbours under
+/// this together merge — a fifth of the split bound, the pairing the
+/// declare-time oscillation guard accepts with a 2.5× margin.
+pub const BARE_SPLIT_MERGE_RECORDS: u32 = 200_000;

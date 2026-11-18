@@ -369,13 +369,16 @@ impl Client {
                 Ok(Served::Elsewhere(sent))
             }
             // A node does not send a request, and a change only arrives on a
-            // connection that asked to follow — which this one has not.
+            // connection that asked to follow — which this one has not. A link
+            // answer only arrives on the connection a shipment opened, which
+            // `Shipping` reads itself rather than through this type.
             frame::Kind::Request
             | frame::Kind::Subscribe
             | frame::Kind::Change
             | frame::Kind::Vault
             | frame::Kind::Progress
-            | frame::Kind::Part => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Part
+            | frame::Kind::Link => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 
@@ -525,7 +528,8 @@ impl Feed {
             | frame::Kind::Subscribe
             | frame::Kind::Elsewhere
             | frame::Kind::Vault
-            | frame::Kind::Part => Err(Error::UnknownFrame { tag: kind.tag() }),
+            | frame::Kind::Part
+            | frame::Kind::Link => Err(Error::UnknownFrame { tag: kind.tag() }),
         }
     }
 

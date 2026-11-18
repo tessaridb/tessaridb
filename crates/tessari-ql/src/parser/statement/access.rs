@@ -10,6 +10,15 @@ use crate::ast::{
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
 
+/// The split bound a bare `SPLIT AUTOMATICALLY` bakes: a shard holding more
+/// records than this is split. The number's home is `tessari_types`, so this
+/// fill and the balancer's inherited default cannot drift apart.
+const BARE_ABOVE: u32 = tessari_types::BARE_SPLIT_ABOVE_RECORDS;
+/// The merge bound a bare `SPLIT AUTOMATICALLY` bakes: neighbours under this
+/// together merge. A fifth of [`BARE_ABOVE`], the pairing the declare-time
+/// oscillation guard accepts with a 2.5× margin.
+const BARE_MERGE_BELOW: u32 = tessari_types::BARE_SPLIT_MERGE_RECORDS;
+
 impl Parser<'_> {
     /// `DEFINE USER ada ON prod.orders ROLE editor PASSWORD '…'`
     ///
@@ -79,6 +88,14 @@ impl Parser<'_> {
             let name = self.name()?;
             let change = self.replication_change()?;
             return Ok(StatementKind::AlterReplication { name, change });
+        }
+        // The scheme a cluster is arranged over amends by the realm, the same
+        // one-clause discipline: `ADD REALM` takes the clause `DEFINE` does,
+        // `DROP REALM` names what leaves.
+        if self.eat_word("topology") {
+            let name = self.name()?;
+            let change = self.topology_change()?;
+            return Ok(StatementKind::AlterTopology { name, change });
         }
         // ADR-0118. `STORE` is already a keyword; the other two are words, since
         // reserving them would take two names away from every table.
@@ -203,8 +220,20 @@ impl Parser<'_> {
                 NamespaceChange::Replication(replication)
             } else if let Some(acknowledge) = self.acknowledgement_clause()? {
                 NamespaceChange::Acknowledge(acknowledge)
+            } else if self.eat_word("split") {
+                // The split/merge default the namespace states for the tables
+                // born into it — the table clause's two words, so the policy
+                // reads the same everywhere it is set.
+                if self.eat_word("automatically") {
+                    NamespaceChange::AutoSplit(true)
+                } else if self.eat_word("manually") {
+                    NamespaceChange::AutoSplit(false)
+                } else {
+                    return Err(self.error_here("`AUTOMATICALLY` or `MANUALLY` after `SPLIT`"));
+                }
             } else {
-                return Err(self.error_here("`REPLICATION` or `ACKNOWLEDGE` and the policy to set"));
+                return Err(self
+                    .error_here("`REPLICATION`, `ACKNOWLEDGE` or `SPLIT` and the policy to set"));
             };
             return Ok(StatementKind::AlterNamespace { name, change });
         }
@@ -342,11 +371,27 @@ impl Parser<'_> {
     /// A shard's number, as `INFO FOR TABLE` reports it.
     /// `ABOVE n RECORDS [OR w WRITES PER SECOND] MERGE BELOW m RECORDS
     /// [MIN i SHARDS] [MAX j SHARDS]` after `SPLIT AUTOMATICALLY` — every
-    /// threshold bound written, since a threshold the store chose would decide
-    /// when a table changes shape (ADR-0113 D2). `MIN` and `MAX` bound how
-    /// few and how many shards the balancing passes may leave the table with:
+    /// threshold bound the statement writes, `MIN` and `MAX` bounding how few
+    /// and how many shards the balancing passes may leave the table with:
     /// absent `MIN` reads as one shard, absent `MAX` as unbounded.
+    ///
+    /// A **bare** `SPLIT AUTOMATICALLY` — the statement ending where the
+    /// bounds would begin — bakes [`BARE_ABOVE`] and [`BARE_MERGE_BELOW`]
+    /// instead of refusing: the store publishes the thresholds it splits at
+    /// rather than declining to have any, the pairing the declare-time
+    /// oscillation guard accepts with margin, and no writes bound — the load
+    /// question is measured before any default carries it. Writing any bound
+    /// keeps the paired requirement below.
     fn auto_split(&mut self) -> Result<AutoSplit> {
+        if self.peek().is_none() || self.at_punct(Punct::Semicolon) {
+            return Ok(AutoSplit {
+                above: BARE_ABOVE,
+                writes_per_second: None,
+                merge_below: BARE_MERGE_BELOW,
+                min_shards: None,
+                max_shards: None,
+            });
+        }
         self.expect_word("above", "`ABOVE` and how many records a shard may hold")?;
         let above = self.whole_number("how many records a shard may hold")?;
         self.expect_word("records", "`RECORDS` after the count")?;

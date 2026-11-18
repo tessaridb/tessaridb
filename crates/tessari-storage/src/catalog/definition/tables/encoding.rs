@@ -58,8 +58,14 @@ impl TableDefinition {
         if self.spread {
             fields.insert(FIELD_SPREAD.to_owned(), Value::Bool(true));
         }
-        if let Some(policy) = self.auto_split {
-            fields.insert(FIELD_AUTO_SPLIT.to_owned(), policy.to_value());
+        match self.auto_split {
+            super::super::AutoSplitSetting::Inherited => {}
+            super::super::AutoSplitSetting::Off => {
+                fields.insert(FIELD_AUTO_SPLIT.to_owned(), Value::Null);
+            }
+            super::super::AutoSplitSetting::Policy(policy) => {
+                fields.insert(FIELD_AUTO_SPLIT.to_owned(), policy.to_value());
+            }
         }
         if let Some(expire) = self.expire {
             fields.insert(FIELD_EXPIRE.to_owned(), expire.to_value());
@@ -312,10 +318,16 @@ impl TableDefinition {
                     });
                 }
             },
-            auto_split: fields
-                .get(FIELD_AUTO_SPLIT)
-                .map(super::super::AutoSplit::from_value)
-                .transpose()?,
+            // Absent reads as inherited (the off every pre-setting table has
+            // always known, while its namespace says nothing), a stored null
+            // as the stated off, and the object as the declared bounds.
+            auto_split: match fields.get(FIELD_AUTO_SPLIT) {
+                None => super::super::AutoSplitSetting::Inherited,
+                Some(Value::Null) => super::super::AutoSplitSetting::Off,
+                Some(held) => super::super::AutoSplitSetting::Policy(
+                    super::super::AutoSplit::from_value(held)?,
+                ),
+            },
             expire: fields
                 .get(FIELD_EXPIRE)
                 .map(super::super::TableExpiry::from_value)

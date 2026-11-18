@@ -58,6 +58,7 @@ const FIELD_JOIN: &str = "join";
 const FIELD_RELEASING: &str = "releasing";
 const FIELD_PREFERRED: &str = "preferred";
 const FIELD_REGION: &str = "region";
+const FIELD_DOMAIN: &str = "domain";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
@@ -196,6 +197,10 @@ pub struct ReplicaDefinition {
     /// `LOCAL MAJORITY` counts its voters by (G057 C3). Written only when
     /// stated, so a row declared before it keeps its bytes.
     pub region: Option<String>,
+    /// The domain within that region (`DOMAIN 'az-1'`), when said: which
+    /// failure domain of the realm the member stands in. Written only when
+    /// stated, for the region's reason.
+    pub domain: Option<String>,
 }
 
 /// A one-time join token as the catalog keeps it: never the token itself.
@@ -263,6 +268,9 @@ impl ReplicaDefinition {
         if let Some(region) = &self.region {
             fields.insert(FIELD_REGION.to_owned(), Value::from(region.as_str()));
         }
+        if let Some(domain) = &self.domain {
+            fields.insert(FIELD_DOMAIN.to_owned(), Value::from(domain.as_str()));
+        }
         if let Some(join) = &self.join {
             fields.insert(
                 FIELD_JOIN.to_owned(),
@@ -311,6 +319,7 @@ impl ReplicaDefinition {
             releasing: flag_in(fields, FIELD_RELEASING)?,
             preferred: flag_in(fields, FIELD_PREFERRED)?,
             region: text_in(fields, FIELD_REGION)?,
+            domain: text_in(fields, FIELD_DOMAIN)?,
         })
     }
 }

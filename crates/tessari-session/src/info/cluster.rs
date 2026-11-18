@@ -7,10 +7,11 @@ use tessari_storage::{BUILD_VERSION, Catalog, Feed, Transaction};
 use tessari_types::Value;
 
 use crate::error::{Error, Result};
+use crate::outcome::Outcome;
 use crate::session::Session;
 
 use super::{
-    described_consumer, described_failover, described_follower, described_leaders,
+    by_name, described_consumer, described_failover, described_follower, described_leaders,
     described_replica, described_replication, guarantees, running_state,
 };
 
@@ -566,4 +567,210 @@ fn across_report(held: &tessari_storage::Health) -> Value {
         ("pending".to_owned(), sampled(held.across_pending)),
         ("with_intents".to_owned(), sampled(held.across_with_intents)),
     ]))
+}
+
+impl Session<'_> {
+    /// `INFO FOR TOPOLOGY main` — the declared scheme, its membership
+    /// assignment, and the survival verdicts computed live against the
+    /// membership as it stands.
+    ///
+    /// Needs `OPERATE_STORE`, decided by `Needs::of` before this runs: the
+    /// answer is the whole cluster's layout, with no smaller truthful form
+    /// to filter down to. Answers `null` when nobody has declared a scheme —
+    /// the M17 rule the failover policy answers by: built-in nothing is not
+    /// a policy, and an empty object would read as a scheme that declares
+    /// nothing, which is a different fact from a scheme that never arrived.
+    ///
+    /// The verdicts are computed from the same views the checked relations
+    /// refuse on, so the answer a report renders and the answer a refusal
+    /// names can never drift apart. `satisfied` is the scheme's claim
+    /// against the membership right now; when it is false, `relation` names
+    /// which one does not hold.
+    pub(super) async fn info_topology(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        // The views first: they hold the transaction borrow, and the catalog
+        // reads after them are fine with it released.
+        let (members, namespaces, leader_region) = self.membership_views(transaction).await?;
+        let catalog = Catalog::new(transaction);
+        let Some(held) = catalog.topology().await? else {
+            return Ok(Outcome::Value(Value::Null));
+        };
+        if held.name != name.text {
+            return Err(Error::Unknown {
+                entity: "topology",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        let topology = &held.topology;
+        let voters_total = members.iter().filter(|member| member.coordinating).count();
+        let rows = catalog.replicas().await?;
+        let mut realms = Vec::new();
+        for realm in topology.realms() {
+            let mut assigned = Vec::new();
+            for row in &rows {
+                if row.region.as_deref() == Some(realm.name()) {
+                    assigned.push(described_replica(row, &catalog).await?);
+                }
+            }
+            let mut entry = BTreeMap::from([
+                ("name".to_owned(), Value::from(realm.name())),
+                (
+                    "domains".to_owned(),
+                    Value::Array(
+                        realm
+                            .domains()
+                            .iter()
+                            .map(|domain| Value::from(domain.as_str()))
+                            .collect(),
+                    ),
+                ),
+                ("members".to_owned(), Value::Array(assigned)),
+            ]);
+            if topology.survives_realm_loss() {
+                let left = members
+                    .iter()
+                    .filter(|member| {
+                        member.coordinating && member.region.as_deref() != Some(realm.name())
+                    })
+                    .count();
+                let needed = voters_total.saturating_div(2).saturating_add(1);
+                entry.insert(
+                    "loss".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("survived".to_owned(), Value::from(left >= needed)),
+                        ("voters_left".to_owned(), count_value(left)),
+                        ("voters_needed".to_owned(), count_value(needed)),
+                    ])),
+                );
+            }
+            realms.push(Value::Object(entry));
+        }
+        let mut reported = Vec::new();
+        for namespace in &namespaces {
+            if namespace.copies < 2
+                && namespace.acknowledge != Some(tessari_types::Acknowledge::LocalMajority)
+            {
+                continue;
+            }
+            let holders = members
+                .iter()
+                .filter(|member| match &member.holds {
+                    tessari_storage::MemberHolds::Store => true,
+                    tessari_storage::MemberHolds::Namespaces(held) => held.contains(&namespace.id),
+                    tessari_storage::MemberHolds::Nothing => false,
+                })
+                .count();
+            let mut spanned: Vec<&str> = Vec::new();
+            for member in members.iter().filter(|member| {
+                matches!(&member.holds, tessari_storage::MemberHolds::Store)
+                    || matches!(&member.holds, tessari_storage::MemberHolds::Namespaces(held) if held.contains(&namespace.id))
+            }) {
+                if let Some(region) = &member.region
+                    && !spanned.contains(&region.as_str())
+                {
+                    spanned.push(region);
+                }
+            }
+            let mut entry = BTreeMap::from([
+                ("name".to_owned(), Value::from(namespace.name.as_str())),
+                (
+                    "copies".to_owned(),
+                    count_value(u64::from(namespace.copies)),
+                ),
+                (
+                    "copies_in".to_owned(),
+                    Value::Object(BTreeMap::from([
+                        ("holders".to_owned(), count_value(holders)),
+                        ("realms".to_owned(), count_value(spanned.len())),
+                    ])),
+                ),
+            ]);
+            if let Some(level) = namespace.acknowledge {
+                entry.insert(
+                    "acknowledge".to_owned(),
+                    Value::from(level.to_string().as_str()),
+                );
+                if level == tessari_types::Acknowledge::LocalMajority {
+                    let region = leader_region.clone().unwrap_or_default();
+                    let in_region = members
+                        .iter()
+                        .filter(|member| member.region.as_deref() == Some(region.as_str()))
+                        .count();
+                    let voters = members
+                        .iter()
+                        .filter(|member| {
+                            member.coordinating && member.region.as_deref() == Some(region.as_str())
+                        })
+                        .count();
+                    entry.insert(
+                        "region".to_owned(),
+                        Value::Object(BTreeMap::from([
+                            ("name".to_owned(), Value::from(region.as_str())),
+                            ("voters".to_owned(), count_value(voters)),
+                            ("members".to_owned(), count_value(in_region)),
+                        ])),
+                    );
+                }
+            }
+            reported.push(Value::Object(entry));
+        }
+        let mut report = BTreeMap::from([
+            ("name".to_owned(), Value::from(held.name.as_str())),
+            (
+                "survives_realm_loss".to_owned(),
+                Value::from(topology.survives_realm_loss()),
+            ),
+            ("realms".to_owned(), Value::Array(realms)),
+            ("namespaces".to_owned(), Value::Array(reported)),
+        ]);
+        // `satisfied` is the claim against the membership right now; the same
+        // pure check the refusals run, so the report and the refusal name one
+        // arithmetic.
+        report.insert("satisfied".to_owned(), Value::Bool(true));
+        if let Err(why) = tessari_storage::check_topology(
+            topology,
+            &members,
+            &namespaces,
+            leader_region.as_deref(),
+        ) {
+            report.insert("satisfied".to_owned(), Value::Bool(false));
+            report.insert(
+                "relation".to_owned(),
+                Value::from(match why {
+                    tessari_storage::Error::TopologyOrphanLabel { .. } => "orphan label",
+                    tessari_storage::Error::TopologyClaimBreaks { .. } => "survival claim",
+                    tessari_storage::Error::TopologyCopiesInOneRealm { .. } => "copies span realms",
+                    tessari_storage::Error::TopologyAcknowledgeWithoutVoters { .. } => {
+                        "acknowledge fit"
+                    }
+                    _ => "the scheme",
+                }),
+            );
+        }
+        Ok(Outcome::Value(Value::Object(report)))
+    }
+
+    /// `INFO FOR TOPOLOGIES` — the declared schemes, by name.
+    pub(super) async fn info_topologies(
+        &self,
+        transaction: &mut Transaction<'_>,
+    ) -> Result<BTreeMap<String, Value>> {
+        let held = Catalog::new(transaction).topology().await?;
+        Ok(BTreeMap::from([(
+            "topologies".to_owned(),
+            by_name(held.map_or_else(Vec::new, |held| vec![held.name])),
+        )]))
+    }
+}
+
+/// A count as the store's integer value, saturating at the widest integer a
+/// stored value holds rather than refusing a report over a width.
+fn count_value(count: impl TryInto<i64>) -> Value {
+    let count = count.try_into().unwrap_or(i64::MAX);
+    Value::from(count)
 }

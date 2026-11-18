@@ -36,6 +36,7 @@ fn a_stated_class_round_trips_and_a_definition_without_one_reads_as_silence() {
             replication: None,
             class: Some(class),
             acknowledge: None,
+            auto_split_default: None,
         };
         let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
         assert_eq!(read, namespace, "{class}");
@@ -65,6 +66,7 @@ fn a_stated_policy_round_trips_and_is_not_silence() {
             replication: Some(policy),
             class: None,
             acknowledge: None,
+            auto_split_default: None,
         };
         let read = NamespaceDefinition::from_value(&namespace.to_value()).unwrap();
         assert_eq!(read, namespace, "{policy}");
@@ -105,6 +107,7 @@ fn every_definition_round_trips_through_its_value() {
         replication: None,
         class: None,
         acknowledge: None,
+        auto_split_default: None,
     };
     assert_eq!(
         NamespaceDefinition::from_value(&namespace.to_value()).unwrap(),
@@ -144,7 +147,7 @@ fn every_definition_round_trips_through_its_value() {
         shards: None,
         partition: None,
         spread: false,
-        auto_split: None,
+        auto_split: super::super::AutoSplitSetting::Inherited,
         expire: None,
         // Not the default either, for the identity's reason: an empty list
         // round trips through a field that was never written.

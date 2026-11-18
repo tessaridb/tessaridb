@@ -334,9 +334,34 @@ impl Replicated {
 /// was pruned, a divergence from a record the copy already holds, or a
 /// substrate failure. The source keeps the batch and re-reads it when the
 /// refusal is retryable; a divergence is not, and is the operator's question.
+/// A shipped record the reach emptied to nothing is a position marker, and at
+/// a position the copy already holds it is a no-op, not a divergence: on a
+/// clustered receiving side the coarser logs ride the same line log every
+/// cluster writes its own local rows into — membership, leadership renewals —
+/// so at one position the copy holds its own unfiltered record while the
+/// shipment offers the source's record filtered to nothing. Both say the
+/// reach has no content at this position; the copy's own record stands. The
+/// empty marker still extends the log at a fresh position, because positions
+/// are arithmetic; a record with mutations keeps the full divergence check.
+///
+/// Returns the position applied through — the confirmation the source's
+/// at-least-once boundary is drawn at.
+///
+/// # Errors
+///
+/// Returns an error when the batch cannot be applied — a gap where a position
+/// was pruned, a divergence from a record the copy already holds, or a
+/// substrate failure. The source keeps the batch and re-reads it when the
+/// refusal is retryable; a divergence is not, and is the operator's question.
 pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
     let mut applied = envelope.from;
     for (at, record) in envelope.records {
+        if record.mutations().is_empty()
+            && at.get() <= store.committed_tail(envelope.log).await?.get()
+        {
+            applied = at;
+            continue;
+        }
         store.apply_shipped(envelope.log, at, &record).await?;
         applied = at;
     }
@@ -369,6 +394,15 @@ pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
 /// the promise is made while serving, and a link nobody is serving has no
 /// live relationship for the registry to describe either.
 ///
+/// # The persisted cursor
+///
+/// A row's `position` field is the cross-restart cache of the live truth: on
+/// the first pass the registry is seeded from every outbound row that holds
+/// one (the far side re-teaches whatever lies past it — a position at or
+/// below the copy's tail is a no-op on identical bytes), and on stop every
+/// active link's floor is written back, so a restart resumes near where the
+/// relationship stood instead of re-shipping from the origin.
+///
 /// # Errors
 ///
 /// Returns an error only when the catalog cannot be read; per-link failures
@@ -378,14 +412,17 @@ pub async fn serve_links(
     sink: &mut impl Sink,
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) -> Result<()> {
+    seed_from_rows(store).await?;
     let mut tick = tokio::time::interval(std::time::Duration::from_millis(20));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
         tokio::select! {
             biased;
             changed = stop.changed() => {
-                // The sender dropped or set the flag: either way, stop.
+                // The sender dropped or set the flag: either way, stop — and
+                // land the cursors first, while the store is still open.
                 if changed.is_err() || *stop.borrow() {
+                    persist_floors(store).await?;
                     return Ok(());
                 }
             }
@@ -406,4 +443,71 @@ pub async fn serve_links(
             }
         }
     }
+}
+
+/// Seed the registry from every outbound row that persisted a position: the
+/// cursor the last run of this relationship left, read as the floor the link's
+/// own log resumes from.
+async fn seed_from_rows(store: &Store) -> Result<()> {
+    let links = {
+        let mut reading = store.begin().await?;
+        Catalog::new(&mut reading).replications().await?
+    };
+    for definition in links.iter().filter(|held| !held.inbound) {
+        let Some(position) = definition.position else {
+            continue;
+        };
+        if let Some(log) = own_log(store, definition.database).await? {
+            store.links().advance(&definition.name, log, position);
+        }
+    }
+    Ok(())
+}
+
+/// Write every active link's floor back to its row, so a restart resumes near
+/// where the relationship stood. The far side's applied tail remains the
+/// durable truth — this cursor only saves it the re-teach.
+async fn persist_floors(store: &Store) -> Result<()> {
+    let links = {
+        let mut reading = store.begin().await?;
+        Catalog::new(&mut reading).replications().await?
+    };
+    for definition in links.iter().filter(|held| !held.inbound) {
+        let Some(log) = own_log(store, definition.database).await? else {
+            continue;
+        };
+        if !store
+            .links()
+            .floors(&definition.name)
+            .iter()
+            .any(|(held, _)| *held == log)
+        {
+            continue;
+        }
+        let floor = store
+            .links()
+            .confirmed(&definition.name, log, Sequence::new(0));
+        if definition.position == Some(floor) {
+            continue;
+        }
+        let mut transaction = store.begin().await?;
+        let amended = Catalog::new(&mut transaction)
+            .amend_replication(&definition.name, |row| row.position = Some(floor))
+            .await?;
+        if amended {
+            transaction.commit().await?;
+        }
+    }
+    Ok(())
+}
+
+/// The one log whose home is the reach itself — the log a link's position
+/// counts in, beside the parent logs whose records the reach filter empties
+/// but whose positions still ride the stream.
+async fn own_log(store: &Store, reach: Reach) -> Result<Option<LogId>> {
+    Ok(logs_of(store, reach)
+        .await?
+        .into_iter()
+        .map(|(log, _)| log)
+        .find(|log| log.home == reach))
 }

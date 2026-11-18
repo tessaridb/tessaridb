@@ -455,6 +455,7 @@ fn a_follower_of_a_recorded_leader() -> String {
             releasing: false,
             preferred: false,
             region: None,
+            domain: None,
         })
         .now()
         .expect("the leader's row");

@@ -273,4 +273,13 @@ pub enum InfoSubject {
     /// [`InfoSubject::Replication`]'s reason: an endpoint toward an external
     /// cluster has no smaller truthful form.
     Replications,
+    /// `INFO FOR TOPOLOGY main` — the declared scheme: its realms with their
+    /// domains, the member rows assigned to each, the survival verdict
+    /// computed live against the current membership, and the namespace fits.
+    /// Answers `null` when nobody has declared one — an empty object would
+    /// read as a scheme that declares nothing, which is a different fact from
+    /// a scheme that never arrived.
+    Topology(Name),
+    /// `INFO FOR TOPOLOGIES` — the declared schemes, by name.
+    Topologies,
 }

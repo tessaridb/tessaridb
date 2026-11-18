@@ -108,6 +108,7 @@ mod tests {
             releasing: false,
             preferred: false,
             region: None,
+            domain: None,
         }
     }
 

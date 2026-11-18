@@ -72,22 +72,28 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     if let Some(field) = &definition.partition {
         shape.insert("partition".to_owned(), Value::from(field.as_str()));
     }
-    // Present only on a table that splits and merges itself (ADR-0113 D2).
-    if let Some(policy) = definition.auto_split {
-        let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
-        let mut fields = std::collections::BTreeMap::new();
-        fields.insert("above".to_owned(), number(policy.above));
-        if let Some(writes) = policy.writes_per_second {
-            fields.insert("writes_per_second".to_owned(), number(writes));
+    // Present only on a table whose declaration carries the bounds
+    // (ADR-0113 D2). An inherited table reports nothing here until the
+    // shape's caller can see the namespace default — the `inherited`
+    // reading of the design worksheet rides the W4 surface pass.
+    match definition.auto_split {
+        tessari_storage::AutoSplitSetting::Inherited | tessari_storage::AutoSplitSetting::Off => {}
+        tessari_storage::AutoSplitSetting::Policy(policy) => {
+            let number = |held: u64| Value::from(i64::try_from(held).unwrap_or(i64::MAX));
+            let mut fields = std::collections::BTreeMap::new();
+            fields.insert("above".to_owned(), number(policy.above));
+            if let Some(writes) = policy.writes_per_second {
+                fields.insert("writes_per_second".to_owned(), number(writes));
+            }
+            fields.insert("merge_below".to_owned(), number(policy.merge_below));
+            if policy.min_shards > 1 {
+                fields.insert("min_shards".to_owned(), number(policy.min_shards));
+            }
+            if let Some(held) = policy.max_shards {
+                fields.insert("max_shards".to_owned(), number(held));
+            }
+            shape.insert("auto_split".to_owned(), Value::Object(fields));
         }
-        fields.insert("merge_below".to_owned(), number(policy.merge_below));
-        if policy.min_shards > 1 {
-            fields.insert("min_shards".to_owned(), number(policy.min_shards));
-        }
-        if let Some(held) = policy.max_shards {
-            fields.insert("max_shards".to_owned(), number(held));
-        }
-        shape.insert("auto_split".to_owned(), Value::Object(fields));
     }
     // Present only on a table that declared that its records expire
     // (ADR-0122 A1): the lifetime a new record gets, and whether it is in force.

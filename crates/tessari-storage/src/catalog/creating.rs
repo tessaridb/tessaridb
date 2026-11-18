@@ -39,6 +39,8 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             class: None,
             // And again: [`Self::set_acknowledgement`].
             acknowledge: None,
+            // And again: [`Self::set_auto_split_default`].
+            auto_split_default: None,
         };
         self.write(system::NAMESPACES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());
@@ -127,6 +129,35 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(definition)
     }
 
+    /// Set whether the tables born into a namespace inherit the store's baked
+    /// balancing bounds, or withdraw that default.
+    ///
+    /// The sibling of [`Self::set_acknowledgement`] and deliberately the same
+    /// shape, so the default cannot acquire a second write path the
+    /// acknowledgement level does not have. It moves between **stated**
+    /// values in both directions: turning the default on and withdrawing it
+    /// are both decisions, and either can be revisited.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::NoSuchParent`] when the namespace does not exist, and
+    /// the substrate or decoding failure otherwise.
+    pub async fn set_auto_split_default(
+        &mut self,
+        namespace: NamespaceId,
+        on: bool,
+    ) -> Result<NamespaceDefinition> {
+        let Some(mut definition) = self.namespace(namespace).await? else {
+            return Err(Error::NoSuchParent {
+                entity: "namespace",
+                id: namespace.get(),
+            });
+        };
+        definition.auto_split_default = Some(on);
+        self.write(system::NAMESPACES, namespace.get(), &definition.to_value());
+        Ok(definition)
+    }
+
     /// Create a database inside an existing namespace.
     ///
     /// # Errors
@@ -189,7 +220,24 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
                 id: database.get(),
             });
         }
-        let shards = shard::declared_for(name, &shape)?;
+        let mut shards = shard::declared_for(name, &shape)?;
+        // A table created under an inheriting default-on namespace is born
+        // split: the map exists before the first record, so every write is
+        // filed under a shard from the start (ADR-0095's invariant can only
+        // be honored at the birth). A declared `SPLIT AT` wins over the
+        // default, and an unsplit table that predates the namespace's
+        // default stays untouched — the act that would split it is refused
+        // by name, and the default does not do silently what the engine
+        // refuses to do.
+        if shards.is_none()
+            && self
+                .namespace(namespace)
+                .await?
+                .and_then(|held| held.auto_split_default)
+                .unwrap_or(false)
+        {
+            shards = Some(shard::ShardMap::whole());
+        }
         // A storage kind rides only on a plain record table or a series at
         // v1: kinds whose semantics are not record-shaped refuse the clause
         // (the design record, §10 — `StorageKindOnKind`; topics, queues and spaces
@@ -253,7 +301,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             shards,
             partition: shape.partition,
             spread: shape.spread,
-            auto_split: None,
+            auto_split: super::definition::AutoSplitSetting::Inherited,
             events: Vec::new(),
             feeds: Vec::new(),
             expire: None,

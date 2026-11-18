@@ -18,10 +18,15 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
+// bgv-allow(cast_possible_wrap): test-only binary; the usize→i64 casts size
+// fixed test fixtures beside the i64 the wire answers with, as in fault_tests.rs.
+#![allow(clippy::cast_possible_wrap)]
 
 use std::collections::BTreeMap;
 use std::net::TcpStream;
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tessari_session::Now;
 use tessari_session::RunNow;
@@ -1837,6 +1842,1977 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
+/// The pooled cluster's band — the proof set of the SG2 worksheet exercised
+/// against three operating-system processes.
+///
+/// A band of its own for the reason every cluster test here carries one: two
+/// cluster tests sharing listeners fail on each other's ports, which reads as
+/// the cluster defect neither test is about.
+const POOLED: [(&str, &str); 3] = [
+    ("127.0.0.1:47910", "127.0.0.1:47911"),
+    ("127.0.0.1:47912", "127.0.0.1:47913"),
+    ("127.0.0.1:47914", "127.0.0.1:47915"),
+];
+
+/// The pool's schema, written once through whichever node leads — NOT into
+/// each node's founding transaction. A founding preamble that declared the
+/// tenant namespaces would give every node its OWN copies, allocated from its
+/// own id counter, and the store log would then refuse to collect into them
+/// (the `WouldReinterpret` guard: nothing is deleted, and the names would be
+/// re-read through the cluster's ids) — measured on this very test, where two
+/// nodes never advanced their copy for ninety seconds and said so in their
+/// logs. The operator is declared last: the first `DEFINE USER` closes the
+/// store, so anything that must run unsigned runs before it.
+const POOLED_SCHEMA: &str = "DEFINE NAMESPACE tenant_a REPLICATION FACTOR 3; USE NAMESPACE tenant_a; \
+     DEFINE DATABASE app; USE DATABASE app; DEFINE TABLE orders SCHEMALESS; \
+     CREATE orders:1 = { total: 10 }; \
+     DEFINE NAMESPACE tenant_b REPLICATION FACTOR 3; USE NAMESPACE tenant_b; \
+     DEFINE DATABASE app; USE DATABASE app; DEFINE TABLE payroll SCHEMALESS; \
+     CREATE payroll:1 = { salary: 99 }; \
+     DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+
+/// Every pool member's row: the whole pool, subscribed whole. `REPLICATES
+/// STORE` is written deliberately here, not by default-sleeping: a node that
+/// may serve any tenant must hold every tenancy's data and credentials, and
+/// the seam is authority, not absence — `pooled_tenancy.rs` proves the same
+/// store serves one tenant's reader and refuses the other's. The NARROWER
+/// shape a blast-radius-conscious tenant wants — one node subscribed to a LIST
+/// of namespaces — does not parse today: a member row carries exactly one
+/// reach (`replicates: Option<ReachRef>`, `tessari-ql/src/ast/statement.rs`),
+/// and the second `REPLICATES` is a parse refusal. That gap is recorded in the
+/// SG2 worksheet as G-SG2-1 and is W4's decision, not this test's.
+const POOLED_ROW: &str = "ROLES serving, writable, coordinating REPLICATES STORE";
+
+#[test]
+fn a_pooled_cluster_serves_every_tenant_on_every_node_and_the_seam_holds_everywhere() {
+    // G090 SG2, proof rows P1–P3 over the wire. The in-process half of the set
+    // (`tessari-session/tests/suite/pooled_tenancy.rs`) proves the seam against
+    // one store holding every tenant; what only this can show is that the seam
+    // answers identically on three live nodes that EACH hold BOTH tenants —
+    // confinement as authority, not as placement, across real replication.
+    // Every cross-tenant attack begins at `USE`, because a record address
+    // resolves inside the selected tenancy, so the wire assertion is the seam
+    // itself and the prize it must not leak (`salary`).
+    let mut cluster = a_cluster_of_rows(
+        &POOLED,
+        "",
+        [
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    // The tenants, their data and the operator, once, through the leader — one
+    // transaction, so the log every follower collects names the namespaces
+    // from one counter and not three. Unsigned: the store is open until the
+    // schema's own last statement declares the operator, and an open store
+    // takes no sign-in — so this poll touches the guessing-throttle nowhere.
+    let schema_at = declared_through_the_leader(&POOLED, POOLED_SCHEMA, &logs);
+
+    // One application reader per tenant. Signed in as the operator, whose
+    // record exists only on the node that took the schema so far — so that
+    // node is asked FIRST, and a signed request is made at all only at a
+    // measured pace: the wire carries credentials per request, every request
+    // re-authenticates, and a sign-in for a user a node has not collected yet
+    // FAILS and feeds the store's guessing-throttle (three free failures, then
+    // doubling delays on too many recent ones). The pace keeps the failure
+    // count under the throttle's window; the poll below runs at the same pace
+    // for the same reason.
+    let declared = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        [
+            schema_at,
+            the_next_node(&POOLED, schema_at),
+            the_next_node(&POOLED, the_next_node(&POOLED, schema_at)),
+        ]
+        .into_iter()
+        .any(|index| {
+            asked(
+                POOLED[index].0,
+                "BEGIN; \
+                 DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 DEFINE USER b_app ON tenant_b.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 COMMIT;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers: Vec<Answer>| landed(&Ok::<_, String>(answers)))
+        })
+    });
+    assert!(
+        declared,
+        "no node took the per-tenant readers{}",
+        what_the_nodes_said(&POOLED, &logs)
+    );
+
+    // The pool serves each tenant's own reader on every node. One poll round
+    // per two seconds: each probe is a signed request (see the pace above),
+    // and a reader that has not reached a node yet fails its sign-in there —
+    // a few spaced failures stay under the throttle's window, and once the
+    // record lands every sign-in succeeds and the polls become free. This is
+    // also the catch-up probe: the readers were declared after the data, the
+    // log applies in order, so a node that answers a reader holds everything
+    // the test wrote.
+    let served = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        POOLED.iter().all(|(surface, _)| {
+            says(
+                surface,
+                Some(("a_app", SECRET)),
+                "USE NAMESPACE tenant_a; USE DATABASE app; SELECT * FROM orders;",
+                "total",
+            ) && says(
+                surface,
+                Some(("b_app", SECRET)),
+                "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+                "salary",
+            )
+        })
+    });
+    assert!(
+        served,
+        "the pool never served both tenants on every node{}",
+        what_the_nodes_said(&POOLED, &logs)
+    );
+
+    // The seam, on every node, in both directions: refused, naming what was
+    // asked, and never carrying the other tenancy's data. Over the wire the
+    // refusal's NAME is not carried (the class is), so the assertion pins the
+    // asked name and the absent prize rather than the variant.
+    for (surface, _) in POOLED {
+        let crossed = asked(
+            surface,
+            "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+            Some(("a_app", SECRET)),
+        )
+        .unwrap_err();
+        assert!(
+            crossed.contains("tenant_b"),
+            "the seam on {surface} refused without naming what was asked: {crossed}"
+        );
+        assert!(
+            !crossed.contains("salary"),
+            "tenant_b's data crossed the seam on {surface}: {crossed}"
+        );
+
+        let back = asked(
+            surface,
+            "USE NAMESPACE tenant_a; USE DATABASE app; SELECT * FROM orders;",
+            Some(("b_app", SECRET)),
+        )
+        .unwrap_err();
+        assert!(
+            back.contains("tenant_a"),
+            "the seam on {surface} refused without naming what was asked: {back}"
+        );
+        assert!(
+            !back.contains("total"),
+            "tenant_a's data crossed the seam on {surface}: {back}"
+        );
+    }
+}
+
+/// The three-realm exercises' bands: six nodes in three (surface, peer)
+/// pairs, two nodes per realm — one band per drill, because the suite runs
+/// tests in parallel and two drills on one band would greet each other's
+/// nodes. Derived for W3 (2026-11-17): clear of every band the suites hold.
+const SIX: [(&str, &str); 6] = [
+    ("127.0.0.1:47942", "127.0.0.1:47943"), // dc-a n1
+    ("127.0.0.1:47944", "127.0.0.1:47945"), // dc-a n2
+    ("127.0.0.1:47946", "127.0.0.1:47947"), // dc-b n1
+    ("127.0.0.1:47948", "127.0.0.1:47949"), // dc-b n2
+    ("127.0.0.1:47950", "127.0.0.1:47951"), // dc-c n1
+    ("127.0.0.1:47952", "127.0.0.1:47953"), // dc-c n2
+];
+
+/// The LOCAL MAJORITY drill's own band — the MAJORITY drill's twin, on its own
+/// ports for the reason the band comment above states.
+const SIX_LOCAL: [(&str, &str); 6] = [
+    ("127.0.0.1:47954", "127.0.0.1:47955"), // dc-a n1
+    ("127.0.0.1:47956", "127.0.0.1:47957"), // dc-a n2
+    ("127.0.0.1:47958", "127.0.0.1:47959"), // dc-b n1
+    ("127.0.0.1:47960", "127.0.0.1:47961"), // dc-b n2
+    ("127.0.0.1:47962", "127.0.0.1:47963"), // dc-c n1
+    ("127.0.0.1:47964", "127.0.0.1:47965"), // dc-c n2
+];
+
+/// [`a_cluster_of_rows`] for six members — the three-realm exercise's shape.
+/// The body is the three-node ceremony's verbatim, because everything it does
+/// (founding transaction, credentials, spawn, doors) is already `band.len()`-
+/// shaped; only the row count is fixed. A generalized harness would rename the
+/// world for one test; the clone keeps the three-node path untouched.
+fn a_six_of_rows(
+    band: &[(&'static str, &'static str)],
+    preamble: &str,
+    rows: [String; 6],
+) -> Three {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
+    for index in 0..band.len() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        let id = db.store().node_identity().now().unwrap().id;
+        db.close().now().unwrap();
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, id, &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
+        ids.push(id);
+        stores.push(store);
+    }
+
+    // The whole membership, itself included, in one transaction per node — for
+    // the reasons `a_cluster_of_rows` gives at length: idempotent replication
+    // of the rows, the role written last so the write gate never meets a
+    // half-declared cluster.
+    for (index, store) in stores.iter().enumerate() {
+        let db = tessaridb::Db::open(store).now().unwrap();
+        let mut script = format!("BEGIN; {preamble}");
+        for other in 0..band.len() {
+            let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
+            script.push_str(&format!(
+                " DEFINE REPLICA n{other} AT '{}' NODE '{named}' {};",
+                band[other].1, rows[other]
+            ));
+        }
+        let own = rows[index]
+            .strip_prefix("ROLES ")
+            .and_then(|rest| rest.split(" REPLICATES").next())
+            .unwrap();
+        script.push_str(&format!(" DEFINE NODE ROLES {own}; COMMIT;"));
+        db.session()
+            .run_now(&script)
+            .unwrap_or_else(|why| panic!("a cluster of six, declared: {why}\n{script}"));
+        db.close().now().unwrap();
+    }
+
+    let mut running: Vec<Option<Running>> = Vec::new();
+    let mut logs: Vec<std::path::PathBuf> = Vec::new();
+    let mut started_with = Vec::new();
+    for index in 0..band.len() {
+        let (leaf, key, authority) = &papers[index];
+        let log = directory.path().join(format!("n{index}")).join("node.log");
+        let seed = format!(
+            "{}@{}",
+            tessari_types::RecordId::Uuid(ids[the_next_node(band, index)]),
+            band[the_next_node(band, index)].1
+        );
+        let args: Vec<std::ffi::OsString> = [
+            stores[index].as_os_str(),
+            "--serve".as_ref(),
+            band[index].0.as_ref(),
+            "--cluster-credential".as_ref(),
+            leaf.as_ref(),
+            "--cluster-key".as_ref(),
+            key.as_ref(),
+            "--cluster-authority".as_ref(),
+            authority.as_ref(),
+            "--cluster-address".as_ref(),
+            band[index].1.as_ref(),
+            "--seed".as_ref(),
+            seed.as_ref(),
+        ]
+        .iter()
+        .map(|arg| (*arg).to_owned())
+        .collect();
+        running.push(Some(started(&args, &log)));
+        logs.push(log);
+        started_with.push(args);
+    }
+    for (client, peer) in band {
+        assert!(listening(client, Duration::from_secs(30)), "{client}");
+        assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+    }
+    Three {
+        minted,
+        fingerprints,
+        _directory: directory,
+        running,
+        logs,
+        ids,
+        started_with,
+    }
+}
+
+/// The two clusters of the 2-DC proof — 48068-48069, a band of its own, above
+/// every other band this suite holds (derived from the tree's own ports, the
+/// way the SG3 bands were). Two INDEPENDENT nodes: no peer doors, no cluster
+/// credentials — the link is the only seam between them.
+const LINK_PRIMARY: &str = "127.0.0.1:48068";
+const LINK_DR: &str = "127.0.0.1:48069";
+
+/// How many records the copy of `prod.shop.orders` holds, read as the operator.
+fn order_count_at(surface: &str) -> Result<usize, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    match client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;",
+            Some(("operator", SECRET)),
+        )
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records.len()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+#[test]
+fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
+    // G090 SG4 W2's exit, live: two processes, one link, a write at the source
+    // reads at the destination. The DR comes up the deferred-D8 way — a
+    // snapshot of the primary, the source's replication row dropped, the
+    // inbound half declared over the restored database, and the token the
+    // pair binds by created there and carried to the primary's environment.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+
+    // The primary: the schema, its data, and the outbound half. The link is
+    // declared before the user exists — the store is open until its first
+    // user is defined, and the link names no credential.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48069' FOR DATABASE prod.shop; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+
+    // The DR's bootstrap: the snapshot. The snapshot carried the primary's
+    // `east` row and the operator — the store is closed from its first
+    // statement, so its half of the link is configured over the wire, signed,
+    // once its node is up.
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let dr = {
+        let log = directory.path().join("dr/node.log");
+        let writing = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        let child = Command::new(TESSARIDB)
+            .arg(&dr_store)
+            .args(["--serve", LINK_DR])
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(writing))
+            .spawn()
+            .unwrap();
+        Running(child)
+    };
+    assert!(listening(LINK_DR, Duration::from_secs(30)));
+
+    // The copy the snapshot built holds the pre-link record.
+    assert_eq!(
+        order_count_at(LINK_DR).expect("the restored copy reads"),
+        1,
+        "the snapshot's record is the copy's starting point"
+    );
+
+    // The DR's half: the source's row dropped — it names an endpoint this
+    // cluster must not serve — the inbound half declared over the restored
+    // database, and the token the pair binds by, created on this side and
+    // carried to the primary's operator by the test the way an operator
+    // carries it by hand.
+    let token = {
+        let mut client = Client::connect(LINK_DR).unwrap();
+        let answered = client
+            .run(
+                "DROP REPLICATION east; \
+                 DEFINE REPLICATION west FROM '127.0.0.1:48068' FOR DATABASE prod.shop; \
+                 CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                Some(("operator", SECRET)),
+            )
+            .unwrap_or_else(|why| panic!("the DR's half of the link: {why}"));
+        match answered.last() {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+
+    // The primary, the token in its environment — the secret enters through
+    // the environment, never the catalog.
+    let primary = {
+        let log = directory.path().join("primary/node.log");
+        let writing = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&log)
+            .unwrap();
+        let child = Command::new(TESSARIDB)
+            .arg(&primary_store)
+            .args(["--serve", LINK_PRIMARY])
+            .env("TESSARIDB_LINK_TOKEN_EAST", &token)
+            .stdout(Stdio::null())
+            .stderr(Stdio::from(writing))
+            .spawn()
+            .unwrap();
+        Running(child)
+    };
+    assert!(listening(LINK_PRIMARY, Duration::from_secs(30)));
+    let _both = (primary, dr);
+
+    // A write made after both nodes came up crosses on the link's own cadence.
+    let mut client = Client::connect(LINK_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };",
+            Some(("operator", SECRET)),
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(LINK_DR).is_ok_and(|count| count == 2)
+    });
+    assert!(converged, "the write at the primary reached the copy");
+
+    // And the copy stays read-only by its declaration: its own writer is the
+    // other cluster.
+    let mut reading = Client::connect(LINK_DR).unwrap();
+    let refused = reading
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:3 = { item: 'sneaky' };",
+            Some(("operator", SECRET)),
+        )
+        .expect_err("the copy refuses its own divergent writes");
+    assert!(
+        refused.to_string().contains("read-only"),
+        "the refusal names the read-only: {refused}"
+    );
+}
+
+/// The 2-DC exercise's bands — two three-node regions on twelve ports derived
+/// from the tree the way the SG3 bands were: everything through 48070 is taken
+/// (the W2 pair sits at the top), so the exercise owns 48071-48082. Each entry
+/// is one node's (client door, peer door).
+const PRIMARY_DC: [(&str, &str); 3] = [
+    ("127.0.0.1:48071", "127.0.0.1:48072"), // primary n1
+    ("127.0.0.1:48073", "127.0.0.1:48074"), // primary n2
+    ("127.0.0.1:48075", "127.0.0.1:48076"), // primary n3
+];
+const DR_DC: [(&str, &str); 3] = [
+    ("127.0.0.1:48077", "127.0.0.1:48078"), // dr n1
+    ("127.0.0.1:48079", "127.0.0.1:48080"), // dr n2
+    ("127.0.0.1:48081", "127.0.0.1:48082"), // dr n3
+];
+
+/// How many orders the primary seeds before the backup the DR restores from.
+const SEEDED: usize = 5;
+
+/// The exercise's poll interval for SIGNED questions. The wire re-authenticates
+/// every request (`paced_until`'s reason), and a faster cadence would feed the
+/// guessing throttle between the sampler's own reads.
+const SIGNED_POLL: Duration = Duration::from_millis(500);
+
+/// A region declared but not yet started — the exercise's harness shape.
+/// Splitting the declaration from the spawn is what lets the exercise take the
+/// primary's backup, and restore it into the DR's stores, while every store is
+/// still a file no process holds.
+struct Declared {
+    directory: tempfile::TempDir,
+    minted: Minted,
+    stores: Vec<std::path::PathBuf>,
+    ids: Vec<[u8; 16]>,
+    papers: Vec<(String, String, String)>,
+    fingerprints: Vec<String>,
+}
+
+/// Declare a three-node region: learn each store's identity, optionally
+/// restore a membership-free backup over EVERY store, then the founding
+/// transaction on every store — the whole membership in ONE transaction, roles
+/// written last, for the reasons `a_cluster_of_rows` gives at length.
+///
+/// # Every store restores, and the followers' collect is the known cost
+///
+/// The backup is restored into all three stores: every node holds the data
+/// and no election can seat an empty leader (the two empty stores of a
+/// one-restored-node shape can grant each other a majority, and the leader
+/// they seat holds nothing — measured at W3). What the engine then refuses is
+/// the FOLLOWERS' collect: a node holding namespaces of its own may not
+/// collect, the id-allocation guard says, so the followers' copies stay at
+/// the restored state and a read at one gathers from the leader. The
+/// exercise kills the primary region, never the DR, and aims its reads at the
+/// leaders; a failover INSIDE the DR would need the followers emptied first,
+/// which is the shape the guard's own message prescribes. The backup must
+/// carry no membership of its own: a backup of a clustered store carries its
+/// peer rows, and the write gate (ADR-0069) then refuses the founding
+/// transaction — a store that wakes naming peers in committed membership and
+/// holding no leadership may not write, not even the drop of the stale rows.
+fn declare_region(band: &Band, restore: Option<&std::path::Path>) -> Declared {
+    let directory = tempfile::tempdir().unwrap();
+    let minted = Minted::new();
+    let mut stores = Vec::new();
+    let mut ids = Vec::new();
+    let mut papers = Vec::new();
+    let mut fingerprints = Vec::new();
+    for index in 0..band.len() {
+        let home = directory.path().join(format!("n{index}"));
+        std::fs::create_dir_all(&home).unwrap();
+        let store = home.join("store");
+        // The identity is generated on first open, and a backup never carries
+        // it (ADR-0018 §1: it lives in the META keyspace precisely so that
+        // restoring onto a fresh machine produces a different node rather than
+        // a second claimant to the first one's id).
+        let db = tessaridb::Db::open(&store).now().unwrap();
+        ids.push(db.store().node_identity().now().unwrap().id);
+        db.close().now().unwrap();
+        if let Some(backup) = restore {
+            let restored = Command::new(TESSARIDB)
+                .arg(&store)
+                .arg("--restore")
+                .arg(backup)
+                .output()
+                .unwrap();
+            assert!(
+                restored.status.success(),
+                "the restore into n{index}: {:?}",
+                String::from_utf8_lossy(&restored.stderr)
+            );
+        }
+        let (paper, fingerprint) = credentials_fingerprinted(&minted, ids[index], &home);
+        papers.push(paper);
+        fingerprints.push(fingerprint);
+        stores.push(store);
+    }
+    // Every store declares the whole membership in one transaction
+    // (ADR-0069, roles last), over its restored copy: all three hold the
+    // seed, so whoever the election seats holds the data. The known costs,
+    // chosen over the alternatives measured at W3: a node holding namespaces
+    // of its own is refused the collect, so the followers' copies stay at
+    // the restored state — a read at one gathers from the leader, and the
+    // namespace runs REPLICATION FACTOR 1, its own majority, so writes never
+    // wait for copies the followers cannot hold. (Two empty voters can grant
+    // each other a majority and seat a leader with nothing; one voter stands
+    // for nothing at all; and a copy-hungry replication factor starves
+    // waiting for acknowledgements the refused collect can never send.)
+    for store in &stores {
+        let db = tessaridb::Db::open(store).now().unwrap();
+        let mut script = String::from("BEGIN;");
+        for other in 0..band.len() {
+            let named = tessari_types::RecordId::Uuid(ids[other]).to_string();
+            script.push_str(&format!(
+                " DEFINE REPLICA r{other} AT '{}' NODE '{named}' ROLES serving, writable, coordinating REPLICATES STORE;",
+                band[other].1
+            ));
+        }
+        script.push_str(" DEFINE NODE ROLES serving, writable, coordinating; COMMIT;");
+        db.session()
+            .run_now(&script)
+            .unwrap_or_else(|why| panic!("a region of three, declared: {why}\n{script}"));
+        db.close().now().unwrap();
+    }
+    Declared {
+        directory,
+        minted,
+        stores,
+        ids,
+        papers,
+        fingerprints,
+    }
+}
+
+impl Declared {
+    /// Start every node of the region, one process per store, and wait for
+    /// every door. The spawn shape is the ceremony's verbatim, for its reasons.
+    fn start(self, band: &Band) -> Three {
+        let mut running = Vec::new();
+        let mut logs = Vec::new();
+        let mut started_with = Vec::new();
+        for index in 0..band.len() {
+            let (leaf, key, authority) = &self.papers[index];
+            let log = self
+                .directory
+                .path()
+                .join(format!("n{index}"))
+                .join("node.log");
+            let seed = format!(
+                "{}@{}",
+                tessari_types::RecordId::Uuid(self.ids[the_next_node(band, index)]),
+                band[the_next_node(band, index)].1
+            );
+            let args: Vec<std::ffi::OsString> = [
+                self.stores[index].as_os_str(),
+                "--serve".as_ref(),
+                band[index].0.as_ref(),
+                "--cluster-credential".as_ref(),
+                leaf.as_ref(),
+                "--cluster-key".as_ref(),
+                key.as_ref(),
+                "--cluster-authority".as_ref(),
+                authority.as_ref(),
+                "--cluster-address".as_ref(),
+                band[index].1.as_ref(),
+                "--seed".as_ref(),
+                seed.as_ref(),
+            ]
+            .iter()
+            .map(|arg| (*arg).to_owned())
+            .collect();
+            running.push(Some(started(&args, &log)));
+            logs.push(log);
+            started_with.push(args);
+        }
+        for (client, peer) in band {
+            assert!(listening(client, Duration::from_secs(30)), "{client}");
+            assert!(listening(peer, Duration::from_secs(30)), "{peer}");
+        }
+        Three {
+            minted: self.minted,
+            fingerprints: self.fingerprints,
+            _directory: self.directory,
+            running,
+            logs,
+            ids: self.ids,
+            started_with,
+        }
+    }
+}
+
+/// Kill node `index` of `cluster` and start it again on its own store, with
+/// `env` added. The only way a link token reaches a region's shipper is the
+/// process environment, which is read at start — binding a pair restarts the
+/// region with the token in its environment. This is the operator's restart,
+/// scripted.
+fn respawn(cluster: &mut Three, index: usize, client: &str, env: &[(&str, &str)]) {
+    cluster.running[index] = None;
+    let writing = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&cluster.logs[index])
+        .unwrap();
+    let mut command = Command::new(TESSARIDB);
+    command
+        .args(&cluster.started_with[index])
+        .envs(env.iter().copied())
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing));
+    cluster.running[index] = Some(Running(command.spawn().unwrap()));
+    assert!(listening(client, Duration::from_secs(30)), "{client}");
+}
+
+/// The `cluster.leaders` rows of `surface`'s `INFO FOR NODE` — (range, node
+/// id) pairs, the read an operator makes before aiming anything at the node
+/// leading a range.
+fn leaders_at(
+    surface: &str,
+    who: Option<(&str, &str)>,
+) -> Result<Vec<(String, [u8; 16], i64)>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("INFO FOR NODE;", who)
+        .map_err(|why| why.to_string())?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return Err(format!("not a report: {answers:?}"));
+    };
+    let Some(tessari_types::Value::Object(cluster)) = report.get("cluster") else {
+        return Err(format!("no cluster group: {report:?}"));
+    };
+    let Some(tessari_types::Value::Array(rows)) = cluster.get("leaders") else {
+        return Err(format!("no leaders in the cluster group: {cluster:?}"));
+    };
+    rows.iter()
+        .map(|row| match row {
+            tessari_types::Value::Object(fields) => {
+                let range = match fields.get("range") {
+                    Some(tessari_types::Value::String(spelled)) => spelled.clone(),
+                    other => return Err(format!("a leader's range: {other:?}")),
+                };
+                let node = match fields.get("node") {
+                    Some(tessari_types::Value::Uuid(id)) => *id,
+                    other => return Err(format!("a leader's node: {other:?}")),
+                };
+                let epoch = match fields.get("epoch") {
+                    Some(tessari_types::Value::Number(tessari_types::Number::Integer(at))) => *at,
+                    other => return Err(format!("a leader's epoch: {other:?}")),
+                };
+                Ok((range, node, epoch))
+            }
+            other => Err(format!("a leader row: {other:?}")),
+        })
+        .collect()
+}
+
+/// Which node of `band` leads `range`, or `None` while no majority has
+/// granted the epoch yet. The range is spelled the report spells it — "STORE"
+/// for the store line: prod carries no placement, so its writer is the store
+/// line's leader, and that is the node a link aims at.
+/// Which node of `band` leads `range`, and under which epoch — the row with
+/// the HIGHEST epoch any node reports. A restarted node can wake with a
+/// leaders table naming a leadership the election has already replaced; the
+/// newest epoch is the one that stands.
+fn leader_of(
+    band: &Band,
+    ids: &[[u8; 16]],
+    range: &str,
+    who: Option<(&str, &str)>,
+) -> Option<(usize, i64)> {
+    let mut found: Option<(usize, i64)> = None;
+    for (surface, _) in band {
+        if let Ok(leaders) = leaders_at(surface, who) {
+            for (held, node, epoch) in leaders {
+                if held != range {
+                    continue;
+                }
+                if let Some(at) = ids.iter().position(|id| *id == node)
+                    && found.is_none_or(|(_, seen)| epoch > seen)
+                {
+                    found = Some((at, epoch));
+                }
+            }
+        }
+    }
+    found
+}
+
+/// Whether the region has settled: the store line's leader and epoch are the
+/// same across a gap. A renewal keeps its epoch, so a stable leader reads
+/// constant; the seconds after a (re)start ratchet the epoch while the
+/// election re-resolves, and a writer let in that window meets a lease that
+/// may lapse mid-batch — which re-elects the region and re-epochs the link's
+/// unconfirmed tail, and the copy's divergence check then refuses what is
+/// honestly a fork of the source.
+fn settled(band: &Band, ids: &[[u8; 16]], who: Option<(&str, &str)>) -> bool {
+    let Some(first) = leader_of(band, ids, "STORE", who) else {
+        return false;
+    };
+    std::thread::sleep(Duration::from_secs(2));
+    leader_of(band, ids, "STORE", who) == Some(first)
+}
+
+/// `INFO FOR REPLICATION <name>` at `surface`, as the object it answers.
+fn replication_at(
+    surface: &str,
+    name: &str,
+    who: Option<(&str, &str)>,
+) -> Result<BTreeMap<String, tessari_types::Value>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run(&format!("INFO FOR REPLICATION {name};"), who)
+        .map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Value {
+            value: tessari_types::Value::Object(report),
+            ..
+        }) => Ok(report.clone()),
+        other => Err(format!("not a replication report: {other:?}")),
+    }
+}
+
+/// The `declared.direction` of a link's report — "outbound" or "inbound".
+fn report_direction(report: &BTreeMap<String, tessari_types::Value>) -> String {
+    match report.get("declared") {
+        Some(tessari_types::Value::Object(declared)) => match declared.get("direction") {
+            Some(tessari_types::Value::String(held)) => held.clone(),
+            other => panic!("the direction: {other:?}"),
+        },
+        other => panic!("the declared group: {other:?}"),
+    }
+}
+
+/// The link's own confirmed position for the `prod.shop` log — the `served`
+/// group, live from the in-memory registry (it dies with the process by
+/// design and is empty until the link serves again).
+fn confirmed_for_prod_at(surface: &str, name: &str, who: Option<(&str, &str)>) -> Option<i64> {
+    let report = replication_at(surface, name, who).ok()?;
+    let Some(tessari_types::Value::Object(served)) = report.get("served") else {
+        return None;
+    };
+    let Some(tessari_types::Value::Array(rows)) = served.get("confirmed") else {
+        return None;
+    };
+    rows.iter().find_map(|row| match row {
+        tessari_types::Value::Object(fields)
+            if matches!(fields.get("log"), Some(tessari_types::Value::String(spelled)) if spelled == "DATABASE prod.shop") =>
+        {
+            match fields.get("confirmed") {
+                Some(tessari_types::Value::Number(tessari_types::Number::Integer(at))) => Some(*at),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// How many orders the copy holds, asked without credentials: the restored
+/// follower's store never collected the user row (its collect is refused, the
+/// region's guard), so it stays open and answers whoever asks — gathering
+/// what it does not hold from the leader, which is the read the shape owes.
+fn unsigned_order_count_at(surface: &str) -> Result<usize, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    match client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;",
+            None,
+        )
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records.len()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+/// The load writer: batches of twenty orders until `acked` reaches `target`,
+/// stopping early when the connection dies (the region was killed mid-batch).
+/// Record ids come from the shared counter so a second writer continues where
+/// the first stopped. Each batch is aimed at the node leading the store line
+/// AS OF THAT BATCH: a restarted node can wake with a leaders table naming a
+/// leadership the election has already replaced, and the refusal that names
+/// `holds no leadership` is the signal to re-discover and re-aim, which is
+/// what a client of a re-pointing deployment does.
+fn order_writer(
+    band: Band,
+    ids: Arc<Vec<[u8; 16]>>,
+    target: &Arc<AtomicUsize>,
+    acked: &Arc<AtomicUsize>,
+    next: &Arc<AtomicUsize>,
+) -> std::thread::JoinHandle<()> {
+    let target = Arc::clone(target);
+    let acked = Arc::clone(acked);
+    let next = Arc::clone(next);
+    std::thread::spawn(move || {
+        let mut client: Option<Client> = None;
+        while acked.load(Ordering::Relaxed) < target.load(Ordering::Relaxed) {
+            if client.is_none() {
+                let Some((leader, _)) = leader_of(&band, &ids, "STORE", Some(("operator", SECRET)))
+                else {
+                    std::thread::sleep(SIGNED_POLL);
+                    continue;
+                };
+                client = Client::connect(band[leader].0).ok();
+            }
+            let mut script = String::from("BEGIN; USE NAMESPACE prod DATABASE shop;");
+            for _ in 0..20 {
+                let at = next.fetch_add(1, Ordering::Relaxed);
+                script.push_str(&format!(" CREATE orders:{at} = {{ item: 'load' }};"));
+            }
+            script.push_str(" COMMIT;");
+            let Some(connection) = client.as_mut() else {
+                break;
+            };
+            match connection.run(&script, Some(("operator", SECRET))) {
+                Ok(_) => {
+                    acked.fetch_add(20, Ordering::Relaxed);
+                }
+                Err(why) if why.to_string().contains("holds no leadership") => {
+                    client = None;
+                }
+                Err(why) if why.to_string().contains("no longer accepting writes") => {
+                    // The lease lapsed between one batch and the next — the
+                    // region re-elected, and the writer re-learns its aim the
+                    // way a client of a re-pointing deployment does.
+                    client = None;
+                }
+                Err(why) if why.to_string().contains("is committed on this node") => {
+                    // ADR-0106 D4: the batch IS committed — visible on the
+                    // leader from that moment — and only the answer waited
+                    // out the followers' collect. The record crosses the
+                    // link; the exercise measures the seam, not the
+                    // intra-region acknowledgement timing. One transaction,
+                    // so the count is exact. This is the answer `landed`
+                    // reads the same way.
+                    acked.fetch_add(20, Ordering::Relaxed);
+                }
+                Err(why) => {
+                    println!("[2DC] the writer stopped: {why}");
+                    break;
+                }
+            }
+            // A breath between batches: back-to-back transactions starve the
+            // leader's renewal cadence on a debug build, and a lapsed lease
+            // re-elects the region, which re-epochs the link's unconfirmed
+            // tail. The load is still two hundred writes over about a
+            // minute; the sampler keeps measuring while they land.
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    })
+}
+
+/// Run `script` at the node currently leading `range`, re-discovering and
+/// re-aiming when the refusal says the leadership moved between the read that
+/// chose the node and the write that lands.
+fn at_the_leader(
+    band: &Band,
+    ids: &[[u8; 16]],
+    range: &str,
+    who: Option<(&str, &str)>,
+    script: &str,
+) -> Vec<Answer> {
+    for _ in 0..8 {
+        let Some((leader, _)) = leader_of(band, ids, range, who) else {
+            std::thread::sleep(SIGNED_POLL);
+            continue;
+        };
+        match Client::connect(band[leader].0).unwrap().run(script, who) {
+            Ok(answers) => return answers,
+            Err(why) if why.to_string().contains("holds no leadership") => {
+                std::thread::sleep(SIGNED_POLL);
+            }
+            Err(why) => panic!("the leader's write was refused: {why}"),
+        }
+    }
+    panic!("no node leading {range} took the write");
+}
+
+#[test]
+#[ignore = "parked on the worksheet's named gaps: a clustered region around a              restored store is refused by shipped machinery six ways (W3,              D-SG4-13) — the guard's collect refusal, the write gate, the              election race, the acknowledgement starvation, the lease churn              under load, the line-log divergence across clusters. Runs green              the day the gaps close."]
+fn two_regions_hold_one_database_over_a_link_and_fail_over_and_back() {
+    // G090 SG4 W3 — the exercise, live: two three-node regions, one protected
+    // database, the measured lag, the failover and the fail-back rehearsed.
+    // The receiving side aims at the node leading the copy — the intake fills
+    // one node, and the region's own per-log collect fans the copy out from
+    // its leader — so the DR's leader for prod is discovered from the report
+    // before the link is declared (the deployment convention the page records).
+    let directory = tempfile::tempdir().unwrap();
+
+    // The data both regions bootstrap from. A standalone store holds the
+    // schema and the seed and NOTHING else: a backup of a clustered store
+    // would carry its peer rows, and the write gate would then refuse each
+    // restored store's founding transaction — a store that wakes naming peers
+    // in committed membership and holding no leadership may not write, not
+    // even the drop of the stale rows. The snapshot a region restores must
+    // carry the data alone. No user, no link row: the snapshot predates both,
+    // which leaves every restored store open for its founding transaction.
+    // A stretched failover policy rides the snapshot into both regions: the
+    // lease the default policy holds is outlived by a renewal canvass against
+    // a busy debug build, and a lapsed lease re-elects the region, which
+    // re-epochs the link's unconfirmed tail. The lease is the shipped knob
+    // for exactly this; the seam is the exercise's subject, not the tuning.
+    let seeding = "DEFINE NAMESPACE prod REPLICATION FACTOR 1; USE NAMESPACE prod; \
+                   DEFINE DATABASE shop; USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                   CREATE orders:1 = { item: 'book' }; CREATE orders:2 = { item: 'map' }; \
+                   CREATE orders:3 = { item: 'lamp' }; CREATE orders:4 = { item: 'rope' }; \
+                   CREATE orders:5 = { item: 'tin' }; USE NAMESPACE prod DATABASE shop; \
+                   DEFINE FAILOVER AWARENESS 3s COLLECTION 2s ROUND 1s CAMPAIGN 2s LEASE 10s;";
+    let builder = directory.path().join("builder/store");
+    std::fs::create_dir_all(builder.parent().unwrap()).unwrap();
+    {
+        let db = tessaridb::Db::open(&builder).now().unwrap();
+        db.session()
+            .run_now(seeding)
+            .unwrap_or_else(|why| panic!("the seed data: {why}\n{seeding}"));
+        db.close().now().unwrap();
+    }
+    let backup = directory.path().join("prod.backup");
+    let taken = Command::new(TESSARIDB)
+        .arg(&builder)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // Both regions restore the same membership-free snapshot: each node its
+    // own identity, the data at the same ids on both sides — which is what
+    // the link's `FOR DATABASE prod.shop` resolves to, everywhere.
+    let primary = declare_region(&PRIMARY_DC, Some(&backup));
+    let dr = declare_region(&DR_DC, Some(&backup));
+    let mut dr = dr.start(&DR_DC);
+    let mut primary = primary.start(&PRIMARY_DC);
+
+    // The DR's store-line leader — unsigned while the restored store is open.
+    // prod carries no placement: its writer is the store line's leader, and
+    // that is the node the link aims at.
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&DR_DC, &dr.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "the DR region elected no store-line leader{}",
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+    let dr_leader = leader_of(&DR_DC, &dr.ids, "STORE", None)
+        .expect("the DR's leader")
+        .0;
+
+    // The primary's store-line leader — the write that declares the link has
+    // to land somewhere, and only the node a majority granted takes it.
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&PRIMARY_DC, &primary.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "the primary region elected no store-line leader{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader_at = leader_of(&PRIMARY_DC, &primary.ids, "STORE", None)
+        .expect("the primary's leader")
+        .0;
+
+    // The halves of the link. At the primary: the outbound row, then the user
+    // — one unsigned script; the store is open until its own last statement.
+    // At the DR: the inbound row on the node leading the copy, the token the
+    // pair binds by, then the DR's own operator.
+    let east = format!(
+        "DEFINE REPLICATION east TO '{}' FOR DATABASE prod.shop; \
+         DEFINE USER operator ROLE owner PASSWORD '{SECRET}';",
+        DR_DC[dr_leader].0
+    );
+    Client::connect(PRIMARY_DC[primary_leader_at].0)
+        .unwrap()
+        .run(&east, None)
+        .unwrap_or_else(|why| panic!("the primary's half of the link: {why}"));
+    let west = format!(
+        "DEFINE REPLICATION west FROM '{}' FOR DATABASE prod.shop; \
+         CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m; \
+         DEFINE USER operator ROLE owner PASSWORD '{SECRET}';",
+        PRIMARY_DC[0].0
+    );
+    let token = {
+        let answered = Client::connect(DR_DC[dr_leader].0)
+            .unwrap()
+            .run(&west, None)
+            .unwrap_or_else(|why| panic!("the DR's half of the link: {why}"));
+        match answered.get(1) {
+            Some(Answer::Value {
+                value: tessaridb::Value::String(held),
+                ..
+            }) => held.clone(),
+            other => panic!("the token is the second statement's answer: {other:?}"),
+        }
+    };
+
+    // The token reaches every primary node's shipper through the environment,
+    // which is read at process start — binding the pair restarts the region.
+    for (index, (client, _)) in PRIMARY_DC.iter().enumerate() {
+        respawn(
+            &mut primary,
+            index,
+            client,
+            &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+        );
+    }
+    // The region settles before the writer is let in: the seconds after the
+    // restart ratchet the store line's epoch while the election re-resolves,
+    // and a writer that meets a lapsing lease re-epochs the link's tail.
+    let settled_down = until(Duration::from_secs(90), || {
+        settled(&PRIMARY_DC, &primary.ids, Some(("operator", SECRET)))
+    });
+    assert!(
+        settled_down,
+        "the primary region settled no store-line leadership{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader = leader_of(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+    )
+    .expect("the primary's leader")
+    .0;
+
+    // Phase 1 — the link. The copy holds the seed and refuses its own writes,
+    // the report carries the direction on both sides, and the link itself
+    // confirms the seed's positions.
+    assert_eq!(
+        order_count_at(DR_DC[dr_leader].0).expect("the copy reads"),
+        SEEDED,
+        "the restored copy is the link's starting point"
+    );
+    let refused = Client::connect(DR_DC[dr_leader].0)
+        .unwrap()
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'sneaky' };",
+            Some(("operator", SECRET)),
+        )
+        .expect_err("the copy refuses its own divergent writes");
+    assert!(
+        refused.to_string().contains("read-only"),
+        "the refusal names the read-only: {refused}"
+    );
+    let east_report = replication_at(
+        PRIMARY_DC[primary_leader].0,
+        "east",
+        Some(("operator", SECRET)),
+    )
+    .expect("the east report reads");
+    assert_eq!(report_direction(&east_report), "outbound");
+    let west_report = replication_at(DR_DC[dr_leader].0, "west", Some(("operator", SECRET)))
+        .expect("the west report reads");
+    assert_eq!(report_direction(&west_report), "inbound");
+    // The seed never crosses: the snapshot carried it and the link starts at
+    // the snapshot's edge (the row has no cursor; log_start is the restored
+    // position plus one). The count above is the seed's proof; the link's
+    // first confirmation arrives with the first live write, in phase 2.
+
+    // Phase 2 — the lag under load. A writer at the primary's leader; a
+    // sampler asking the DR how much it holds. Acknowledged minus visible is
+    // the lag in records, live; the wall clock from the last acknowledged
+    // write to its visibility is the crossing.
+    let target = Arc::new(AtomicUsize::new(0));
+    let acked = Arc::new(AtomicUsize::new(0));
+    let next = Arc::new(AtomicUsize::new(SEEDED + 1));
+    target.store(200, Ordering::Relaxed);
+    let ids = Arc::new(primary.ids.clone());
+    let writer = order_writer(PRIMARY_DC, Arc::clone(&ids), &target, &acked, &next);
+    let mut max_lag = 0_usize;
+    let mut confirmed_moving = 0_i64;
+    while !writer.is_finished() {
+        let acked_now = acked.load(Ordering::Relaxed);
+        if let Ok(held) = order_count_at(DR_DC[dr_leader].0) {
+            let lag = acked_now.saturating_sub(held.saturating_sub(SEEDED));
+            max_lag = max_lag.max(lag);
+        }
+        if let Some(at) = confirmed_for_prod_at(
+            PRIMARY_DC[primary_leader].0,
+            "east",
+            Some(("operator", SECRET)),
+        ) {
+            confirmed_moving = confirmed_moving.max(at);
+        }
+        std::thread::sleep(SIGNED_POLL);
+    }
+    writer.join().unwrap();
+    assert_eq!(
+        acked.load(Ordering::Relaxed),
+        200,
+        "the writer wrote its load\nprimary:{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let quiesced_at = Instant::now();
+    let crossed = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        order_count_at(DR_DC[dr_leader].0).is_ok_and(|count| count == SEEDED + 200)
+    });
+    assert!(
+        crossed,
+        "the load crossed the link\nprimary:{}\nDR:{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs),
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+    let crossing = quiesced_at.elapsed();
+    let confirmed_rest = confirmed_for_prod_at(
+        PRIMARY_DC[primary_leader].0,
+        "east",
+        Some(("operator", SECRET)),
+    )
+    .unwrap_or(0);
+    assert!(
+        confirmed_moving > 0 && confirmed_rest >= (SEEDED + 200) as i64,
+        "the link's report advanced live and rests at the tail: \
+         moving={confirmed_moving} rest={confirmed_rest}"
+    );
+    println!(
+        "[2DC] lag_records_max={max_lag} crossing_ms={} confirmed_at_rest={confirmed_rest}",
+        crossing.as_millis()
+    );
+
+    // Phase 3 — the failover. The region dies mid-write: the writer keeps
+    // going and the primary's processes are killed with its next batch in
+    // flight. What the DR holds against what the primary acknowledged is the
+    // honest RPO, in records, at the cut.
+    target.store(300, Ordering::Relaxed);
+    let writer = order_writer(PRIMARY_DC, Arc::clone(&ids), &target, &acked, &next);
+    let reached = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        acked.load(Ordering::Relaxed) >= 260
+    });
+    assert!(reached, "the writer reached the kill point");
+    // One breath: everything acknowledged a breath ago has crossed (the
+    // shipper ticks in milliseconds), so only the in-flight batch can be lost.
+    std::thread::sleep(SIGNED_POLL);
+    let acknowledged = SEEDED + acked.load(Ordering::Relaxed);
+    primary.running[0] = None;
+    primary.running[1] = None;
+    primary.running[2] = None;
+    writer.join().unwrap();
+    std::thread::sleep(SIGNED_POLL * 2);
+    let visible = order_count_at(DR_DC[dr_leader].0).expect("the DR reads after the kill");
+    let rpo_loss = acknowledged.saturating_sub(visible);
+    assert!(
+        rpo_loss <= 20,
+        "only the in-flight batch can be lost: acknowledged={acknowledged} visible={visible}"
+    );
+    println!(
+        "[2DC] acknowledged_at_cut={acknowledged} visible_at_cut={visible} rpo_loss_records={rpo_loss}"
+    );
+
+    // The cut: the inbound link drops, the read-only lifts, and the DR takes
+    // the write — which fans out across the region on its own log.
+    at_the_leader(
+        &DR_DC,
+        &dr.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION west; \
+         CREATE orders:cut = { item: 'dr' };",
+    );
+    let dr_other = (dr_leader + 1) % DR_DC.len();
+    let fanned = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        unsigned_order_count_at(DR_DC[dr_other].0).is_ok_and(|count| count == visible + 1)
+    });
+    assert!(
+        fanned,
+        "a read at another DR node gathered the leader's write{}",
+        what_the_nodes_said(&DR_DC, &dr.logs)
+    );
+
+    // Phase 4 — the fail-back. The primary comes back EMPTY OF AUTHORITY: the
+    // stores it died holding carried a forked tail — records past the cut the
+    // DR never confirmed — and a forked tail is not a merge the seam offers;
+    // the records lost at the cut stay lost the moment the DR becomes the
+    // authority. The region is rebuilt from the membership-free baseline: a
+    // strict prefix of the DR's history, so when the DR ships its line back,
+    // the prefix is identical-bytes no-ops and the positions meet
+    // continuously.
+    drop(primary);
+    let primary = declare_region(&PRIMARY_DC, Some(&backup));
+    let primary = primary.start(&PRIMARY_DC);
+    let settled_down = until(Duration::from_secs(90), || {
+        settled(&PRIMARY_DC, &primary.ids, Some(("operator", SECRET)))
+    });
+    assert!(
+        settled_down,
+        "the rebuilt primary settled no store-line leadership{}",
+        what_the_nodes_said(&PRIMARY_DC, &primary.logs)
+    );
+    let primary_leader = leader_of(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+    )
+    .expect("the primary's leader")
+    .0;
+    // The dead east link drops; the primary declares the inbound half and
+    // offers the token the DR's outbound half will present.
+    let north = format!(
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION east; \
+         DEFINE REPLICATION north FROM '{}' FOR DATABASE prod.shop; \
+         CREATE LINK TOKEN FOR REPLICATION north EXPIRES 10m;",
+        DR_DC[0].0
+    );
+    let token2 = {
+        let answered = at_the_leader(
+            &PRIMARY_DC,
+            &primary.ids,
+            "STORE",
+            Some(("operator", SECRET)),
+            &north,
+        );
+        match answered.get(2) {
+            Some(Answer::Value {
+                value: tessaridb::Value::String(held),
+                ..
+            }) => held.clone(),
+            other => panic!("the token is the third statement's answer: {other:?}"),
+        }
+    };
+    let south = format!(
+        "USE NAMESPACE prod DATABASE shop; \
+         DEFINE REPLICATION south TO '{}' FOR DATABASE prod.shop;",
+        PRIMARY_DC[primary_leader].0
+    );
+    at_the_leader(&DR_DC, &dr.ids, "STORE", Some(("operator", SECRET)), &south);
+    for (index, (client, _)) in DR_DC.iter().enumerate() {
+        respawn(
+            &mut dr,
+            index,
+            client,
+            &[("TESSARIDB_LINK_TOKEN_SOUTH", token2.as_str())],
+        );
+    }
+    let caught_up = paced_until(Duration::from_secs(60), SIGNED_POLL, || {
+        order_count_at(PRIMARY_DC[primary_leader].0).is_ok_and(|count| count == visible + 1)
+    });
+    assert!(caught_up, "the primary caught the DR's write up");
+
+    // Authority home: the inbound link drops at the primary, the write lands
+    // there, and the exercise reads it back where it was written.
+    at_the_leader(
+        &PRIMARY_DC,
+        &primary.ids,
+        "STORE",
+        Some(("operator", SECRET)),
+        "USE NAMESPACE prod DATABASE shop; DROP REPLICATION north; \
+         CREATE orders:home = { item: 'primary' };",
+    );
+    assert_eq!(
+        order_count_at(PRIMARY_DC[primary_leader].0).expect("the primary reads"),
+        visible + 2,
+        "the write landed back home"
+    );
+    let _both = (primary, dr);
+}
+
+/// [`item_ids_at`], signed as the operator — this exercise closes its store,
+/// and an unsigned read is a sign-in refusal, not an empty answer.
+fn signed_item_ids_at(surface: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let read = "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;";
+    match client
+        .run(read, Some(("operator", SECRET)))
+        .map_err(|why| why.to_string())?
+        .last()
+    {
+        Some(Answer::Records { records, .. }) => Ok(records
+            .iter()
+            .map(|(id, _)| id.trim_matches('\'').to_owned())
+            .collect()),
+        other => Err(format!("{other:?}")),
+    }
+}
+
+#[test]
+fn local_majority_keeps_acknowledging_through_a_distant_realm_loss() {
+    // G090 SG3 W3 — the LOCAL MAJORITY variant of the realm-loss drill, and
+    // U3's honest second half. The level answers once a majority of the
+    // voters IN THE LEADER'S REGION hold the write; it is not promised across
+    // a failover (F2), and this drill says what that costs in numbers rather
+    // than in adjectives. The leader is elected wherever the cluster grants
+    // it, so the phases are computed from the realm it actually stands in —
+    // the test names realms by the leader's position, not by assumption.
+    let rows: [String; 6] = std::array::from_fn(|index| {
+        let realm = char::from(b'a' + u8::try_from(index / 2).unwrap_or_default());
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             REGION 'dc-{realm}' DOMAIN 'n{}'",
+            index % 2 + 1
+        )
+    });
+    let mut cluster = a_six_of_rows(&SIX_LOCAL, "", rows);
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    let schema = "DEFINE TOPOLOGY main \
+                      REALM 'dc-a' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-b' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-c' DOMAIN 'n1', 'n2' \
+                      SURVIVES REALM LOSS; \
+                      DEFINE NAMESPACE prod REPLICATION FACTOR 3 \
+                      ACKNOWLEDGE LOCAL MAJORITY; \
+                      USE NAMESPACE prod; DEFINE DATABASE orders; \
+                      USE DATABASE orders; DEFINE COLLECTION item; \
+                      DEFINE USER operator ROLE owner \
+                      PASSWORD 'a long enough password';";
+    let schema_at = declared_through_the_leader(&SIX_LOCAL, schema, &logs);
+    // The realm indexes: pairs (0,1), (2,3), (4,5) are dc-a, dc-b, dc-c.
+    let leader_realm = schema_at / 2;
+    let distant = (leader_realm + 1) % 3;
+    let third = (leader_realm + 2) % 3;
+    let pair = |realm: usize| [realm * 2, realm * 2 + 1];
+
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX_LOCAL[schema_at].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+
+    // Phase A — a DISTANT realm dies. The leader's region is intact, the
+    // level's voters all live, and writes keep acknowledging; the refused
+    // count through the kill is the measurement, and every acknowledged write
+    // is held — a LOCAL MAJORITY write is held by the leader's region's
+    // voters, which the distant loss did not touch.
+    for index in pair(distant) {
+        drop(cluster.running[index].take());
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged_a = acknowledged.lock().unwrap().clone();
+    let refused_a = refused.load(Ordering::Relaxed);
+    let held = signed_item_ids_at(SIX_LOCAL[schema_at].0).unwrap();
+    let missing_a = acknowledged_a
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    assert!(
+        missing_a == 0,
+        "{missing_a} LOCAL MAJORITY writes a distant realm took with it: {acknowledged_a:?}"
+    );
+
+    // Phase A' — the distant realm RECOVERS: the same stores, the same
+    // processes restarted, and the log replays into them from origin (ref 11
+    // M21 — catching up is the ordinary replication path, not a restore).
+    for index in pair(distant) {
+        cluster.running[index] = Some(started(&cluster.started_with[index], &logs[index]));
+    }
+    for index in pair(distant) {
+        assert!(
+            listening(SIX_LOCAL[index].0, Duration::from_secs(30)),
+            "{} never came back",
+            SIX_LOCAL[index].0
+        );
+    }
+    // The recovery is proven by the acknowledged set reaching a restarted node:
+    // a node that answers with everything the leader acknowledged holds the
+    // log the whole way down.
+    let recovered = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        signed_item_ids_at(SIX_LOCAL[pair(distant)[0]].0)
+            .is_ok_and(|held| acknowledged_a.iter().all(|key| held.contains(key)))
+    });
+    assert!(
+        recovered,
+        "the recovered realm never caught the acknowledged set up{}",
+        what_the_nodes_said(&SIX_LOCAL, &logs)
+    );
+
+    // Phase B — the honest half: the LEADER's realm dies. The survivors (the
+    // distant realm, recovered, and the third) are four of six voters and
+    // re-elect; the level now answers at the new leader's region. The writes
+    // acknowledged BEFORE the kill were held by the dead realm's voters, and
+    // whether a survivor collected them is timing, not promise (F2) — the
+    // measurement is the pair printed below, not asserted, because the honest
+    // answer is a number that may be nonzero. What IS asserted is the promise
+    // the level actually makes: where the leader stands, it answers.
+    let before_b = acknowledged_a.len();
+    stop.store(false, Ordering::Relaxed);
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX_LOCAL[pair(third)[0]].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 10_000_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    for index in pair(leader_realm) {
+        drop(cluster.running[index].take());
+    }
+    std::thread::sleep(Duration::from_millis(1500));
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged_b = acknowledged.lock().unwrap().clone();
+    let refused_b = refused.load(Ordering::Relaxed) - refused_a;
+
+    let survivors: Vec<&str> = pair(distant)
+        .iter()
+        .chain(pair(third).iter())
+        .map(|index| SIX_LOCAL[*index].0)
+        .collect();
+    let began = Instant::now();
+    let new_leader = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface).is_ok_and(|mut client| {
+                landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     UPSERT item:'reelection-probe' SET n = 1;",
+                    Some(("operator", SECRET)),
+                ))
+            })
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the leader's realm died{}",
+            what_the_nodes_said(&SIX_LOCAL, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    // The level keeps working WHERE THE LEADER STANDS: a batch written
+    // through the new leader at its own region's LOCAL MAJORITY lands and
+    // reads back. The writer above stopped when its window closed, before the
+    // election it could not know about — so this batch is written after the
+    // probe found the leader, not guessed from a still-open window.
+    {
+        let mut client = Client::connect(new_leader).unwrap();
+        for held in 1..=10 {
+            client
+                .run(
+                    &into_item(&format!("resumed{held:02}"), ""),
+                    Some(("operator", SECRET)),
+                )
+                .unwrap_or_else(|why| panic!("the resumed write {held} refused: {why}"));
+        }
+    }
+    let held_vec = signed_item_ids_at(new_leader).unwrap();
+    let lost_b = acknowledged_b[..before_b]
+        .iter()
+        .filter(|key| !held_vec.contains(key))
+        .count();
+    let resumed_b = (1..=10)
+        .filter(|held| held_vec.contains(&format!("resumed{held:02}")))
+        .count();
+    println!(
+        "U3 LOCAL MAJORITY: distant loss - {} acknowledged held, {} in-flight refused; \
+         leader's-realm loss - {} of {} pre-loss acknowledged survived, {} in-flight \
+         refused, {} post-re-election writes held",
+        acknowledged_a.len(),
+        refused_a,
+        before_b.saturating_sub(lost_b),
+        before_b,
+        refused_b,
+        resumed_b
+    );
+    assert!(
+        resumed_b > 0,
+        "writes at the new leader's LOCAL MAJORITY never landed"
+    );
+}
+
+#[test]
+fn three_realms_lose_one_mid_write_and_the_claim_holds() {
+    // G090 SG3 W3 — the 3-DC exercise and the realm-loss drill. Six same-host
+    // processes stand in for three DCs, two nodes each, named as such; what
+    // this proves is the MECHANISM — the claim's arithmetic (losing one realm
+    // leaves four of six voters, more than half), a re-election in the
+    // survivors, and the one load-bearing invariant: no acknowledged write is
+    // lost. What it does not prove is geography: no real partition, no real
+    // hardware, and the latency between these "DCs" is a loopback.
+    let rows: [String; 6] = std::array::from_fn(|index| {
+        let realm = char::from(b'a' + u8::try_from(index / 2).unwrap_or_default());
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             REGION 'dc-{realm}' DOMAIN 'n{}'",
+            index % 2 + 1
+        )
+    });
+    let mut cluster = a_six_of_rows(&SIX, "", rows);
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+
+    // Phase 1 — declare. The scheme and the protected namespace go through the
+    // elected leader in one transaction, unsigned: the founding left the store
+    // open and the schema's own last statement declares the operator, which
+    // closes it. The topology's relations run at the declare: six coordinating
+    // voters, two per realm — losing any realm leaves four of six, more than
+    // half, so the claimed scheme declares green against the membership that
+    // meets it.
+    let schema = "DEFINE TOPOLOGY main \
+                      REALM 'dc-a' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-b' DOMAIN 'n1', 'n2' \
+                      REALM 'dc-c' DOMAIN 'n1', 'n2' \
+                      SURVIVES REALM LOSS; \
+                      DEFINE NAMESPACE prod REPLICATION FACTOR 3; \
+                      USE NAMESPACE prod; DEFINE DATABASE orders; \
+                      USE DATABASE orders; DEFINE COLLECTION item; \
+                      DEFINE USER operator ROLE owner \
+                      PASSWORD 'a long enough password';";
+    let schema_at = declared_through_the_leader(&SIX, schema, &logs);
+
+    // The scheme validates green on the node that took it, and the verdict the
+    // console renders — the same `INFO FOR TOPOLOGY` the table and tree draw
+    // from — says so per realm. Signed as the operator, at the schema node's
+    // own pace for the sign-in-throttle reason the pool test records.
+    let reported = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        asked(
+            SIX[schema_at].0,
+            "INFO FOR TOPOLOGY main;",
+            Some(("operator", SECRET)),
+        )
+        .is_ok_and(|answers| {
+            let Some(Answer::Value {
+                value: tessari_types::Value::Object(report),
+                ..
+            }) = answers.last()
+            else {
+                return false;
+            };
+            if report.get("satisfied") != Some(&tessari_types::Value::Bool(true)) {
+                return false;
+            }
+            let Some(tessari_types::Value::Array(realms)) = report.get("realms") else {
+                return false;
+            };
+            realms.len() == 3
+                && realms.iter().all(|realm| {
+                    let tessari_types::Value::Object(fields) = realm else {
+                        return false;
+                    };
+                    let Some(tessari_types::Value::Object(verdict)) = fields.get("loss") else {
+                        return false;
+                    };
+                    verdict.get("survived") == Some(&tessari_types::Value::Bool(true))
+                })
+        })
+    });
+    assert!(
+        reported,
+        "the scheme never validated green on the leader{}",
+        what_the_nodes_said(&SIX, &logs)
+    );
+
+    // Writes acknowledged at MAJORITY land and reach every node. Ten seeds
+    // through the leader; then every node answers the count, at the signed
+    // pace, until the log has carried them everywhere.
+    {
+        let mut client = Client::connect(SIX[schema_at].0).unwrap();
+        for held in 1..=10 {
+            client
+                .run(
+                    &into_item(&format!("seed{held:02}"), ""),
+                    Some(("operator", SECRET)),
+                )
+                .unwrap_or_else(|why| panic!("the seed {held} refused: {why}"));
+        }
+    }
+    let everywhere = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        SIX.iter().all(|(surface, _)| {
+            asked(
+                surface,
+                "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM item;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers| match answers.last() {
+                Some(Answer::Records { records, .. }) => records.len() >= 10,
+                _ => false,
+            })
+        })
+    });
+    assert!(
+        everywhere,
+        "the seeds never reached every realm{}",
+        what_the_nodes_said(&SIX, &logs)
+    );
+
+    // Phase 2 — the drill. A writer signs in as the operator and writes
+    // through the leader while both of dc-c's processes are killed. Writes in
+    // flight at the kill are refused or land — the writer counts both, and
+    // U3's number is the pair, not a rounded sum.
+    let stop = Arc::new(AtomicBool::new(false));
+    let acknowledged: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let refused = Arc::new(AtomicUsize::new(0));
+    let writer = {
+        let stop = Arc::clone(&stop);
+        let acknowledged = Arc::clone(&acknowledged);
+        let refused = Arc::clone(&refused);
+        let on = SIX[schema_at].0;
+        std::thread::spawn(move || {
+            let mut client = Client::connect(on).unwrap();
+            let mut index = 0_u32;
+            while !stop.load(Ordering::Relaxed) {
+                index = index.saturating_add(1);
+                let key = format!("k{index:06}");
+                match client.run(&into_item(&key, ""), Some(("operator", SECRET))) {
+                    Ok(_) => acknowledged.lock().unwrap().push(key),
+                    Err(_) => {
+                        refused.fetch_add(1, Ordering::Relaxed);
+                    }
+                }
+            }
+        })
+    };
+    std::thread::sleep(Duration::from_millis(1500));
+    // The realm loss: both processes of dc-c, killed — no lease is handed back
+    // cleanly, which is what a real DC loss looks like to the survivors.
+    drop(cluster.running[4].take());
+    drop(cluster.running[5].take());
+    stop.store(true, Ordering::Relaxed);
+    writer.join().unwrap();
+    let acknowledged = acknowledged.lock().unwrap().clone();
+    let refused = refused.load(Ordering::Relaxed);
+
+    // R2's promise, measured: a leader re-elects among the four survivors, and
+    // every write it had acknowledged before the loss is still there — an
+    // acknowledged write is held by a majority, and the majority outlives any
+    // one realm.
+    // The store closed when the schema declared the operator, so the probe is
+    // a SIGNED write — and an UPSERT, because the probe that finds the leader
+    // runs more than once: a `CREATE` answered twice is a name-taken refusal,
+    // and the probe would miss the leader it found the pass before.
+    let survivors: Vec<&str> = (0..SIX.len() - 2).map(|index| SIX[index].0).collect();
+    let began = Instant::now();
+    let new_leader = loop {
+        let took = survivors.iter().find(|surface| {
+            Client::connect(surface).is_ok_and(|mut client| {
+                landed(&client.run(
+                    "USE NAMESPACE prod; USE DATABASE orders; \
+                     UPSERT item:'reelection-probe' SET n = 1;",
+                    Some(("operator", SECRET)),
+                ))
+            })
+        });
+        if let Some(surface) = took {
+            break *surface;
+        }
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "nobody was elected after the realm died{}",
+            what_the_nodes_said(&SIX, &logs)
+        );
+        std::thread::sleep(POLL);
+    };
+    let held = signed_item_ids_at(new_leader).unwrap();
+    let missing = acknowledged
+        .iter()
+        .filter(|key| !held.contains(key))
+        .count();
+    assert!(
+        missing == 0,
+        "{missing} acknowledged writes vanished with the realm: {acknowledged:?}"
+    );
+
+    // The read-back still answers satisfied — the rows name six voters and the
+    // claim counts rows, not heartbeats; the measured truth of the drill is
+    // the writer's ledger: acknowledged vs refused, U3's pair.
+    let report = asked(
+        new_leader,
+        "INFO FOR TOPOLOGY main;",
+        Some(("operator", SECRET)),
+    )
+    .unwrap();
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(fields),
+        ..
+    }) = report.last()
+    else {
+        panic!("not a report: {report:?}");
+    };
+    assert_eq!(
+        fields.get("satisfied"),
+        Some(&tessari_types::Value::Bool(true))
+    );
+    println!(
+        "U3 realm loss: {} acknowledged writes held, {} in-flight refused",
+        acknowledged.len(),
+        refused
+    );
+}
+
+/// The noisy-neighbour exercise's band. Ports need not be contiguous — a band
+/// is three (surface, peer) pairs and nothing else — and the free ports near
+/// the pool's band are four, not six.
+const NOISY: [(&str, &str); 3] = [
+    ("127.0.0.1:47871", "127.0.0.1:47872"),
+    ("127.0.0.1:47873", "127.0.0.1:47916"),
+    ("127.0.0.1:47917", "127.0.0.1:47918"),
+];
+
+#[test]
+#[ignore = "a measurement, not a check: three processes, an election, and two
+            hundred timed operations twice — once idle, once while a noisy
+            tenant saturates its own ranges. SG2's U1 answer lands in the
+            worksheet from the printed percentiles; run it explicitly: cargo
+            test -p tessari-cli --test serving noisy -- --ignored --nocapture"]
+fn a_noisy_tenants_writes_leave_the_quiet_tenants_bounds() {
+    // SG2 worksheet U1: what bounds a pooled tenant's load WITHOUT per-query
+    // metering? The design claim: a tenant's serving compute is its ranges'
+    // leaderships — per-range, per-thread — while the log append, the commit
+    // batch and the peer link are shared. This measures the claim: tenant_b's
+    // reads and writes, timed idle, then timed while tenant_a saturates. The
+    // printed percentiles are the deliverable; the assert is a generous
+    // engineering bound (3x) that exists so a wholesale regression cannot
+    // pass silently, not a latency contract.
+    let mut cluster = a_cluster_of_rows(
+        &NOISY,
+        "",
+        [
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+            POOLED_ROW.to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    let _running = &mut cluster.running;
+    let schema_at = declared_through_the_leader(&NOISY, POOLED_SCHEMA, &logs);
+    let declared = paced_until(Duration::from_secs(90), Duration::from_secs(2), || {
+        [
+            schema_at,
+            the_next_node(&NOISY, schema_at),
+            the_next_node(&NOISY, the_next_node(&NOISY, schema_at)),
+        ]
+        .into_iter()
+        .any(|index| {
+            asked(
+                NOISY[index].0,
+                "BEGIN; \
+                 DEFINE USER a_app ON tenant_a.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 DEFINE USER b_app ON tenant_b.app AUTHORITIES read, write \
+                 PASSWORD 'a long enough password'; \
+                 COMMIT;",
+                Some(("operator", SECRET)),
+            )
+            .is_ok_and(|answers: Vec<Answer>| landed(&Ok::<_, String>(answers)))
+        })
+    });
+    assert!(
+        declared,
+        "no node took the per-tenant readers{}",
+        what_the_nodes_said(&NOISY, &logs)
+    );
+    let serving = paced_until(Duration::from_secs(120), Duration::from_secs(2), || {
+        NOISY.iter().all(|(surface, _)| {
+            says(
+                surface,
+                Some(("b_app", SECRET)),
+                "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;",
+                "salary",
+            )
+        })
+    });
+    assert!(
+        serving,
+        "the pool never served the quiet tenant{}",
+        what_the_nodes_said(&NOISY, &logs)
+    );
+
+    let read = "USE NAMESPACE tenant_b; USE DATABASE app; SELECT * FROM payroll;";
+    let write = |n: u64| {
+        format!("USE NAMESPACE tenant_b; USE DATABASE app; CREATE payroll:{n} = {{ salary: 1 }};")
+    };
+    let measure = |surface: &str, ops: usize, id_from: u64| {
+        let mut reader = Client::connect(surface).expect("the quiet reader connects");
+        let mut reads = Vec::with_capacity(ops);
+        let mut writes = Vec::with_capacity(ops);
+        for n in 0..ops {
+            let began = Instant::now();
+            reader
+                .run(read, Some(("b_app", SECRET)))
+                .unwrap_or_else(|why| panic!("quiet read {n} failed: {why}"));
+            reads.push(began.elapsed());
+            let began = Instant::now();
+            reader
+                .run(&write(id_from + n as u64), Some(("b_app", SECRET)))
+                .unwrap_or_else(|why| panic!("quiet write {n} failed: {why}"));
+            writes.push(began.elapsed());
+        }
+        (reads, writes)
+    };
+    // Integer parts-per-thousand rather than an f64 fraction: the cast
+    // lints exist because `as` truncates silently, and a percentile index
+    // has no business being a float anyway.
+    let percentile = |sorted: &[std::time::Duration], at: u32| -> std::time::Duration {
+        let scaled = sorted
+            .len()
+            .saturating_mul(usize::try_from(at).unwrap_or(0))
+            / 1000;
+        sorted[scaled.min(sorted.len() - 1)]
+    };
+    let report = |label: &str,
+                  reads: &mut Vec<std::time::Duration>,
+                  writes: &mut Vec<std::time::Duration>| {
+        reads.sort();
+        writes.sort();
+        println!(
+            "U1 {label}: reads p50 {:?} p99 {:?} | writes p50 {:?} p99 {:?}",
+            percentile(reads, 500),
+            percentile(reads, 990),
+            percentile(writes, 500),
+            percentile(writes, 990)
+        );
+        (percentile(reads, 990), percentile(writes, 990))
+    };
+
+    let quiet_surface = NOISY[schema_at].0;
+    let (mut idle_r, mut idle_w) = measure(quiet_surface, 100, 1000);
+    let (idle_r99, idle_w99) = report("idle     ", &mut idle_r, &mut idle_w);
+
+    // tenant_a saturates: three writers, each on its own connection, tight
+    // loop, unique ids. Issued vs completed is counted so a writer that died
+    // mid-run is a fact in the report, not a silently lighter load.
+    let issued = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let completed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let saturation = std::time::Duration::from_secs(8);
+    std::thread::scope(|scope| {
+        for _ in 0..3 {
+            let issued = issued.clone();
+            let completed = completed.clone();
+            scope.spawn(move || {
+                let began = Instant::now();
+                let mut writer = Client::connect(quiet_surface).expect("a noisy writer connects");
+                while began.elapsed() < saturation {
+                    let n = issued.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if writer
+                        .run(
+                            &format!(
+                                "USE NAMESPACE tenant_a; USE DATABASE app; \
+                                 CREATE orders:{} = {{ total: 1 }};",
+                                10_000 + n
+                            ),
+                            Some(("a_app", SECRET)),
+                        )
+                        .is_ok()
+                    {
+                        completed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+            });
+        }
+        // Give the writers a moment to reach full tilt before the measurement,
+        // then run the quiet tenant's own operations through it.
+        std::thread::sleep(std::time::Duration::from_millis(500));
+        let (mut sat_r, mut sat_w) = measure(quiet_surface, 100, 5000);
+        let (sat_r99, sat_w99) = report("saturated", &mut sat_r, &mut sat_w);
+        let bound = |idle: std::time::Duration| idle.saturating_mul(3);
+        assert!(
+            sat_r99 <= bound(idle_r99),
+            "the quiet tenant's read p99 moved from {idle_r99:?} to {sat_r99:?} under              saturation — more than 3x, which the worksheet must answer with the              shared-cost story, not silence"
+        );
+        assert!(
+            sat_w99 <= bound(idle_w99),
+            "the quiet tenant's write p99 moved from {idle_w99:?} to {sat_w99:?} under              saturation — more than 3x, which the worksheet must answer with the              shared-cost story, not silence"
+        );
+    });
+    let issued = issued.load(std::sync::atomic::Ordering::Relaxed);
+    let completed = completed.load(std::sync::atomic::Ordering::Relaxed);
+    println!("U1 saturation: {completed} of {issued} noisy writes landed");
+    assert!(
+        completed.saturating_mul(10) > issued.saturating_mul(9),
+        "the noisy load itself mostly failed ({completed} of {issued}), so the          measurement measured nothing"
+    );
+}
+
 /// A three-node cluster's addresses — a client surface and a peer door each.
 ///
 /// A named type rather than the array spelled out at four signatures, and a
@@ -1938,7 +3914,7 @@ fn cluster_report(
 /// where it does not; and the exemption is the only thing that had been
 /// carrying them. Written this way it also survives a band gaining a fourth
 /// entry, which a hardcoded wrap would not.
-fn the_next_node(band: &Band, index: usize) -> usize {
+fn the_next_node(band: &[(&'static str, &'static str)], index: usize) -> usize {
     index
         .checked_add(1)
         .filter(|next| *next < band.len())
@@ -2636,6 +4612,21 @@ fn until(within: Duration, mut question: impl FnMut() -> bool) -> bool {
             return true;
         }
         std::thread::sleep(POLL);
+    }
+    false
+}
+
+/// [`until`] at a slower, explicit pace — for questions that cost a SIGNED
+/// request each. The wire re-authenticates every request, and failed sign-ins
+/// feed the store's guessing-throttle, so a signed poll at `POLL` cadence would
+/// throttle itself into a refusal that outlives the wait it was polling for.
+fn paced_until(within: Duration, pace: Duration, mut question: impl FnMut() -> bool) -> bool {
+    let began = Instant::now();
+    while began.elapsed() < within {
+        if question() {
+            return true;
+        }
+        std::thread::sleep(pace);
     }
     false
 }
@@ -5772,7 +7763,11 @@ fn answered_at(surface: &str, read: &str) -> String {
 /// stream starts, and a write waiting for a majority waits for asks that come
 /// once a round. One transaction, so the whole schema lands in the store's log
 /// and none of it waits for copies of a namespace no follower holds yet.
-fn declared_through_the_leader(band: &Band, schema: &str, logs: &[std::path::PathBuf]) -> usize {
+fn declared_through_the_leader(
+    band: &[(&'static str, &'static str)],
+    schema: &str,
+    logs: &[std::path::PathBuf],
+) -> usize {
     let began = Instant::now();
     loop {
         let took = (0..band.len()).find(|index| {

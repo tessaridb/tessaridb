@@ -227,6 +227,14 @@ pub const FEED_SCAN_STATES: TableId = TableId::new(31);
 /// and to no other, because what it names is an external party.
 pub const REPLICATIONS: TableId = TableId::new(32);
 
+/// The realm/domain scheme a cluster is arranged over: one row, keyed by a
+/// fixed handle, carrying the topology and the leadership pair that orders it.
+///
+/// A catalog record rather than a `META` key, for [`FAILOVER`]'s reason: the
+/// scheme is a claim every node must agree about before it can be validated
+/// against the membership, so it travels in the log and survives a restore.
+pub const TOPOLOGY: TableId = TableId::new(33);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -262,6 +270,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (TOPIC_CLOCKS, "TOPIC_CLOCKS"),
     (FEED_SCAN_STATES, "FEED_SCAN_STATES"),
     (REPLICATIONS, "REPLICATIONS"),
+    (TOPOLOGY, "TOPOLOGY"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.

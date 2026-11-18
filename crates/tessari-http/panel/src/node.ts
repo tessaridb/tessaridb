@@ -6,7 +6,7 @@
 import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
-import { draw as drawMap, type Seen } from "./map.js";
+import { draw as drawMap, type Layout, type Link, type Seen } from "./map.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
@@ -88,6 +88,34 @@ export async function readNode(): Promise<void> {
   try {
     const answered = held(await valueOf("INFO FOR NODE;", "Node"));
     const all = answered ?? {};
+    // The topology layer reads two more named subjects, both settled field by
+    // field in the SG6 data contract. The scheme is asked by name — there is
+    // one topology per cluster, and the plural answers what is held — and a
+    // `null` scheme answer means nobody declared one, which the map says in
+    // words. A refusal leaves the layer off, the way a refused link list does:
+    // the map above is the tab's subject, and a topology sentence is not worth
+    // an error over.
+    let layout: Layout = {};
+    try {
+      const listed = held(await valueOf("INFO FOR TOPOLOGIES;", "Node"));
+      // The list answers the declared schemes by NAME — a bare string array,
+      // not rows: `INFO FOR TOPOLOGIES` lists, `INFO FOR TOPOLOGY <name>`
+      // describes (the same split INFO FOR REPLICATIONS / REPLICATION keeps).
+      const names = Array.isArray(listed?.["topologies"])
+        ? (listed["topologies"] as unknown[]).filter(
+            (name): name is string => typeof name === "string",
+          )
+        : [];
+      if (names.length === 0) {
+        layout = { ...layout, topology: null };
+      } else {
+        const scheme = held(await valueOf(`INFO FOR TOPOLOGY ${names[0]};`, "Node"));
+        layout = { ...layout, topology: scheme ?? null };
+      }
+    } catch {
+      // Refused or unreadable: the topology layer draws nothing. The cluster
+      // figures above already answered; this is an addition, not a gate.
+    }
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.
     const { cluster, clients, ...mine } = all;
@@ -111,9 +139,6 @@ export async function readNode(): Promise<void> {
     // a claim, on the one screen where that claim mattered most. `roles` is what
     // answers the question it looked like it was answering, and it comes from
     // the authority the node actually holds.
-    // The map first, then the answer it was read from.
-    clear("cluster-map");
-    drawMap(at("cluster-map"), all as Seen);
     drawTrust(all as Trusted);
     know(all["id"], all["endpoints"], Array.isArray(peers) ? peers.length : 0);
     facts("cluster-facts", {
@@ -145,10 +170,53 @@ export async function readNode(): Promise<void> {
             })
             .join("\n"),
         });
+        // The edge on the map wants the registry's confirmed positions, one
+        // `INFO FOR REPLICATION <name>` per link. Process-local truth: a link
+        // the registry has not read renders as "no confirmation held", and a
+        // link whose report refuses renders the same — the registry answers
+        // for itself or not at all, and the map does not invent a reading.
+        const edges: Link[] = [];
+        for (const row of rows) {
+          const link = (row ?? {}) as Record<string, unknown>;
+          const name = typeof link["name"] === "string" ? link["name"] : null;
+          let confirmed: string | null = null;
+          if (name !== null) {
+            try {
+              const report = held(await valueOf(`INFO FOR REPLICATION ${name};`, "Node"));
+              const served =
+                typeof report?.["served"] === "object" && report["served"] !== null
+                  ? (report["served"] as Record<string, unknown>)
+                  : {};
+              const positions = Array.isArray(served["confirmed"])
+                ? (served["confirmed"] as Record<string, unknown>[])
+                : [];
+              if (positions.length > 0) {
+                confirmed = positions
+                  .map((position) => {
+                    const log = typeof position["log"] === "string" ? position["log"] : "?";
+                    const at = position["confirmed"];
+                    return `${log} ${String(at)}`;
+                  })
+                  .join(" · ");
+              }
+            } catch {
+              confirmed = null;
+            }
+          }
+          edges.push({ row: link, confirmed });
+        }
+        layout = { ...layout, links: edges };
       }
     } catch {
       state("replication-status", "empty", "Replication links need the store's operator to read them.");
     }
+    // The map last of the reads, so the layout carries every layer: the
+    // cluster figures, the scheme, the link edges with the registry's
+    // confirmed positions — each absent rather than invented when its read
+    // did not land. Then the raw answer under it, the way the statement log
+    // keeps the thing read from beside the reading.
+    clear("cluster-map");
+    drawMap(at("cluster-map"), all as Seen, layout);
     // A node with no peers drew one card and said nothing, so the map read the
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four

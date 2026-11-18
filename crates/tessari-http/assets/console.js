@@ -2902,6 +2902,25 @@ Shown once. The node keeps only its digest.`);
   //! data contract at `reports/2026-09-15-190000-g026-cluster-map-data-contract.md`,
   //! which was itself derived by running a node rather than by reading anything.
   //!
+  //! # The topology layer (G090 SG6)
+  //!
+  //! Over the same answer, and over two more named subjects, the map draws the
+  //! topology — the layer the contract at
+  //! `reports/2026-11-18-104500-g090-sg6-topology-data-contract.md` settles field
+  //! by field, also derived by running a node. Realms are group boxes from
+  //! `INFO FOR TOPOLOGY`, with the engine's own survival verdict labelled as its
+  //! verdict; members are placed by the region the member row carries — the
+  //! domain each member stands in is accepted and validated by the engine but
+  //! answers no INFO field, so domains render as the scheme's declared labels and
+  //! never as member placement. Cross-cluster links are labelled edges from
+  //! `INFO FOR REPLICATIONS`, the far side drawn as its endpoint (a link crosses
+  //! to another cluster, whose inside this node's catalog does not hold), and the
+  //! confirmed position rendered only where the registry holds one — process-local
+  //! truth, labelled as what it is, absent read as "no confirmation held" and
+  //! never as zero. Split tables are a glyph row from `cluster.balanced`, counted
+  //! on the measuring leader's last pass. None of it is inferred; each element
+  //! says which kind of truth it is, the way the peer lamps already do.
+  //!
   //! # Three lamps, not one badge
   //!
   //! A role is three INDEPENDENT bits — serving, writable, coordinating — so there
@@ -3064,13 +3083,124 @@ Shown once. The node keeps only its digest.`);
     }
     return said3.join(", ");
   }
-  function balancedTables(balanced) {
-    const each = (balanced ?? []).map((one2) => {
-      const shards = (one2.shards ?? []).map((shard) => `${shard.complete === false ? "≥" : ""}${told2(shard.records) ?? "?"}`).join(" / ");
+  function glyphs(balanced) {
+    const tables = balanced ?? [];
+    if (tables.length === 0) {
+      return null;
+    }
+    const row = made("div", "glyphs");
+    const label = made("p", "glyphs-truth faint");
+    label.textContent = "split tables, counted on the leader's last pass — not re-measured for this screen";
+    row.appendChild(label);
+    for (const one2 of tables) {
+      const glyph = made("div", "glyph");
+      const name = made("span", "glyph-name");
+      name.textContent = told2(one2.table) ?? "?";
+      glyph.appendChild(name);
+      for (const shard of one2.shards ?? []) {
+        const pill = made("span", "glyph-shard");
+        pill.textContent = `${shard.complete === false ? "≥" : ""}${told2(shard.records) ?? "?"}`;
+        pill.title = `shard ${told2(shard.id) ?? "?"}`;
+        glyph.appendChild(pill);
+      }
       const act3 = told2(one2.last_act);
-      return `${told2(one2.table) ?? "?"}: ${shards}${act3 === null ? "" : ` (last: ${act3})`}`;
+      if (act3 !== null) {
+        const said3 = made("span", "glyph-act faint");
+        said3.textContent = act3;
+        glyph.appendChild(said3);
+      }
+      row.appendChild(glyph);
+    }
+    return row;
+  }
+  function topology(scheme, seen) {
+    const layer = made("section", "topology");
+    const head = made("h3", "topology-name");
+    const called = told2(scheme.name);
+    head.textContent = called === null ? "The declared topology" : `Topology ${called}`;
+    layer.appendChild(head);
+    const verdict = made("p", "topology-verdict");
+    const satisfied = scheme.satisfied === true;
+    verdict.textContent = (scheme.survives_realm_loss === true ? "claims to survive the loss of any one realm — " : "") + (satisfied ? "the engine's verdict now: the claim holds against the membership as it stands" : `the engine's verdict now: not satisfied — the scheme reports the gap, it does not close it`);
+    layer.appendChild(verdict);
+    const boxes = made("div", "realms");
+    const placed = /* @__PURE__ */ new Set();
+    for (const realm of scheme.realms ?? []) {
+      const box2 = made("div", "realm");
+      const title = made("h4");
+      title.textContent = told2(realm.name) ?? "(unnamed realm)";
+      box2.appendChild(title);
+      const domains = (realm.domains ?? []).map(told2).filter((d) => d !== null);
+      if (domains.length > 0) {
+        const tags = made("p", "realm-domains faint");
+        tags.textContent = `domains: ${domains.join(", ")}`;
+        box2.appendChild(tags);
+      }
+      for (const member of realm.members ?? []) {
+        const who = made("div", "realm-member");
+        who.textContent = told2(member.name) ?? told2(member.endpoint) ?? "?";
+        const where3 = told2(member.region);
+        if (where3 !== null) {
+          who.title = `member, placed by its region '${where3}'`;
+        }
+        box2.appendChild(who);
+        const id = bare(member.node);
+        if (id !== null) {
+          placed.add(id);
+        }
+      }
+      const loss = realm.loss;
+      if (loss !== void 0) {
+        const line = made("p", "realm-loss faint");
+        const said3 = loss.survived === true ? `loss of this realm: still elects — ${told2(loss.voters_left) ?? "?"} of ${told2(loss.voters_needed) ?? "?"} voters left` : "loss of this realm: the claim does not survive it";
+        line.textContent = said3;
+        box2.appendChild(line);
+      }
+      boxes.appendChild(box2);
+    }
+    layer.appendChild(boxes);
+    const loose = (seen.cluster?.peers ?? []).filter((peer) => {
+      const id = bare(peer.node);
+      return id === null || !placed.has(id);
     });
-    return each.length === 0 ? null : each.join("; ");
+    if (loose.length > 0) {
+      const row = made("div", "realm-loose");
+      const tag = made("p", "faint");
+      tag.textContent = "members no realm claims:";
+      row.appendChild(tag);
+      for (const peer of loose) {
+        const who = made("div", "realm-member loose");
+        who.textContent = peer.name ?? "(unnamed peer)";
+        row.appendChild(who);
+      }
+      layer.appendChild(row);
+    }
+    return layer;
+  }
+  function linkEdge(link) {
+    const row = link.row;
+    const name = told2(row["name"]) ?? "(unnamed link)";
+    const direction = row["direction"] === "inbound" ? "receives" : "serves";
+    const endpoint = told2(row["endpoint"]);
+    const edge = made("div", "link-edge");
+    const head = made("span", "link-word");
+    head.textContent = `${name} — this cluster ${direction}`;
+    edge.appendChild(head);
+    if (endpoint !== null) {
+      const at2 = made("span", "link-endpoint");
+      at2.textContent = endpoint;
+      edge.appendChild(at2);
+    }
+    if (row["paused"] === true) {
+      const held6 = made("span", "link-paused");
+      held6.textContent = "paused";
+      edge.appendChild(held6);
+    }
+    const said3 = link.confirmed ?? "no confirmation held — the registry's reading lives in the shipping process";
+    const reading = made("span", "link-confirmed faint");
+    reading.textContent = said3;
+    edge.appendChild(reading);
+    return edge;
   }
   function ended2(across) {
     if (across === void 0) {
@@ -3084,7 +3214,7 @@ Shown once. The node keeps only its digest.`);
     }
     return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
   }
-  function draw5(into, seen) {
+  function draw5(into, seen, layout) {
     const cluster = seen.cluster ?? {};
     const mine2 = seen.roles ?? [];
     const wanted2 = cluster.desired ?? null;
@@ -3118,7 +3248,6 @@ Shown once. The node keeps only its digest.`);
           "balances leaderships",
           cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
         ),
-        fact("balanced tables, records per shard", balancedTables(cluster.balanced)),
         wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
       ],
       "self",
@@ -3132,6 +3261,22 @@ Shown once. The node keeps only its digest.`);
       }
     );
     into.appendChild(self);
+    if (layout?.topology !== void 0) {
+      if (layout.topology === null) {
+        const absent = made("p", "topology-absent faint");
+        absent.textContent = "No topology scheme is declared on this cluster — realms are not named, so the map draws the cluster as it stands rather than an empty diagram that would read as a fault.";
+        into.appendChild(absent);
+      } else {
+        into.appendChild(topology(layout.topology, seen));
+      }
+    }
+    for (const link of layout?.links ?? []) {
+      into.appendChild(linkEdge(link));
+    }
+    const split = glyphs(cluster.balanced);
+    if (split !== null) {
+      into.appendChild(split);
+    }
     for (const peer of cluster.peers ?? []) {
       into.appendChild(
         figure(
@@ -3214,6 +3359,20 @@ Shown once. The node keeps only its digest.`);
     try {
       const answered2 = held3(await valueOf("INFO FOR NODE;", "Node"));
       const all2 = answered2 ?? {};
+      let layout = {};
+      try {
+        const listed2 = held3(await valueOf("INFO FOR TOPOLOGIES;", "Node"));
+        const names2 = Array.isArray(listed2?.["topologies"]) ? listed2["topologies"].filter(
+          (name) => typeof name === "string"
+        ) : [];
+        if (names2.length === 0) {
+          layout = { ...layout, topology: null };
+        } else {
+          const scheme = held3(await valueOf(`INFO FOR TOPOLOGY ${names2[0]};`, "Node"));
+          layout = { ...layout, topology: scheme ?? null };
+        }
+      } catch {
+      }
       const { cluster, clients, ...mine2 } = all2;
       const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
       facts("node-facts", {
@@ -3224,8 +3383,6 @@ Shown once. The node keeps only its digest.`);
         writes: store["writes"]
       });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
-      clear("cluster-map");
-      draw5(at("cluster-map"), all2);
       draw4(all2);
       know(all2["id"], all2["endpoints"], Array.isArray(peers) ? peers.length : 0);
       facts("cluster-facts", {
@@ -3251,10 +3408,36 @@ Shown once. The node keeps only its digest.`);
               return `${name} · ${direction} · ${endpoint}${paused}`;
             }).join("\n")
           });
+          const edges = [];
+          for (const row of rows2) {
+            const link = row ?? {};
+            const name = typeof link["name"] === "string" ? link["name"] : null;
+            let confirmed = null;
+            if (name !== null) {
+              try {
+                const report = held3(await valueOf(`INFO FOR REPLICATION ${name};`, "Node"));
+                const served2 = typeof report?.["served"] === "object" && report["served"] !== null ? report["served"] : {};
+                const positions = Array.isArray(served2["confirmed"]) ? served2["confirmed"] : [];
+                if (positions.length > 0) {
+                  confirmed = positions.map((position) => {
+                    const log = typeof position["log"] === "string" ? position["log"] : "?";
+                    const at2 = position["confirmed"];
+                    return `${log} ${String(at2)}`;
+                  }).join(" · ");
+                }
+              } catch {
+                confirmed = null;
+              }
+            }
+            edges.push({ row: link, confirmed });
+          }
+          layout = { ...layout, links: edges };
         }
       } catch {
         state("replication-status", "empty", "Replication links need the store's operator to read them.");
       }
+      clear("cluster-map");
+      draw5(at("cluster-map"), all2, layout);
       const joining = Array.isArray(all2["certificates"]) && all2["certificates"].some(
         (shown3) => typeof shown3 === "object" && shown3 !== null && "surface" in shown3 && shown3.surface === "peers"
       );

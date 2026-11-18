@@ -27,12 +27,33 @@ impl Parser<'_> {
                 let replication = self.replication_clause()?;
                 let class = self.replication_class_clause()?;
                 let acknowledge = self.acknowledgement_clause()?;
+                // The split/merge default the namespace states for the tables
+                // born into it, in both directions: `SPLIT AUTOMATICALLY`
+                // turns the default on for what the namespace creates, and
+                // `SPLIT MANUALLY` states the off a re-run definition wants
+                // without the IF NOT EXISTS branch having to special-case it —
+                // the clause is applied only when the namespace is created,
+                // the reading its replication neighbour already has.
+                let auto_split = if self.eat_word("split") {
+                    if self.eat_word("automatically") {
+                        Some(true)
+                    } else if self.eat_word("manually") {
+                        Some(false)
+                    } else {
+                        return Err(
+                            self.error_here("`AUTOMATICALLY` or `MANUALLY` after `SPLIT`")
+                        );
+                    }
+                } else {
+                    None
+                };
                 Ok(StatementKind::DefineNamespace {
                     name,
                     if_not_exists,
                     replication,
                     class,
                     acknowledge,
+                    auto_split,
                 })
             }
             Some(Keyword::Database) => {
@@ -294,6 +315,9 @@ impl Parser<'_> {
             // And a third contextual subject, on the same reasoning: `failover`
             // is a perfectly good name for a table somebody's data already uses.
             _ if self.eat_word("failover") => self.define_failover(),
+            // And a fourth, on the same reasoning: `topology` is a name data
+            // already uses, and nothing but a subject can stand after `DEFINE`.
+            _ if self.eat_word("topology") => self.define_topology(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called

@@ -1082,6 +1082,169 @@ label.tick input {
   text-align: end;
 }
 
+/* ────────────────────────────────────────── the topology layer ──
+   Realms as group boxes, links as labelled edges, split tables as a
+   glyph row — every element from a named INFO field, each labelled with
+   the kind of truth it is (the SG6 contract). The realm box is an
+   engine verdict drawn as a box, not a health guess: no ping, no
+   timeout, no absence-of-answer colours it. */
+
+.topology {
+  flex: 1 1 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  padding: var(--s-4);
+  background: var(--surface);
+}
+
+.topology-name {
+  font-size: var(--t-14);
+  font-weight: 600;
+  margin: 0 0 var(--s-2);
+}
+
+.topology-verdict {
+  font-size: var(--t-13);
+  margin: 0 0 var(--s-3);
+}
+
+.realms {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s-3);
+}
+
+.realm {
+  flex: 1 1 14rem;
+  min-inline-size: 0;
+  border: 1px dashed var(--line-strong);
+  border-radius: var(--control-radius);
+  padding: var(--s-3);
+}
+
+.realm h4 {
+  font-size: var(--t-13);
+  font-weight: 600;
+  margin: 0 0 var(--s-1);
+}
+
+.realm-domains {
+  font-size: var(--t-12);
+  margin: 0 0 var(--s-2);
+}
+
+.realm-member {
+  font-size: var(--t-13);
+  padding: var(--s-1) 0;
+  border-block-start: 1px solid var(--line);
+}
+
+.realm-member.loose {
+  border-block-start-style: dashed;
+}
+
+.realm-loss {
+  font-size: var(--t-12);
+  margin: var(--s-2) 0 0;
+}
+
+.realm-loose {
+  margin-block-start: var(--s-3);
+}
+
+.topology-absent {
+  flex: 1 1 100%;
+  font-size: var(--t-13);
+  padding: var(--s-3);
+  border: 1px dashed var(--line);
+  border-radius: var(--control-radius);
+}
+
+/* A link's far side is its endpoint, not a peered node: the box carries
+   the address and the registry's reading, and the reading says when it
+   holds nothing. */
+
+.link-edge {
+  flex: 1 1 100%;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2) var(--s-3);
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+  font-size: var(--t-13);
+}
+
+.link-word {
+  font-weight: 600;
+}
+
+.link-endpoint {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+}
+
+.link-paused {
+  font-size: var(--t-12);
+  font-weight: 600;
+  color: var(--accent-text);
+  background: var(--accent-wash);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--s-2);
+}
+
+.link-confirmed {
+  flex-basis: 100%;
+  font-size: var(--t-12);
+}
+
+/* Split tables, counted on the leader's last pass: a pill per shard,
+   the count with ≥ where the count stopped at the bound, and the last
+   act in the balancer's own words. */
+
+.glyphs {
+  flex: 1 1 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--control-radius);
+  padding: var(--s-3) var(--s-4);
+  background: var(--surface);
+}
+
+.glyphs-truth {
+  font-size: var(--t-12);
+  margin: 0 0 var(--s-2);
+}
+
+.glyph {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: var(--s-2);
+  padding: var(--s-1) 0;
+  border-block-start: 1px solid var(--line);
+  font-size: var(--t-13);
+}
+
+.glyph-name {
+  font-weight: 600;
+}
+
+.glyph-shard {
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+  font-size: var(--t-12);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-pill);
+  padding: 0 var(--s-2);
+}
+
+.glyph-act {
+  font-size: var(--t-12);
+}
+
 /* ──────────────────────────────────────────────── finding a thing ── */
 
 /* The search sits opposite the destination's name, so it is present on every

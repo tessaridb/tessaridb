@@ -91,6 +91,11 @@ impl Error {
             Self::UndeclaredField { .. }
             | Self::Thrown { .. }
             | Self::FailoverRefused { .. }
+            // A scheme that does not hold together is a request to fix, the
+            // policy's class; one that would replace a held scheme is the
+            // same — drop or amend first, then the statement runs.
+            | Self::TopologyRefused { .. }
+            | Self::TopologyAlreadyDeclared { .. }
             | Self::NoSuchAccessPath { .. }
             | Self::TimedOut { .. }
             | Self::Unbounded { .. }

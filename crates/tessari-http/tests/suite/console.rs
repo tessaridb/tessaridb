@@ -551,6 +551,14 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "True: the link list is read from the catalog, and an empty catalog names no links.",
     ),
     (
+        "No topology scheme is declared on this cluster — realms are not named, so the map draws the cluster as it stands rather than an empty diagram that would read as a fault.",
+        "True: INFO FOR TOPOLOGY answers null when nobody has declared a scheme — one topology per cluster, and the absence of a scheme is itself the answer, distinct from a scheme that declares nothing. The sentence is the map's honesty row: an empty diagram would read as a fault the engine never named.",
+    ),
+    (
+        "split tables, counted on the leader's last pass — not re-measured for this screen",
+        "True: the glyph row renders cluster.balanced — the counting leader's last pass, the same values INFO FOR TABLE reports as sampled. The console does not re-count shards to draw the map; saying so keeps the glyph a labelled kind of truth rather than a fresh measurement.",
+    ),
+    (
         "A password reaches the node and goes no further: what is stored is a hash, so no plaintext reaches the log or any replica.",
         "True: the credential is hashed before storage and the hash is what replicates.",
     ),

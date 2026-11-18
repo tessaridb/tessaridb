@@ -136,6 +136,11 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::AlterReplication { .. }
         | StatementKind::DropReplication { .. }
         | StatementKind::CreateLinkToken { .. }
+        // The scheme names realms, which are labels and not tables — the
+        // grant loop has nothing to check, for the cross-cluster row's reason.
+        | StatementKind::DefineTopology { .. }
+        | StatementKind::AlterTopology { .. }
+        | StatementKind::DropTopology { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its
         // destination.

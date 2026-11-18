@@ -74,6 +74,7 @@ struct Peer<'a> {
     preferred: bool,
     fingerprint: Option<&'a str>,
     region: Option<&'a str>,
+    domain: Option<&'a str>,
 }
 
 struct Declared<'a> {
@@ -140,12 +141,13 @@ impl Session<'_> {
                 replication,
                 class,
                 acknowledge,
+                auto_split,
             } => {
                 self.define_namespace(
                     transaction,
                     name,
                     *if_not_exists,
-                    (*replication, *class, *acknowledge),
+                    (*replication, *class, *acknowledge, *auto_split),
                 )
                 .await
             }
@@ -573,6 +575,7 @@ impl Session<'_> {
                 preferred,
                 fingerprint,
                 region,
+                domain,
                 if_not_exists,
             } => {
                 self.define_replica(
@@ -590,6 +593,7 @@ impl Session<'_> {
                         preferred: *preferred,
                         fingerprint: fingerprint.as_deref(),
                         region: region.as_deref(),
+                        domain: domain.as_deref(),
                     },
                     *if_not_exists,
                 )
@@ -631,6 +635,23 @@ impl Session<'_> {
                 replication,
                 expires,
             } => Self::create_link_token(transaction, replication, *expires, span).await,
+            // The layout a cluster is arranged over: a catalog record like the
+            // failover policy, checked as a structure where the value is built
+            // and against the membership where that layer lives.
+            StatementKind::DefineTopology {
+                name,
+                realms,
+                survives_realm_loss,
+            } => {
+                self.define_topology(transaction, name, realms, *survives_realm_loss, span)
+                    .await
+            }
+            StatementKind::AlterTopology { name, change } => {
+                self.alter_topology(transaction, name, change, span).await
+            }
+            StatementKind::DropTopology { name } => {
+                self.drop_topology(transaction, name, span).await
+            }
             StatementKind::DefineConsumer {
                 name,
                 source,
@@ -1023,19 +1044,23 @@ impl Session<'_> {
                         Catalog::new(transaction)
                             .set_auto_split(
                                 id,
-                                Some(tessari_storage::AutoSplit {
-                                    above: u64::from(policy.above),
-                                    writes_per_second: policy.writes_per_second.map(u64::from),
-                                    merge_below: u64::from(policy.merge_below),
-                                    min_shards: u64::from(policy.min_shards.unwrap_or(1)),
-                                    max_shards: policy.max_shards.map(u64::from),
-                                }),
+                                tessari_storage::AutoSplitSetting::Policy(
+                                    tessari_storage::AutoSplit {
+                                        above: u64::from(policy.above),
+                                        writes_per_second: policy.writes_per_second.map(u64::from),
+                                        merge_below: u64::from(policy.merge_below),
+                                        min_shards: u64::from(policy.min_shards.unwrap_or(1)),
+                                        max_shards: policy.max_shards.map(u64::from),
+                                    },
+                                ),
                             )
                             .await?;
                         return Ok(Outcome::Done);
                     }
                     TableChange::SplitManually => {
-                        Catalog::new(transaction).set_auto_split(id, None).await?;
+                        Catalog::new(transaction)
+                            .set_auto_split(id, tessari_storage::AutoSplitSetting::Off)
+                            .await?;
                         return Ok(Outcome::Done);
                     }
                     TableChange::Expire(expire) => {

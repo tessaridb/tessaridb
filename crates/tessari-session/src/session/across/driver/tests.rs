@@ -24,6 +24,7 @@ fn row(name: &str, node: Option<[u8; NODE_ID_LEN]>) -> ReplicaDefinition {
         releasing: false,
         preferred: false,
         region: None,
+        domain: None,
     }
 }
 
