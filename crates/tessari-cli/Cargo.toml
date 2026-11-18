@@ -39,6 +39,10 @@ tessari-constants.workspace = true
 # Already in the tree through the engine, so this costs no crate.
 libc.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "signal", "macros", "io-util", "sync"] }
+# The resource sampler's platform reads: the `system` feature is CPU and
+# memory, `disk` is the volumes, `network` is the interface counters — nothing
+# else of the crate is compiled in.
+sysinfo = { workspace = true, features = ["system", "disk", "network"] }
 tokio-util.workspace = true
 futures-util.workspace = true
 tracing.workspace = true

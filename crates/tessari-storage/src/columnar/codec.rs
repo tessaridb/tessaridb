@@ -127,10 +127,8 @@ pub(crate) fn choose(values: &[Value]) -> (Encoding, Vec<u8>) {
         // The candidate must decode to be worth its ratio; a decode failure
         // on bytes this process just wrote is a bug, and carrying a broken
         // candidate into the selection would paper over it.
-        let started = Instant::now();
         let mut check = Cursor::new(&bytes);
         let decoded = decode(encoding.tag(), &mut check, values.len());
-        let decoded_nanos = started.elapsed().as_nanos();
         match decoded {
             Ok(got) if got == values && check.finish().is_ok() => {}
             _ => {
@@ -138,6 +136,22 @@ pub(crate) fn choose(values: &[Value]) -> (Encoding, Vec<u8>) {
                 continue;
             }
         }
+        // The guard below compares decode costs, so the cost it sees has to be
+        // the candidate's and not the scheduler's: a thread paused mid-decode
+        // only ever INFLATES a measurement, and one inflated pass was enough
+        // to drop the size-winning dictionary under test-thread contention
+        // and hand the run to a worse encoding. The minimum of a few timed
+        // passes is the estimate — a pause can raise every pass, but it
+        // cannot lower one below the candidate's own work.
+        let decoded_nanos = (0..3)
+            .map(|_| {
+                let started = Instant::now();
+                let mut timed = Cursor::new(&bytes);
+                let _ = decode(encoding.tag(), &mut timed, values.len());
+                started.elapsed().as_nanos()
+            })
+            .min()
+            .unwrap_or(0);
         candidates.push(Candidate {
             encoding,
             bytes,

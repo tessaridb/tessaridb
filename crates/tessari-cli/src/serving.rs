@@ -34,6 +34,7 @@ pub(crate) fn serve(
     cluster: Option<&tessari_wire::Told>,
     started: std::time::Instant,
     runtime: tokio::runtime::Runtime,
+    store_path: Option<&std::path::Path>,
 ) -> Result<Ended, String> {
     // Read before anything is bound, and before the store is touched, for the
     // reason the line below gives: an unreadable key file is a node that would
@@ -416,6 +417,27 @@ pub(crate) fn serve(
                 "housekeeping",
                 house_stops.clone(),
                 move || keep_house(std::sync::Arc::clone(&db), stop.clone()),
+            ));
+        }
+        // The resource sampler: this node's own readings, on the same clock as
+        // housekeeping and for the reason the cadence in `crate::readings`
+        // gives. It runs whether or not there are peers — a standalone node
+        // reports its own resources to whoever asks `INFO FOR NODE`, and the
+        // store's volume is the one the sampler needs a path for.
+        {
+            let store = db.store().clone();
+            let volume = store_path.map(std::path::PathBuf::from);
+            let stop = house_stops.clone();
+            hosting.spawn(supervise::supervised(
+                "sampling",
+                house_stops.clone(),
+                move || {
+                    crate::readings::sample(
+                        store.clone(),
+                        crate::readings::Machine::new(volume.clone()),
+                        stop.clone(),
+                    )
+                },
             ));
         }
         {

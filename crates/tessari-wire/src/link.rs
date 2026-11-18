@@ -383,6 +383,25 @@ pub(crate) async fn answering(
             );
             Ok((PeerFrame::Vote.tag(), vote.encode(), Some(vote)))
         }
+        // What this node's own sampler last measured of its machine, for a
+        // peer new enough to ask. Answered with whatever the sampler holds —
+        // a sample whose fields are all absent is the honest answer for a
+        // process that has not measured yet, and the asker's build gate is
+        // the only interop rule this frame needs.
+        Some(PeerFrame::Readings) => {
+            let served = log
+                .readings()
+                .await
+                .unwrap_or(crate::peer::readings::ServedReadings {
+                    sample: tessari_storage::Readings::default(),
+                    age: Duration::ZERO,
+                });
+            Ok((
+                PeerFrame::ReadingsServed.tag(),
+                crate::peer::readings::encode_served(&served),
+                None,
+            ))
+        }
         Some(_) => Err(Error::OutOfTurn { tag }),
         None => Err(Error::UnknownFrame { tag }),
     }
@@ -461,6 +480,11 @@ pub enum Ask<'a> {
     /// One record of a transaction across leaders, for its range's leader to
     /// write (ADR-0112).
     Across(&'a crate::across::Carried),
+    /// What the responder's own sampler last measured of its machine — asked
+    /// only of a peer whose last greeting named a build at or past
+    /// [`crate::peer::readings::READINGS_FROM`], for the reason the frame's
+    /// own documentation gives.
+    Readings,
 }
 
 /// What the other end answered with.
@@ -487,6 +511,9 @@ pub enum Answered {
     Joined(bool),
     /// What a range's leader wrote for a transaction across leaders.
     Across(tessari_session::AcrossAnswer),
+    /// What the responder's own sampler last measured of its machine, and how
+    /// old the measurement already was on the responder's clock.
+    Readings(crate::peer::readings::ServedReadings),
 }
 
 #[cfg(test)]

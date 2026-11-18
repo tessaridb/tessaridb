@@ -133,6 +133,12 @@ tracing = { version = "0.1", default-features = false, features = ["std", "attri
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "json", "tracing-log", "smallvec"] }
 tracing-appender = "0.2"
 libc = "0.2"
+# What the node's own sampler measures resources with (CPU, memory, the disk
+# volume a store lives on) across every platform the image ships on. The
+# alternative is two platforms' /proc and sysctl readers owned in this tree
+# forever; the crate is MIT, sampled once a second, and behind the `Probe`
+# seam, so its failure modes are testable without it.
+sysinfo = { version = "0.40", default-features = false }
 rdkafka = { version = "0.39", default-features = false }
 
 proptest = "1"

@@ -66,6 +66,8 @@ fn no_peer_tag_is_a_client_tag() {
         PeerFrame::Held,
         PeerFrame::Restarted,
         PeerFrame::StateEntries,
+        PeerFrame::Readings,
+        PeerFrame::ReadingsServed,
     ] {
         assert!(
             frame::Kind::from_tag(kind.tag()).is_none(),
@@ -109,6 +111,8 @@ fn every_peer_tag_keeps_its_number() {
         (PeerFrame::Held, 35),
         (PeerFrame::Restarted, 36),
         (PeerFrame::StateEntries, 39),
+        (PeerFrame::Readings, 41),
+        (PeerFrame::ReadingsServed, 42),
     ];
     for (kind, tag) in expected {
         assert_eq!(kind.tag(), tag, "{kind:?}");

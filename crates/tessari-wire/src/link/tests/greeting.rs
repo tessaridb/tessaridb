@@ -1,5 +1,11 @@
+// bgv-allow(panic): test-only module; a refusal the other tests assert as a value is reported as a panic here, as in fault_tests.rs.
+#![allow(clippy::panic)]
+
 use super::*;
+use crate::collection::Answering;
+use crate::gathering::{Gather, Page};
 use tessari_session::Now;
+use tessari_types::Reach;
 
 #[test]
 fn two_nodes_that_prove_who_they_are_exchange_what_they_hold() {
@@ -340,4 +346,137 @@ fn the_ask_goes_out_with_the_greeting_and_not_a_round_trip_after_it() {
         asked.expect("the door read the ask before it greeted"),
         crate::peer::PeerFrame::Join.tag()
     );
+}
+
+/// A door whose origin serves one fixed sample of readings, for the exchange
+/// tests below. Everything the trait requires beyond `readings` delegates to
+/// `NoLog`, which refuses it — these tests are about the ask and its answer,
+/// not about the log behind the door.
+struct ServingReadings(
+    crate::collection::NoLog,
+    crate::peer::readings::ServedReadings,
+);
+
+impl Origin for ServingReadings {
+    fn collected(
+        &self,
+        follower: [u8; NODE_ID_LEN],
+        asked: Collect,
+    ) -> Answering<'_, Result<Collected>> {
+        self.0.collected(follower, asked)
+    }
+
+    fn gathered<'a>(
+        &'a self,
+        asker: [u8; NODE_ID_LEN],
+        asked: &'a Gather,
+    ) -> Answering<'a, Result<Page>> {
+        self.0.gathered(asker, asked)
+    }
+
+    fn places(&self, candidate: [u8; NODE_ID_LEN], range: Reach) -> Answering<'_, bool> {
+        self.0.places(candidate, range)
+    }
+
+    fn copied<'a>(
+        &'a self,
+        follower: [u8; NODE_ID_LEN],
+        write: &'a mut (dyn FnMut(u8, Vec<u8>) -> Answering<'static, Result<()>> + Send),
+    ) -> Answering<'a, Result<()>> {
+        self.0.copied(follower, write)
+    }
+
+    fn readings(&self) -> Answering<'_, Option<crate::peer::readings::ServedReadings>> {
+        Box::pin(async move { Some(self.1) })
+    }
+}
+
+#[test]
+fn a_peer_asking_readings_is_served_what_the_responders_sampler_holds() {
+    let authority = Authority::new();
+    let peers = bind_with(
+        "127.0.0.1:0",
+        authority.issue(HERE, Purpose::Peer),
+        &authority.der(),
+    )
+    .expect("a peer door on loopback");
+    let address = peers.address().expect("the door's address");
+    let served = crate::peer::readings::ServedReadings {
+        sample: tessari_storage::Readings {
+            cpu_cores: Some(8),
+            cpu_busy: Some(4_200),
+            memory_total: Some(16_000_000_000),
+            memory_used: Some(4_000_000_000),
+            disk_total: Some(500_000_000_000),
+            disk_free: Some(300_000_000_000),
+            network_received: Some(1_000_000),
+            network_transmitted: Some(250_000),
+        },
+        age: Duration::from_secs(2),
+    };
+    let origin = ServingReadings(crate::collection::NoLog, served);
+    let listening = std::thread::spawn(move || {
+        peers
+            .greet(
+                || Ok(hello(HERE)),
+                &HERE,
+                &Deciding::holding(settled()),
+                &origin,
+            )
+            .now()
+    });
+    let (_, answered) = call_with(
+        address,
+        authority.issue(THERE, Purpose::Peer),
+        &authority.der(),
+        HERE,
+        &hello(THERE),
+        Ask::Readings,
+    )
+    .expect("a readings ask is answered, not refused");
+    listening
+        .join()
+        .expect("the door's thread")
+        .expect("the door answers the ask it understands");
+    assert_eq!(answered, Answered::Readings(served));
+}
+
+#[test]
+fn a_peer_asking_readings_of_a_node_without_a_sample_is_served_absence_not_a_refusal() {
+    let authority = Authority::new();
+    let (peers, _) = door(&authority);
+    let address = peers.address().expect("the door's address");
+    let listening = std::thread::spawn(move || {
+        peers
+            .greet(
+                || Ok(hello(HERE)),
+                &HERE,
+                &Deciding::holding(settled()),
+                &NoLog,
+            )
+            .now()
+    });
+    let (_, answered) = call_with(
+        address,
+        authority.issue(THERE, Purpose::Peer),
+        &authority.der(),
+        HERE,
+        &hello(THERE),
+        Ask::Readings,
+    )
+    .expect("an unanswered sampler is still an answer");
+    listening
+        .join()
+        .expect("the door's thread")
+        .expect("the door answers with absence");
+    let crate::peer::readings::ServedReadings { sample, age } = match answered {
+        Answered::Readings(served) => served,
+        other => panic!("a readings ask is answered with readings: {other:?}"),
+    };
+    assert_eq!(
+        sample,
+        tessari_storage::Readings::default(),
+        "no sample is every figure absent, never a zero"
+    );
+    assert_eq!(age, Duration::ZERO);
 }

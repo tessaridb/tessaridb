@@ -1155,7 +1155,31 @@ const TABLES: &[Table] = &[
         // already gives.
         // 22 since the inbound link: `Store::replicated` hands out the derived
         // registry, classified above with the total.
-        expected: 87,
+        //
+        // 23 since the resource readings: `Store::readings` and
+        // `Store::readings_of` report, and `Store::readings_sampled` and
+        // `Store::readings_heard` record, what this process measures of its own
+        // machine and what its peers have served of theirs. All four are
+        // classified **exempt on `follower_lag` / `follower_served`'s grounds**,
+        // which they reach by two different halves exactly as that pair does.
+        // The two reporters disclose no store content — no record, no catalog
+        // entry, no grant; the numbers are process-local measurements, and the
+        // permission on them belongs to the statement above this table:
+        // `INFO FOR NODE` is refused to a viewer and an editor by tests that
+        // say so, and a peer's readings reach `readings_heard` only through
+        // the greeting round, which records them against the node id the
+        // handshake proved. The two recorders return nothing and mutate
+        // nothing in the store: what they write is process memory that is
+        // never persisted and never read back by any query — the same
+        // argument `follower_served` was exempt on, and for the same reason:
+        // a reading that outlived the process that took it would be a claim
+        // nobody can check, so by design none of them survives it.
+        //
+        // What would change both halves is the same event: these figures
+        // becoming reachable from a surface that does not ask who is asking
+        // first, or becoming persistent — either one moves them from
+        // diagnostics to data and re-opens the classification.
+        expected: 91,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1438,7 +1462,14 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // what it can change is a process-local derived registry the commit path
     // itself re-derives on every record — a caller holding it can no more
     // weaken the gate than a caller holding the write gate can.
-    assert_eq!(total, 178, "the counted tables no longer sum to 178");
+    //
+    // 178 since `Store::readings` and `Store::readings_of` — the resource
+    // readings this process holds of itself and its peers, classified above
+    // with the reporters' table.
+    //
+    // 180 since `Store::readings_sampled` and `Store::readings_heard` — the
+    // two recorders of the same surface, classified above with their table.
+    assert_eq!(total, 182, "the counted tables no longer sum to 182");
 }
 
 /// Every `.rs` file under a directory.

@@ -116,6 +116,19 @@ impl tessari_wire::Origin for PeerDoor {
     fn attempted(&self, asked: &tessari_wire::Attempt) -> bool {
         asked.answered(self.db.store())
     }
+
+    // What this node's own sampler last measured of its machine, for a peer
+    // that asked on the greeting it opened. `Store::readings` answers the
+    // sample and its age; the wire shapes the absence itself when the sampler
+    // has not passed yet.
+    fn readings(&self) -> tessari_wire::Answering<'_, Option<tessari_wire::ServedReadings>> {
+        Box::pin(async move {
+            self.db
+                .store()
+                .readings()
+                .map(|(sample, age)| tessari_wire::ServedReadings { sample, age })
+        })
+    }
 }
 
 impl tessari_wire::Holding for PeerDoor {

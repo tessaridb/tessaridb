@@ -37,6 +37,7 @@
 //! clients.
 
 mod hello;
+pub mod readings;
 
 use core::time::Duration;
 
@@ -145,6 +146,16 @@ pub enum PeerFrame {
     /// The leader took a restart: every round after this one is cut from the
     /// positions the restart named (ADR-0120 D4).
     Restarted,
+    /// A peer asking what the responder's own sampler last measured of its
+    /// machine. Sent only to a peer whose last greeting named a build at or
+    /// past [`readings::READINGS_FROM`], because a responder of an earlier
+    /// build answers an unknown follow-up by closing the link — the greeting
+    /// has landed by then, but the call reads as a failure and the peer is
+    /// recorded as unheard. The gate is what keeps the upgrade window quiet.
+    Readings,
+    /// The answer: the responder's sample and the sample's age on the
+    /// responder's own clock at the moment of serving.
+    ReadingsServed,
 }
 
 impl PeerFrame {
@@ -198,6 +209,8 @@ impl PeerFrame {
             Self::Restarted => 36,
             // 37 and 38 are the client's `Progress` and `Part`.
             Self::StateEntries => 39,
+            Self::Readings => 41,
+            Self::ReadingsServed => 42,
         }
     }
 
@@ -235,6 +248,8 @@ impl PeerFrame {
             35 => Some(Self::Held),
             36 => Some(Self::Restarted),
             39 => Some(Self::StateEntries),
+            41 => Some(Self::Readings),
+            42 => Some(Self::ReadingsServed),
             _ => None,
         }
     }
