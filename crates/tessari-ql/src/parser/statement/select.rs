@@ -8,7 +8,7 @@ use crate::ast::{
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
 
-use super::NODE_SOURCE;
+use super::{NODE_SOURCE, NODES_SOURCE};
 
 mod combine;
 mod join;
@@ -41,6 +41,10 @@ impl Parser<'_> {
         // between a source spelled with a sigil and a reserved parameter name,
         // which ADR-0018's amendment rejects for exactly the shadowing it would
         // have introduced.
+        if matches!(self.peek(), Some(Token::Parameter(name)) if name == NODES_SOURCE) {
+            self.advance();
+            return Ok(Source::Nodes);
+        }
         if matches!(self.peek(), Some(Token::Parameter(name)) if name == NODE_SOURCE) {
             self.advance();
             return Ok(Source::Node);
@@ -396,6 +400,7 @@ impl Parser<'_> {
                 }
             }
             Source::Node
+            | Source::Nodes
             | Source::Record(_)
             | Source::Table(_)
             | Source::Range { .. }

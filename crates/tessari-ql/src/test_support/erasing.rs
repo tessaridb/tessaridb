@@ -56,7 +56,7 @@ pub(super) fn erase_select(select: &mut Select) {
 /// What a `FROM` names.
 pub(super) fn erase_source(source: &mut Source) {
     match source {
-        Source::Node => {}
+        Source::Node | Source::Nodes => {}
         Source::Record(record) => erase_record(record),
         Source::Table(table) => erase_table(table),
         Source::Range { table, span, .. } => {

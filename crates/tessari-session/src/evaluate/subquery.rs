@@ -101,7 +101,12 @@ impl Session<'_> {
             });
         };
         // A read of one record already answers as that record, not an array.
-        if select.only.is_some() || matches!(select.from, Source::Record(_) | Source::Node) {
+        if select.only.is_some()
+            || matches!(
+                select.from,
+                Source::Record(_) | Source::Node | Source::Nodes
+            )
+        {
             return Ok(Operand {
                 plain: self.evaluate_child(transaction, operand, scope).await?,
                 projected: None,

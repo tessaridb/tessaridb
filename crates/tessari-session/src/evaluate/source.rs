@@ -13,7 +13,7 @@ use crate::search::Searched;
 use crate::session::Session;
 
 use super::join::JoinClause;
-use super::{Part, Prepared, Reporting, Scope, ceiling_reached, node_row, shown};
+use super::{Part, Prepared, Reporting, Scope, ceiling_reached, node_row, nodes_rows, shown};
 
 impl Session<'_> {
     /// What resolving a source establishes before it produces a record.
@@ -158,6 +158,21 @@ impl Session<'_> {
                     vec![node_row(self.store).await?],
                     Box::new(Plan {
                         source: Some("node"),
+                        ..Plan::new(AccessPath::Record)
+                    }),
+                ),
+                Searched::default(),
+            )),
+            // The membership as the catalog holds it, with each bound row's
+            // readings joined live — ADR-0018 §3's `$nodes`, the plural beside
+            // `$node`. Needs `Administer` for the reason `$node` does: the
+            // subject names no table, and the membership is topology with no
+            // smaller truthful form to filter down to.
+            Source::Nodes => Ok((
+                Prepared::Held(
+                    nodes_rows(self.store, transaction).await?,
+                    Box::new(Plan {
+                        source: Some("nodes"),
                         ..Plan::new(AccessPath::Record)
                     }),
                 ),

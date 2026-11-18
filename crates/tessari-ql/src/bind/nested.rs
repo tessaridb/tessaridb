@@ -177,7 +177,7 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
         }
         // Neither names a value a caller could bind: a table is a name, and
         // this node's identity is not addressed at all.
-        Source::Node | Source::Table(_) => {}
+        Source::Node | Source::Nodes | Source::Table(_) => {}
     }
     // `AFTER table:$anchor` — a cursor is the record the caller's last page
     // ended on, so it arrives as a value like any other record identity.

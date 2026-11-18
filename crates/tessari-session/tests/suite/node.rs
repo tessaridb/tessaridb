@@ -351,3 +351,178 @@ fn replication_turned_on_later_brings_the_whole_history_with_it() {
     };
     assert_eq!(fields.get("replication"), Some(&Value::from(2_i64)));
 }
+
+/// Every `$nodes` row, read as an owner.
+fn asked_all(store: &Store) -> Vec<(String, Value)> {
+    let mut session = Session::new(store);
+    session.sign_in("root", PASSWORD).now().ok();
+    let outcomes = session.run_now("SELECT * FROM $nodes;").unwrap();
+    let Some(Outcome::Records { records, .. }) = outcomes.first() else {
+        panic!("not a read: {outcomes:?}");
+    };
+    records
+        .iter()
+        .map(|(id, value)| (id.to_string(), value.clone()))
+        .collect()
+}
+
+#[test]
+fn the_membership_answers_zero_rows_when_nobody_is_declared() {
+    // `$nodes` is every row the membership table holds, and an empty table is
+    // an empty answer — this node does not invent a row for itself that the
+    // catalog did not write.
+    let store = closed(&backend());
+    let rows = asked_all(&store);
+    assert!(rows.is_empty(), "no membership, no rows: {rows:?}");
+}
+
+#[test]
+fn each_declared_server_is_one_row_and_its_readings_ride_it() {
+    const HEARD: [u8; 16] = [7; 16];
+    let store = closed(&backend());
+    {
+        let mut owner = Session::new(&store);
+        owner.sign_in("root", PASSWORD).now().unwrap();
+        // One transaction, the founding rule: the first declaration clusters
+        // this store and the second would be refused on its own.
+        owner
+            .run_now(
+                "BEGIN; \
+                 DEFINE REPLICA alpha AT '127.0.0.1:47961' NODE '07070707-0707-0707-0707-070707070707' \
+                 ROLES serving, writable, coordinating REPLICATES STORE; \
+                 DEFINE REPLICA beta AT '127.0.0.1:47962' ROLES serving REPLICATES STORE; \
+                 COMMIT;",
+            )
+            .unwrap();
+    }
+    store.readings_heard(
+        HEARD,
+        tessari_storage::Readings {
+            cpu_cores: Some(8),
+            cpu_busy: Some(4_200),
+            memory_total: Some(16_000_000_000),
+            memory_used: Some(4_000_000_000),
+            disk_total: Some(500_000_000_000),
+            disk_free: Some(300_000_000_000),
+            network_received: Some(1_000_000),
+            network_transmitted: Some(500_000),
+        },
+        std::time::Duration::ZERO,
+    );
+    let rows = asked_all(&store);
+    assert_eq!(rows.len(), 2, "one row per declared server: {rows:?}");
+    let by_name = |want: &str| {
+        rows.iter()
+            .find(|(_, value)| matches!(value, Value::Object(fields) if fields.get("name") == Some(&Value::from(want))))
+            .unwrap_or_else(|| panic!("no row named {want}: {rows:?}"))
+    };
+    // A bound row is addressable by the node's own id, and carries what this
+    // process last heard of it, with the freshness label on.
+    let (id, heard) = by_name("alpha");
+    assert_eq!(id.len(), 32, "the bound row keys by the node id: {id}");
+    let Value::Object(fields) = heard else {
+        panic!("not an object: {heard:?}");
+    };
+    let Some(Value::Object(readings)) = fields.get("readings") else {
+        panic!("no readings on the row: {fields:?}");
+    };
+    // The figures this process last heard, field for field:
+    assert_eq!(readings.get("cpu_cores"), Some(&Value::from(8)));
+    assert_eq!(readings.get("cpu_busy"), Some(&Value::from(4_200)));
+    assert_eq!(
+        readings.get("memory_total"),
+        Some(&Value::from(16_000_000_000_i64))
+    );
+    assert_eq!(
+        readings.get("memory_used"),
+        Some(&Value::from(4_000_000_000_i64))
+    );
+    assert_eq!(
+        readings.get("disk_total"),
+        Some(&Value::from(500_000_000_000_i64))
+    );
+    assert_eq!(
+        readings.get("disk_free"),
+        Some(&Value::from(300_000_000_000_i64))
+    );
+    assert_eq!(
+        readings.get("network_received"),
+        Some(&Value::from(1_000_000))
+    );
+    assert_eq!(
+        readings.get("network_transmitted"),
+        Some(&Value::from(500_000))
+    );
+    // The age rounds UP — a reading a fraction of a second old renders one
+    // second, never zero — and a fresh hearing is not stale.
+    assert!(
+        matches!(readings.get("observed"), Some(observed) if observed == &Value::from(0) || observed == &Value::from(1)),
+        "the age rounds up, so fresh reads one second: {readings:?}"
+    );
+    assert_eq!(readings.get("stale"), Some(&Value::Bool(false)));
+    // An unbound row is addressable by its name, and absence of a hearing is
+    // null — never an empty object that would read as a measured nothing.
+    let (id, unheard) = by_name("beta");
+    assert_eq!(id, "beta", "the unbound row keys by its name: {id}");
+    let Value::Object(fields) = unheard else {
+        panic!("not an object: {unheard:?}");
+    };
+    // No readings key at all: the row names no node, so no readings are
+    // expressible — and absence is a different, truer statement than null.
+    assert!(!fields.contains_key("readings"), "unexpected: {fields:?}");
+}
+
+#[test]
+fn a_reading_past_the_freshness_bound_is_named_stale_on_the_row() {
+    const HEARD: [u8; 16] = [7; 16];
+    let store = closed(&backend());
+    {
+        let mut owner = Session::new(&store);
+        owner.sign_in("root", PASSWORD).now().unwrap();
+        owner
+            .run_now(
+                "BEGIN; \
+                 DEFINE REPLICA alpha AT '127.0.0.1:47961' NODE '07070707-0707-0707-0707-070707070707' \
+                 ROLES serving REPLICATES STORE; \
+                 COMMIT;",
+            )
+            .unwrap();
+    }
+    // Past twice the built-in awareness interval: stale on arrival, whatever
+    // the transport since added.
+    store.readings_heard(
+        HEARD,
+        tessari_storage::Readings::default(),
+        std::time::Duration::from_secs(5),
+    );
+    let rows = asked_all(&store);
+    let Value::Object(fields) = &rows[0].1 else {
+        panic!("not an object: {:?}", rows[0].1);
+    };
+    let Some(Value::Object(readings)) = fields.get("readings") else {
+        panic!("no readings on the row: {fields:?}");
+    };
+    assert_eq!(readings.get("stale"), Some(&Value::Bool(true)));
+}
+
+#[test]
+fn a_viewer_is_refused_the_membership_by_role_as_for_the_node_itself() {
+    let store = closed(&backend());
+    {
+        let mut owner = Session::new(&store);
+        owner.sign_in("root", PASSWORD).now().unwrap();
+        owner
+            .run_now(&format!(
+                "DEFINE USER ada ROLE viewer PASSWORD '{PASSWORD}';"
+            ))
+            .unwrap();
+    }
+    let mut viewer = Session::new(&store);
+    viewer.sign_in("ada", PASSWORD).now().unwrap();
+    let refused = viewer
+        .run_now("SELECT * FROM $nodes;")
+        .unwrap_err()
+        .to_string();
+    assert!(refused.contains("operate"), "{refused}");
+    assert!(viewer.run_now("EXPLAIN SELECT * FROM $nodes;").is_err());
+}

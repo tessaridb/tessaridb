@@ -45,6 +45,20 @@ pub enum Source {
     /// the tables a statement names has to answer for that separately rather
     /// than reading an empty list as "nothing to check".
     Node,
+    /// Every row the membership table holds — the cluster's servers as the
+    /// catalog records them, one row per `DEFINE REPLICA` (ADR-0018 §3's
+    /// promise, the plural beside `$node`). The rows come from the catalog,
+    /// and each bound row carries the resource readings this process has
+    /// heard from that node, labelled with their age and freshness the way
+    /// `INFO FOR NODE` renders them — live-joined at read time, never stored,
+    /// because a utilization figure is a fact about a live process (see
+    /// `tessari-storage`'s readings module).
+    ///
+    /// A store whose catalog names nobody answers zero rows: the membership
+    /// table is empty, and an empty answer is the honest reading of it —
+    /// this node does not invent a row for itself that the catalog did not
+    /// write.
+    Nodes,
     /// One record, by its identity.
     Record(RecordTarget),
     /// Every record of a table.

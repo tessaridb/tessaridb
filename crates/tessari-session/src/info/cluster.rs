@@ -55,17 +55,7 @@ impl Session<'_> {
         let (retention, retained_by) = self.store.effective_retention().await?;
         let catalog = Catalog::new(transaction);
         let mut peers = Vec::new();
-        // The freshness a readings figure is asked against: twice the awareness
-        // interval, the same floor a bounded read is refused below. A reading
-        // older than this is not a slightly old number — it is a node that has
-        // not said anything inside the window the cluster's own policy
-        // considers *now*, and it is named stale rather than read as current.
-        let stale_after = catalog
-            .failover()
-            .await?
-            .map_or(tessari_storage::Failover::DEFAULT, |held| held.policy)
-            .awareness()
-            .saturating_mul(2);
+        let stale_after = readings_stale_after(&catalog).await?;
         let now = std::time::Instant::now();
         for replica in &catalog.replicas().await? {
             let mut described = described_replica(replica, &catalog).await?;
@@ -811,6 +801,22 @@ impl Session<'_> {
     }
 }
 
+/// The freshness a readings figure is asked against: twice the awareness
+/// interval, the same floor a bounded read is refused below. A reading older
+/// than this is not a slightly old number — it is a node that has not said
+/// anything inside the window the cluster's own policy considers *now*, and
+/// it is named stale rather than read as current.
+pub(crate) async fn readings_stale_after(
+    catalog: &Catalog<'_, '_>,
+) -> Result<core::time::Duration> {
+    Ok(catalog
+        .failover()
+        .await?
+        .map_or(tessari_storage::Failover::DEFAULT, |held| held.policy)
+        .awareness()
+        .saturating_mul(2))
+}
+
 /// A count as the store's integer value, saturating at the widest integer a
 /// stored value holds rather than refusing a report over a width.
 fn count_value(count: impl TryInto<i64>) -> Value {
@@ -825,7 +831,7 @@ fn count_value(count: impl TryInto<i64>) -> Value {
 /// a reader never holds an unlabelled number: `observed` says how old,
 /// `stale` says whether the freshness bound the cluster's policy sets still
 /// admits it.
-fn described_readings(
+pub(crate) fn described_readings(
     sample: tessari_storage::Readings,
     observed: core::time::Duration,
     stale_after: core::time::Duration,

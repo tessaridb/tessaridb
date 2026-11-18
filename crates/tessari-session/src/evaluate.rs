@@ -24,8 +24,8 @@ use crate::session::Session;
 pub(crate) use keys::{JoinServing, collect_by_key, join_serving, key_bound, listed};
 pub(crate) use scope::{Reporting, Scope, Testing};
 pub(crate) use shape_rules::{
-    alone, asserted, ceiling_reached, groups, held_bound, node_row, omit_within, omits, opened,
-    order_bound, shown, sought, streams, table_named,
+    alone, asserted, ceiling_reached, groups, held_bound, node_row, nodes_rows, omit_within, omits,
+    opened, order_bound, shown, sought, streams, table_named,
 };
 pub(crate) use stages::{
     Answered, Approximated, Asked, Candidates, Gated, Hopped, Joined, Prepared, Reached, Walked,
