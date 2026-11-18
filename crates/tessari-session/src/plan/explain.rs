@@ -53,6 +53,10 @@ impl Session<'_> {
                 source: Some("node"),
                 ..Plan::new(AccessPath::Record)
             }),
+            Source::Nodes => Ok(Plan {
+                source: Some("nodes"),
+                ..Plan::new(AccessPath::Record)
+            }),
             // Straight to one record by its identity: there is nothing to choose.
             Source::Record(target) => {
                 let (_, id) = self

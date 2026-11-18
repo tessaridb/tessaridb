@@ -23,6 +23,27 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.49.0 — 2026-11-18
+
+- Nodes report their resources to the cluster: each machine's sampler
+  measures CPU, memory, the store volume's disk and network throughput, and a
+  build-gated follow-up on the peer greeting serves the sample to new enough
+  peers. `INFO FOR NODE` answers the self sample as `resources` and each bound
+  peer's readings on its row — every figure labelled with its age and a
+  `stale` verdict against the cluster's freshness bound, never an unlabelled
+  number, and a figure the platform cannot measured answered as absent rather
+  than zero. Readings live in process memory by design: a utilization figure
+  that outlived the process that took it would be a claim nobody can check.
+- `SELECT * FROM $nodes` — the membership as rows: one row per declared
+  server, the catalog's fields as they stand, each bound row carrying the
+  resource readings this node last heard. A store whose catalog names nobody
+  answers zero rows; the read needs the same authority `INFO FOR NODE` does.
+- The console shows it all: the cluster card and the This node pane carry the
+  machine's readings, clicking a server opens its drawer with everything this
+  node can vouch for, and the Servers table takes over at grown-cluster
+  density — find by name, address or id, sort on every column, filters by
+  status and by resource bounds, a row opening the same drawer.
+
 ## 0.48.0 — 2026-11-18
 
 A store written by 0.47.0 opens under 0.48.0 unchanged.

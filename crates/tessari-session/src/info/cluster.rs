@@ -55,8 +55,24 @@ impl Session<'_> {
         let (retention, retained_by) = self.store.effective_retention().await?;
         let catalog = Catalog::new(transaction);
         let mut peers = Vec::new();
+        let stale_after = readings_stale_after(&catalog).await?;
+        let now = std::time::Instant::now();
         for replica in &catalog.replicas().await? {
-            peers.push(described_replica(replica, &catalog).await?);
+            let mut described = described_replica(replica, &catalog).await?;
+            // The peer's own readings, when this node has heard them: joined
+            // here rather than inside `described_replica` because the catalog
+            // cannot answer them — they live in this process's registry, for
+            // ADR-0018's reason, and a reader must be able to tell that from
+            // everything else on the row, which comes from the log.
+            if let (Some(node), Value::Object(fields)) = (replica.node, &mut described) {
+                fields.insert(
+                    "readings".to_owned(),
+                    self.store.readings_of(&node).map_or(Value::Null, |held| {
+                        described_readings(held.sample, held.age(now), stale_after)
+                    }),
+                );
+            }
+            peers.push(described);
         }
         let peers = Value::Array(peers);
         // Asked of the catalog rather than computed from `peers` above, so that
@@ -206,6 +222,23 @@ impl Session<'_> {
             // Beside it, how the clients are served, so a node in the clear says
             // so here and not only in a start line that scrolled away (ADR-0111).
             ("clients".to_owned(), self.described_clients()),
+            (
+                // This machine's own resource readings, from the sampler's
+                // last pass. Flat and local, beside `retain` for ADR-0018's
+                // reason: the figures describe this process's machine, would
+                // not follow a backup, and so do not sit under `cluster`.
+                // `null` before the first pass — a node that has never
+                // measured says so, which is not the same statement as a
+                // sample whose figures are all absent. Every figure is
+                // labelled by its age (`observed`) and by `stale`, and a
+                // figure the platform could not give is `null` rather than a
+                // zero: bytes are bytes, `cpu_busy` is basis points of one
+                // percent, and the two never change unit.
+                "resources".to_owned(),
+                self.store.readings().map_or(Value::Null, |(sample, age)| {
+                    described_readings(sample, age, stale_after)
+                }),
+            ),
             (
                 "cluster".to_owned(),
                 Value::Object(BTreeMap::from([
@@ -768,9 +801,144 @@ impl Session<'_> {
     }
 }
 
+/// The freshness a readings figure is asked against: twice the awareness
+/// interval, the same floor a bounded read is refused below. A reading older
+/// than this is not a slightly old number — it is a node that has not said
+/// anything inside the window the cluster's own policy considers *now*, and
+/// it is named stale rather than read as current.
+pub(crate) async fn readings_stale_after(
+    catalog: &Catalog<'_, '_>,
+) -> Result<core::time::Duration> {
+    Ok(catalog
+        .failover()
+        .await?
+        .map_or(tessari_storage::Failover::DEFAULT, |held| held.policy)
+        .awareness()
+        .saturating_mul(2))
+}
+
 /// A count as the store's integer value, saturating at the widest integer a
 /// stored value holds rather than refusing a report over a width.
 fn count_value(count: impl TryInto<i64>) -> Value {
     let count = count.try_into().unwrap_or(i64::MAX);
     Value::from(count)
+}
+
+/// One set of resource readings as `INFO FOR NODE` renders it: the six
+/// figures, the sample's age in whole seconds, and whether that age is past
+/// `stale_after`. A figure the node could not measure is `null` — rendered
+/// absence, never a stand-in zero — and the two labels travel on every row so
+/// a reader never holds an unlabelled number: `observed` says how old,
+/// `stale` says whether the freshness bound the cluster's policy sets still
+/// admits it.
+pub(crate) fn described_readings(
+    sample: tessari_storage::Readings,
+    observed: core::time::Duration,
+    stale_after: core::time::Duration,
+) -> Value {
+    let figure = |held: Option<u64>| held.map_or(Value::Null, count_value);
+    // The freshness verdict is judged on the exact age; the rendered number
+    // is rounded up, the safe direction — a reading declared stale a moment
+    // early is recoverable, one read as fresh a moment late is the mistake
+    // the bound exists to stop.
+    let stale = observed > stale_after;
+    let observed = observed
+        .as_secs()
+        .saturating_add(u64::from(observed.subsec_nanos() > 0));
+    Value::Object(BTreeMap::from([
+        ("cpu_cores".to_owned(), figure(sample.cpu_cores)),
+        ("cpu_busy".to_owned(), figure(sample.cpu_busy)),
+        ("memory_total".to_owned(), figure(sample.memory_total)),
+        ("memory_used".to_owned(), figure(sample.memory_used)),
+        ("disk_total".to_owned(), figure(sample.disk_total)),
+        ("disk_free".to_owned(), figure(sample.disk_free)),
+        (
+            "network_received".to_owned(),
+            figure(sample.network_received),
+        ),
+        (
+            "network_transmitted".to_owned(),
+            figure(sample.network_transmitted),
+        ),
+        ("observed".to_owned(), count_value(observed)),
+        ("stale".to_owned(), Value::Bool(stale)),
+    ]))
+}
+
+#[cfg(test)]
+// bgv-allow(panic): test-only module; a shape violation is reported as a panic, as in fault_tests.rs.
+mod tests {
+    #![allow(clippy::panic, clippy::unwrap_used)]
+
+    use super::*;
+    use tessari_storage::Readings;
+
+    fn at(seconds: u64, nanos: u32) -> core::time::Duration {
+        core::time::Duration::new(seconds, nanos)
+    }
+
+    fn rendered(
+        sample: Readings,
+        observed: core::time::Duration,
+        bound: core::time::Duration,
+    ) -> BTreeMap<String, Value> {
+        match described_readings(sample, observed, bound) {
+            Value::Object(fields) => fields,
+            other => panic!("readings render as an object: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_fresh_sample_is_not_stale_and_carries_its_figures() {
+        let fields = rendered(
+            Readings {
+                cpu_cores: Some(8),
+                cpu_busy: Some(4_200),
+                memory_total: Some(16),
+                memory_used: Some(4),
+                disk_total: Some(500),
+                disk_free: Some(300),
+                network_received: Some(70),
+                network_transmitted: Some(30),
+            },
+            at(1, 1),
+            at(2, 0),
+        );
+        assert_eq!(fields["cpu_busy"], Value::from(4_200));
+        assert_eq!(fields["stale"], Value::Bool(false));
+    }
+
+    #[test]
+    fn a_sample_past_the_bound_is_named_stale_but_keeps_its_labels() {
+        let fields = rendered(Readings::default(), at(3, 0), at(2, 0));
+        assert_eq!(fields["stale"], Value::Bool(true), "past the bound, named");
+        assert_eq!(
+            fields["observed"],
+            Value::from(3),
+            "the age is still stated"
+        );
+        // An absent figure stays absent even on a stale row — stale is about
+        // the sample's age, never a licence to invent what was not measured.
+        assert_eq!(fields["cpu_cores"], Value::Null);
+    }
+
+    #[test]
+    fn the_verdict_uses_the_exact_age_while_the_rendered_age_rounds_up() {
+        // 1.2s old against a 2s bound: exactly inside, so not stale — but the
+        // rendered age rounds UP to 2, and a reader comparing the rendered
+        // numbers alone must not be able to talk itself into the wrong verdict.
+        let fields = rendered(Readings::default(), at(1, 200_000_000), at(2, 0));
+        assert_eq!(fields["stale"], Value::Bool(false));
+        assert_eq!(fields["observed"], Value::from(2), "rounded up for display");
+        // 2.0s against 2.0s: at the bound, still admitted.
+        let fields = rendered(Readings::default(), at(2, 0), at(2, 0));
+        assert_eq!(
+            fields["stale"],
+            Value::Bool(false),
+            "the bound admits its edge"
+        );
+        // 2.000000001s: past by a nanosecond, refused.
+        let fields = rendered(Readings::default(), at(2, 1), at(2, 0));
+        assert_eq!(fields["stale"], Value::Bool(true));
+    }
 }

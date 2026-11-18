@@ -40,6 +40,7 @@ struct FieldOptions {
 /// Spelled with a sigil rather than reserved as a word, so that `node` stays an
 /// ordinary table and field name for data that already uses it.
 const NODE_SOURCE: &str = "node";
+const NODES_SOURCE: &str = "nodes";
 
 /// Which of the two tables a join key names, and the route below it.
 ///

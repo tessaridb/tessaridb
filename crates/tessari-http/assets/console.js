@@ -112,9 +112,9 @@
     return at(named);
   }
   function show(name) {
-    const wanted2 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
+    const wanted3 = tabs().some((tab) => tab.id === "tab-" + name) ? name : "run";
     for (const tab of tabs()) {
-      const chosen3 = tab.id === "tab-" + wanted2;
+      const chosen3 = tab.id === "tab-" + wanted3;
       tab.setAttribute("aria-selected", String(chosen3));
       tab.tabIndex = chosen3 ? 0 : -1;
       pane(tab).hidden = !chosen3;
@@ -122,15 +122,15 @@
         at("view-title").textContent = tab.textContent?.trim() ?? "";
       }
     }
-    if (window.location.hash !== "#" + wanted2) {
-      window.location.hash = wanted2;
+    if (window.location.hash !== "#" + wanted3) {
+      window.location.hash = wanted3;
     }
     requestAnimationFrame(() => window.scrollTo(0, 0));
     if (held) {
       return;
     }
     for (const arrival of arrivals) {
-      if (arrival.names.includes(wanted2)) {
+      if (arrival.names.includes(wanted3)) {
         arrival.todo();
       }
     }
@@ -310,8 +310,8 @@
     return "Basic " + basic(user, password);
   }
   function basic(user, password) {
-    const bytes = new TextEncoder().encode(user + ":" + password);
-    return btoa(String.fromCharCode(...bytes));
+    const bytes2 = new TextEncoder().encode(user + ":" + password);
+    return btoa(String.fromCharCode(...bytes2));
   }
   function credential() {
     if (held2 !== null) {
@@ -719,36 +719,36 @@
     return address;
   }
   function asked(values) {
-    const wanted2 = {
+    const wanted3 = {
       namespace: value("namespace"),
       database: value("database"),
       from: Number(value("from"))
     };
     const table = value("table");
     if (table !== "") {
-      wanted2.table = table;
+      wanted3.table = table;
     }
     const cursor = value("cursor");
     if (cursor !== "") {
-      wanted2.cursor = cursor;
+      wanted3.cursor = cursor;
     }
     const condition = value("condition");
     if (condition !== "") {
-      wanted2.condition = condition;
-      wanted2.parameters = values;
+      wanted3.condition = condition;
+      wanted3.parameters = values;
     }
     const carried = token();
     if (carried !== null) {
-      wanted2.token = carried;
-      return wanted2;
+      wanted3.token = carried;
+      return wanted3;
     }
     const user = value("user");
     const password = value("password");
     if (user !== "" || password !== "") {
-      wanted2.user = user;
-      wanted2.password = password;
+      wanted3.user = user;
+      wanted3.password = password;
     }
-    return wanted2;
+    return wanted3;
   }
   function wire5() {
     at("follow").addEventListener("click", () => {
@@ -865,34 +865,34 @@
     }
   }
   function keep() {
-    const kept2 = {};
+    const kept3 = {};
     for (const id of REMEMBERED) {
       if (!mayKeep(id)) {
         continue;
       }
       const value2 = at(id).value;
       if (value2 !== "") {
-        kept2[id] = value2;
+        kept3[id] = value2;
       }
     }
     if (isFollowing()) {
-      kept2[FOLLOWING] = "yes";
+      kept3[FOLLOWING] = "yes";
     }
     try {
-      window.sessionStorage.setItem(KEY, JSON.stringify(kept2));
+      window.sessionStorage.setItem(KEY, JSON.stringify(kept3));
     } catch {
     }
   }
   function restore() {
-    const kept2 = held4();
+    const kept3 = held4();
     for (const id of REMEMBERED) {
-      const value2 = kept2[id];
+      const value2 = kept3[id];
       if (value2 === void 0 || !mayKeep(id)) {
         continue;
       }
       at(id).value = value2;
     }
-    if (kept2[FOLLOWING] === "yes") {
+    if (kept3[FOLLOWING] === "yes") {
       at("watch-status").textContent = "the follow stopped at the reload — sign in and press Follow to resume it";
     }
   }
@@ -1216,7 +1216,7 @@
   }
   function offer(id, names2) {
     const select = at(id);
-    const kept2 = value(id);
+    const kept3 = value(id);
     clear(id);
     for (const name of names2) {
       const option = made("option");
@@ -1224,8 +1224,8 @@
       option.textContent = name;
       select.appendChild(option);
     }
-    if (names2.includes(kept2)) {
-      setValue(id, kept2);
+    if (names2.includes(kept3)) {
+      setValue(id, kept3);
     }
   }
   async function readNamespaces() {
@@ -1881,11 +1881,11 @@
     }
     const roles = ticked();
     if (roles.length === 0) {
-      const kept2 = `Drains this node: it keeps its data, its identity and its place in the membership, and stops answering clients and accepting writes until a role is declared here again.`;
+      const kept3 = `Drains this node: it keeps its data, its identity and its place in the membership, and stops answering clients and accepting writes until a role is declared here again.`;
       const declared = open.declared;
       say(
         "drawer-says",
-        declared === null ? kept2 : `${kept2} The membership declares ${declared.join(", ")} for this node, so this is a local override the next open discards — to drain it for good, write the membership row instead.`
+        declared === null ? kept3 : `${kept3} The membership declares ${declared.join(", ")} for this node, so this is a local override the next open discards — to drain it for good, write the membership row instead.`
       );
       return;
     }
@@ -1898,6 +1898,7 @@
       at(`drawer-${bit}`).checked = subject.roles.includes(bit);
     }
     clear("drawer-missing");
+    facts("drawer-facts", subject.about);
     hide("drawer-remove-part", subject.self);
     setValue("drawer-remove-confirm", "");
     shapeRemove();
@@ -2893,6 +2894,87 @@ Shown once. The node keeps only its digest.`);
     at("signed-in").before(icon("user"));
   }
 
+  // src/readings.ts
+  //! Resource readings, as the console renders them.
+  //!
+  //! What `INFO FOR NODE` now answers of a machine — its own, and each bound
+  //! peer's as this node last heard it. Every number keeps the two labels the
+  //! engine puts on it: `observed` (how old the sample is) and `stale` (whether
+  //! the freshness bound the cluster's policy sets still admits it). A stale
+  //! reading is drawn as stale, never silently as the present — that is the one
+  //! thing this module must never do.
+  //!
+  //! A figure the node could not measure answers `null`, and renders as "not
+  //! reported" rather than a zero: absence and zero are different claims, and
+  //! the console does not get to pick the more comfortable one.
+  function bytes(held6) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value2 = held6;
+    let unit = 0;
+    while (value2 >= 1024 && unit < units.length - 1) {
+      value2 /= 1024;
+      unit += 1;
+    }
+    return `${unit === 0 ? value2 : value2.toFixed(1)} ${units[unit]}`;
+  }
+  function percent(points) {
+    return typeof points === "number" ? `${(points / 100).toFixed(1)}%` : null;
+  }
+  function rate(perSecond) {
+    return typeof perSecond === "number" ? `${bytes(perSecond)}/s` : null;
+  }
+  function freshness(held6) {
+    if (held6 === null || held6 === void 0) {
+      return null;
+    }
+    const observed = typeof held6.observed === "number" ? held6.observed : null;
+    if (observed === null) {
+      return "no sample held";
+    }
+    const when = observed === 0 ? "just now" : `${observed}s ago`;
+    return held6.stale === true ? `stale — observed ${when}, past the freshness bound` : `observed ${when}`;
+  }
+  function resourceLines(held6) {
+    if (held6 === null || held6 === void 0) {
+      return "no readings held";
+    }
+    const cores = typeof held6.cpu_cores === "number" ? `${held6.cpu_cores} core${held6.cpu_cores === 1 ? "" : "s"}` : "cores not reported";
+    const busy = percent(held6.cpu_busy);
+    const used = typeof held6.memory_used === "number" && typeof held6.memory_total === "number" ? `${bytes(held6.memory_used)} of ${bytes(held6.memory_total)} used` : "memory not reported";
+    const disk = typeof held6.disk_free === "number" && typeof held6.disk_total === "number" ? `${bytes(held6.disk_free)} of ${bytes(held6.disk_total)} free` : "disk not reported";
+    const net = rate(held6.network_received) !== null && rate(held6.network_transmitted) !== null ? `in ${rate(held6.network_received)}, out ${rate(held6.network_transmitted)}` : "network not reported";
+    const fresh = freshness(held6);
+    return [
+      busy === null ? cores : `${cores} · ${busy} busy`,
+      used,
+      disk,
+      net,
+      fresh ?? "no sample held"
+    ].join("\n");
+  }
+  function resourceSummary(held6) {
+    if (held6 === null || held6 === void 0) {
+      return null;
+    }
+    const parts = [];
+    const busy = percent(held6.cpu_busy);
+    if (busy !== null) {
+      parts.push(`${busy} busy`);
+    }
+    if (typeof held6.memory_used === "number" && typeof held6.memory_total === "number" && held6.memory_total > 0) {
+      parts.push(`${Math.round(held6.memory_used / held6.memory_total * 100)}% memory`);
+    }
+    if (typeof held6.disk_free === "number" && typeof held6.disk_total === "number" && held6.disk_total > 0) {
+      parts.push(`${Math.round(held6.disk_free / held6.disk_total * 100)}% disk free`);
+    }
+    if (parts.length === 0) {
+      return null;
+    }
+    const fresh = freshness(held6);
+    const said3 = parts.join(" · ");
+    return fresh === null ? said3 : `${said3} (${fresh})`;
+  }
+
   // src/map.ts
   //! The cluster, drawn.
   //!
@@ -2972,11 +3054,11 @@ Shown once. The node keeps only its digest.`);
     );
     return one2;
   }
-  function lamps(has, wanted2) {
+  function lamps(has, wanted3) {
     const row = made("div", "lamps");
     for (const bit of BITS3) {
       const held6 = has.includes(bit.name);
-      const asked2 = wanted2 !== null && wanted2.includes(bit.name);
+      const asked2 = wanted3 !== null && wanted3.includes(bit.name);
       row.appendChild(
         lamp(
           bit.letter,
@@ -3001,17 +3083,24 @@ Shown once. The node keeps only its digest.`);
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
   function lease(held6) {
-    if (held6 === void 0 || held6 === null) {
+    const said3 = leaseText(held6);
+    if (said3 === null) {
       return null;
     }
     const badge = made("div", "lease");
-    const held_ = held6;
-    const until = told2(held_.until ?? held_.expires ?? held6);
-    badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
+    badge.textContent = said3;
     return badge;
   }
+  function leaseText(held6) {
+    if (held6 === void 0 || held6 === null) {
+      return null;
+    }
+    const held_ = held6;
+    const until = told2(held_.until ?? held_.expires ?? held6);
+    return until === null ? "holds the lease" : `holds the lease until ${until}`;
+  }
   var drained = (has) => has.length === 0;
-  function figure(title, has, wanted2, facts2, kind3, subject) {
+  function figure(title, has, wanted3, facts2, kind3, subject) {
     const box2 = made("article", "node " + kind3);
     box2.tabIndex = 0;
     box2.setAttribute("role", "button");
@@ -3026,7 +3115,7 @@ Shown once. The node keeps only its digest.`);
     const head = made("div", "node-head");
     const name = made("h3");
     name.textContent = title;
-    head.append(name, lamps(has, wanted2));
+    head.append(name, lamps(has, wanted3));
     box2.appendChild(head);
     if (drained(has)) {
       const note2 = made("p", "note warn");
@@ -3214,14 +3303,81 @@ Shown once. The node keeps only its digest.`);
     }
     return `${told2(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
   }
+  function subjects(seen) {
+    const cluster = seen.cluster ?? {};
+    const mine2 = seen.roles ?? [];
+    const wanted3 = cluster.desired ?? null;
+    const self = {
+      name: "This node",
+      self: true,
+      endpoint: null,
+      node: null,
+      roles: mine2,
+      declared: wanted3,
+      about: {
+        id: told2(seen.id),
+        version: seen.version ?? null,
+        build: seen.build ?? null,
+        "answers on": (seen.endpoints ?? []).join(", ") || null,
+        roles: mine2.join(", ") || "none held",
+        "declared for it": wanted3?.join(", ") ?? null,
+        retain: seen.retain === null ? "unbounded" : told2(seen.retain),
+        resources: resourceLines(seen.resources),
+        lease: leaseText(cluster.lease),
+        epoch: told2(cluster.epoch),
+        campaigns: told2(cluster.campaigns),
+        "collecting from here": String((cluster.followers ?? []).length),
+        "each follower": behindEach(cluster.followers ?? []),
+        "leads, as the log records": leading(cluster.leaders ?? [], seen.id),
+        "sync with its upstream": cluster.upstream?.state ?? null,
+        "copied from its upstream": copied(cluster.upstream),
+        "across leaders": ended2(cluster.across),
+        "balances leaderships": cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
+      }
+    };
+    const peers = (cluster.peers ?? []).map(
+      (peer) => ({
+        name: peer.name ?? "",
+        self: false,
+        endpoint: peer.endpoint ?? null,
+        node: peer.node ?? null,
+        roles: peer.roles ?? [],
+        // A peer's declaration is not this node's to read, and the drawer
+        // offers it no drain to qualify.
+        declared: null,
+        about: {
+          name: peer.name ?? null,
+          "answers on": told2(peer.endpoint),
+          "clients reach it at": typeof peer.clients === "string" ? peer.clients : null,
+          id: told2(peer.node),
+          roles: (peer.roles ?? []).join(", ") || "none declared",
+          replicates: told2(peer.replicates),
+          region: typeof peer.region === "string" ? peer.region : null,
+          leads: placement(peer),
+          "leads, as the log records": leading(cluster.leaders ?? [], peer.node),
+          fingerprint: peer.fingerprint ?? null,
+          "join token expires": told2(peer.join_expires_ms),
+          // The peer's own figures, stated by the peer and heard
+          // here — labelled as that kind of truth, and the label
+          // rides the value rather than living in a heading.
+          "resources, as this node last heard them": resourceLines(peer.readings)
+        }
+      })
+    );
+    return { self, peers };
+  }
+  function subjectFor(seen, place2) {
+    const all2 = subjects(seen);
+    return place2 === "self" ? all2.self : all2.peers.find((one2) => one2.name === place2) ?? all2.self;
+  }
   function draw5(into, seen, layout) {
     const cluster = seen.cluster ?? {};
     const mine2 = seen.roles ?? [];
-    const wanted2 = cluster.desired ?? null;
+    const wanted3 = cluster.desired ?? null;
     const self = figure(
       "This node",
       mine2,
-      wanted2,
+      wanted3,
       [
         lease(cluster.lease),
         fact("id", told2(seen.id)),
@@ -3248,17 +3404,11 @@ Shown once. The node keeps only its digest.`);
           "balances leaderships",
           cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
         ),
-        wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
+        wanted3 === null ? null : fact("declared for it", wanted3.join(", ")),
+        fact("resources", resourceSummary(seen.resources))
       ],
       "self",
-      {
-        name: "This node",
-        self: true,
-        endpoint: null,
-        node: null,
-        roles: mine2,
-        declared: wanted2
-      }
+      subjectFor(seen, "self")
     );
     into.appendChild(self);
     if (layout?.topology !== void 0) {
@@ -3295,22 +3445,277 @@ Shown once. The node keeps only its digest.`);
             fact("replicates", told2(peer.replicates)),
             fact("region", typeof peer.region === "string" ? peer.region : null),
             fact("leads", placement(peer)),
-            fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node))
+            fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
+            fact("resources, as heard here", resourceSummary(peer.readings))
           ],
           "peer",
-          {
-            name: peer.name ?? "",
-            self: false,
-            endpoint: peer.endpoint ?? null,
-            node: peer.node ?? null,
-            roles: peer.roles ?? [],
-            // A peer's declaration is not this node's to read, and the drawer
-            // offers it no drain to qualify.
-            declared: null
-          }
+          subjectFor(seen, peer.name ?? "")
         )
       );
     }
+  }
+
+  // src/table.ts
+  //! The servers table — the cluster at grown-cluster density.
+  //!
+  //! The map is the signature element and stays the first thing on the pane;
+  //! this table is what a thousand servers are worked from: find by name,
+  //! address or id, sort on every column, filter by status and by resource
+  //! bounds, and open the same drawer the map card opens. It reads the same
+  //! `INFO FOR NODE` answer the map draws — nothing here is inferred, and each
+  //! reading keeps the age and stale label the engine puts on it.
+  //!
+  //! The filters are the console's own for now; the wave that adds `$nodes` to
+  //! the language turns them into statements without this screen changing
+  //! shape.
+  var COLUMNS = [
+    { key: "name", label: "server" },
+    { key: "address", label: "address" },
+    { key: "roles", label: "roles" },
+    { key: "region", label: "region" },
+    { key: "leads", label: "leads" },
+    { key: "disk", label: "disk free" },
+    { key: "memory", label: "memory used" },
+    { key: "cpu", label: "cpu busy" },
+    { key: "fresh", label: "readings" }
+  ];
+  var wanted = {
+    find: "",
+    status: "all",
+    bound: "any",
+    sort: "name",
+    dir: 1
+  };
+  var STATUS_FILTERS = [
+    { value: "all", label: "all" },
+    { value: "drained", label: "drained" },
+    { value: "serving", label: "serving" },
+    { value: "writable", label: "writable" },
+    { value: "coordinating", label: "coordinating" }
+  ];
+  var BOUND_FILTERS = [
+    { value: "any", label: "any load" },
+    { value: "disk25", label: "disk free < 25%" },
+    { value: "disk10", label: "disk free < 10%" },
+    { value: "mem85", label: "memory used > 85%" },
+    { value: "cpu80", label: "cpu busy > 80%" },
+    { value: "stale", label: "stale readings" }
+  ];
+  function fraction(part, whole2) {
+    return typeof part === "number" && typeof whole2 === "number" && whole2 > 0 ? part / whole2 : null;
+  }
+  function rowOf(subject, readings2) {
+    const observed = typeof readings2?.observed === "number" ? readings2.observed : null;
+    return {
+      subject,
+      name: subject.name,
+      address: subject.endpoint,
+      roles: subject.roles,
+      region: typeof subject.about["region"] === "string" ? subject.about["region"] : null,
+      leads: typeof subject.about["leads, as the log records"] === "string" ? subject.about["leads, as the log records"] : null,
+      diskFree: fraction(readings2?.disk_free, readings2?.disk_total),
+      memoryUsed: fraction(readings2?.memory_used, readings2?.memory_total),
+      cpuBusy: fraction(readings2?.cpu_busy, 1e4),
+      stale: readings2?.stale === true,
+      observed,
+      searchable: [
+        subject.name,
+        subject.endpoint ?? "",
+        subject.node ?? "",
+        subject.about["id"] ?? ""
+      ].join(" ").toLowerCase()
+    };
+  }
+  function rowsOf(seen) {
+    const roster = subjects(seen);
+    const peers = seen.cluster?.peers ?? [];
+    const out = [rowOf(roster.self, seen.resources ?? null)];
+    roster.peers.forEach((subject, at2) => {
+      out.push(rowOf(subject, peers[at2]?.readings ?? null));
+    });
+    return out;
+  }
+  function kept2(row) {
+    if (wanted.find !== "" && !row.searchable.includes(wanted.find)) {
+      return false;
+    }
+    if (wanted.status === "drained") {
+      if (row.roles.length !== 0) {
+        return false;
+      }
+    } else if (wanted.status !== "all" && !row.roles.includes(wanted.status)) {
+      return false;
+    }
+    switch (wanted.bound) {
+      case "disk25":
+        return row.diskFree !== null && row.diskFree < 0.25;
+      case "disk10":
+        return row.diskFree !== null && row.diskFree < 0.1;
+      case "mem85":
+        return row.memoryUsed !== null && row.memoryUsed > 0.85;
+      case "cpu80":
+        return row.cpuBusy !== null && row.cpuBusy > 0.8;
+      case "stale":
+        return row.stale;
+      default:
+        return true;
+    }
+  }
+  function compareRows(left, right) {
+    const value2 = (row) => {
+      switch (wanted.sort) {
+        case "name":
+          return row.name;
+        case "address":
+          return row.address;
+        case "roles":
+          return row.roles.length;
+        case "region":
+          return row.region;
+        case "leads":
+          return row.leads;
+        case "disk":
+          return row.diskFree;
+        case "memory":
+          return row.memoryUsed;
+        case "cpu":
+          return row.cpuBusy;
+        case "fresh":
+          return row.stale ? Number.POSITIVE_INFINITY : row.observed;
+      }
+    };
+    const a = value2(left);
+    const b = value2(right);
+    if (a === null && b === null) {
+      return 0;
+    }
+    if (a === null) {
+      return 1;
+    }
+    if (b === null) {
+      return -1;
+    }
+    const by = typeof a === "number" && typeof b === "number" ? a - b : String(a).localeCompare(String(b));
+    return by === 0 ? left.name.localeCompare(right.name) : by * wanted.dir;
+  }
+  function percentOf(fractionValue) {
+    return fractionValue === null ? "—" : `${Math.round(fractionValue * 100)}%`;
+  }
+  function freshCell(row) {
+    if (row.observed === null) {
+      return "—";
+    }
+    const said3 = row.observed === 0 ? "now" : `${row.observed}s ago`;
+    return row.stale ? `stale · ${said3}` : said3;
+  }
+  function lamps2(roles) {
+    return ["serving", "writable", "coordinating"].map((bit) => roles.includes(bit) ? bit.charAt(0).toUpperCase() : "·").join("");
+  }
+  function pills(options, current2, pick) {
+    const group2 = made("div", "pills");
+    group2.setAttribute("role", "group");
+    for (const option of options) {
+      const pill = made("button", "pill");
+      pill.type = "button";
+      pill.textContent = option.label;
+      pill.setAttribute("aria-pressed", String(option.value === current2));
+      pill.addEventListener("click", () => pick(option.value));
+      group2.appendChild(pill);
+    }
+    return group2;
+  }
+  function drawTable(filtersInto, tableInto, seen) {
+    const renderRows = () => {
+      tableInto.replaceChildren();
+      const rows2 = rowsOf(seen).filter(kept2).sort(compareRows);
+      const table = made("table", "servers");
+      const head = table.createTHead();
+      const headRow = head.insertRow();
+      for (const column of COLUMNS) {
+        const th = document.createElement("th");
+        const button = made("button", "sort");
+        button.type = "button";
+        button.textContent = column.label + (wanted.sort === column.key ? wanted.dir === 1 ? " ▲" : " ▼" : "");
+        button.setAttribute(
+          "aria-sort",
+          wanted.sort === column.key ? wanted.dir === 1 ? "ascending" : "descending" : "none"
+        );
+        button.addEventListener("click", () => {
+          if (wanted.sort === column.key) {
+            wanted.dir = -wanted.dir;
+          } else {
+            wanted.sort = column.key;
+            wanted.dir = 1;
+          }
+          renderFilters();
+          renderRows();
+        });
+        th.appendChild(button);
+        headRow.appendChild(th);
+      }
+      const body = table.createTBody();
+      for (const row of rows2) {
+        const tr = body.insertRow();
+        tr.tabIndex = 0;
+        tr.classList.add("server-row");
+        const open3 = () => show3(row.subject);
+        tr.addEventListener("click", open3);
+        tr.addEventListener("keydown", (pressed) => {
+          if (pressed.key === "Enter" || pressed.key === " ") {
+            pressed.preventDefault();
+            open3();
+          }
+        });
+        const cells = [
+          row.name,
+          row.address ?? "—",
+          row.roles.length === 0 ? "drained" : lamps2(row.roles),
+          row.region ?? "—",
+          row.leads ?? "—",
+          percentOf(row.diskFree),
+          percentOf(row.memoryUsed),
+          percentOf(row.cpuBusy),
+          freshCell(row)
+        ];
+        for (const text of cells) {
+          tr.insertCell().textContent = text;
+        }
+      }
+      tableInto.appendChild(table);
+      if (rows2.length === 0) {
+        const none = made("p", "empty-note");
+        none.textContent = "No server matches these filters.";
+        tableInto.appendChild(none);
+      }
+    };
+    const renderFilters = () => {
+      filtersInto.replaceChildren();
+      const find = made("input");
+      find.type = "search";
+      find.className = "find";
+      find.placeholder = "find a server by name, address or id";
+      find.value = wanted.find;
+      find.setAttribute("aria-label", "find a server");
+      find.addEventListener("input", () => {
+        wanted.find = find.value.trim().toLowerCase();
+        renderRows();
+      });
+      filtersInto.append(
+        find,
+        pills(STATUS_FILTERS, wanted.status, (value2) => {
+          wanted.status = value2;
+          renderFilters();
+          renderRows();
+        }),
+        pills(BOUND_FILTERS, wanted.bound, (value2) => {
+          wanted.bound = value2;
+          renderFilters();
+          renderRows();
+        })
+      );
+    };
+    renderFilters();
+    renderRows();
   }
 
   // src/node.ts
@@ -3373,14 +3778,18 @@ Shown once. The node keeps only its digest.`);
         }
       } catch {
       }
-      const { cluster, clients, ...mine2 } = all2;
+      const { cluster, clients, resources, ...mine2 } = all2;
       const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
       facts("node-facts", {
         ...mine2,
         clients: served(clients),
         listening: listening(clients),
         format: store["format"],
-        writes: store["writes"]
+        writes: store["writes"],
+        // This machine's own readings, labelled by age and freshness the way the
+        // engine answers them — the raw object stays out of the table (a JSON
+        // blob in a facts cell would be a reading only a parser could use).
+        resources: resourceLines(resources)
       });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       draw4(all2);
@@ -3438,6 +3847,7 @@ Shown once. The node keeps only its digest.`);
       }
       clear("cluster-map");
       draw5(at("cluster-map"), all2, layout);
+      drawTable(at("table-filters"), at("cluster-table"), all2);
       const joining = Array.isArray(all2["certificates"]) && all2["certificates"].some(
         (shown3) => typeof shown3 === "object" && shown3 !== null && "surface" in shown3 && shown3.surface === "peers"
       );
@@ -3967,10 +4377,10 @@ Shown once. The node keeps only its digest.`);
         return;
       }
       const at_ = Number.parseInt(event.key, 10) - 1;
-      const wanted2 = DESTINATIONS[at_];
-      if (wanted2 !== void 0) {
+      const wanted3 = DESTINATIONS[at_];
+      if (wanted3 !== void 0) {
         event.preventDefault();
-        show(wanted2);
+        show(wanted3);
       }
     });
     at("keys-close").addEventListener("click", closeIt4);
@@ -4047,16 +4457,16 @@ Shown once. The node keeps only its digest.`);
     const place2 = where2();
     const name = aName(trimmed("new-topic-name"));
     const retain = optional("new-topic-retain", aDuration);
-    const kept2 = optional("new-topic-kept", aWhole);
-    const bytes = optional("new-topic-bytes", aWhole);
+    const kept3 = optional("new-topic-kept", aWhole);
+    const bytes2 = optional("new-topic-bytes", aWhole);
     if (place2 === null) return { missing: PLACE };
     if (name === null) return { missing: "a name: a letter or _, then letters, digits or _" };
     if (retain === null) return { missing: "keep for is " + DURATION2 };
-    if (kept2 === null || kept2 === 0) return { missing: "keep at most is a whole number of bytes above zero" };
-    if (bytes === null || bytes === 0) return { missing: "the largest message is a whole number of bytes" };
+    if (kept3 === null || kept3 === 0) return { missing: "keep at most is a whole number of bytes above zero" };
+    if (bytes2 === null || bytes2 === 0) return { missing: "the largest message is a whole number of bytes" };
     return {
-      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (kept2 === void 0 ? "" : ` RETAIN BYTES ${kept2}`) + (bytes === void 0 ? "" : ` MAX BYTES ${bytes}`) + ";",
-      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (kept2 === void 0 ? "" : `, removing the oldest once it holds over ${kept2} bytes`) + (bytes === void 0 ? "." : ` and refusing a message over ${bytes} bytes.`)
+      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (kept3 === void 0 ? "" : ` RETAIN BYTES ${kept3}`) + (bytes2 === void 0 ? "" : ` MAX BYTES ${bytes2}`) + ";",
+      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (kept3 === void 0 ? "" : `, removing the oldest once it holds over ${kept3} bytes`) + (bytes2 === void 0 ? "." : ` and refusing a message over ${bytes2} bytes.`)
     };
   }
   function dropTopic() {
@@ -4340,9 +4750,9 @@ Shown once. The node keeps only its digest.`);
   async function backUp() {
     const written = await send3(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
       const path = typeof answered2?.path === "string" ? answered2.path : trimmed("backup-name");
-      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
-      return bytes === null ? path : `${path}
-${bytes.toLocaleString("en")} bytes`;
+      const bytes2 = typeof answered2?.bytes === "number" ? answered2.bytes : null;
+      return bytes2 === null ? path : `${path}
+${bytes2.toLocaleString("en")} bytes`;
     });
     if (written) {
       ours = true;
@@ -4804,9 +5214,9 @@ ${bytes.toLocaleString("en")} bytes`;
       }
       drawKeys(keys.filter((each) => typeof each === "string"));
       if (inMemory.has(value("kv-space"))) {
-        const kept2 = made("p", "trailer");
-        kept2.textContent = "held in memory: these keys are not in the log or a backup, and a restart empties them";
-        at("kv-list").appendChild(kept2);
+        const kept3 = made("p", "trailer");
+        kept3.textContent = "held in memory: these keys are not in the log or a backup, and a restart empties them";
+        at("kv-list").appendChild(kept3);
       }
       if (keys.length === 0) {
         state("kv-status", "empty", prefix === "" ? "The space holds no key." : `No key starts with ${prefix}.`);
@@ -4986,9 +5396,9 @@ ${JSON.stringify(held6, null, 2)}`;
     { kind: "grant", label: "Give…" },
     { kind: "remove", label: "Remove…" }
   ];
-  var wanted = () => trimmed("user-filter").toLowerCase();
+  var wanted2 = () => trimmed("user-filter").toLowerCase();
   function matching() {
-    const needle = wanted();
+    const needle = wanted2();
     if (needle === "") {
       return everybody;
     }
@@ -4996,7 +5406,7 @@ ${JSON.stringify(held6, null, 2)}`;
   }
   function tally(matched) {
     const held6 = everybody.length;
-    const filtered = wanted() !== "";
+    const filtered = wanted2() !== "";
     if (matched.length <= SHOWN) {
       return filtered ? `${matched.length} of ${held6}` : `${held6}`;
     }

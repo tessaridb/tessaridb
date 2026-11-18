@@ -1931,3 +1931,91 @@ button.link {
     color: var(--bad);
   }
 }
+
+/* The servers table — the grown-cluster reading of the same answer the map
+   draws. Rows are buttons the way the map cards are: the drill-in is reached
+   by keyboard and named to a screen reader. */
+.servers-title {
+    margin-block: var(--s-4) var(--s-2);
+}
+
+#table-filters {
+    align-items: center;
+    flex-wrap: wrap;
+    margin-block-end: var(--s-2);
+}
+
+#table-filters .find {
+    inline-size: 18rem;
+    padding: var(--s-1) var(--s-2);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--control-radius);
+    color: inherit;
+    font: inherit;
+}
+
+.pills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: var(--s-1);
+}
+
+.pill {
+    padding: var(--s-1) var(--s-2);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: var(--control-radius);
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+.pill[aria-pressed="true"] {
+    background: var(--accent-wash);
+    border-color: var(--accent-edge);
+    color: var(--accent-text);
+}
+
+table.servers {
+    inline-size: 100%;
+    border-collapse: collapse;
+}
+
+table.servers th {
+    text-align: start;
+    font-weight: normal;
+    color: var(--n-450, inherit);
+    padding: var(--s-1) var(--s-2);
+    border-block-end: 1px solid var(--line);
+}
+
+table.servers th .sort {
+    background: none;
+    border: none;
+    padding: 0;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+}
+
+table.servers td {
+    padding: var(--s-1) var(--s-2);
+    border-block-end: 1px solid var(--line);
+    font-variant-numeric: tabular-nums;
+}
+
+tr.server-row {
+    cursor: pointer;
+}
+
+tr.server-row:hover,
+tr.server-row:focus-visible {
+    background: var(--accent-wash);
+    outline: none;
+}
+
+.empty-note {
+    margin-block: var(--s-2);
+    color: var(--n-450, inherit);
+}

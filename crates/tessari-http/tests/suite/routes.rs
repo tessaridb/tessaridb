@@ -1175,6 +1175,136 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
 }
 
 #[test]
+fn info_for_node_reports_resources_labelled_by_age_and_stale_never_unlabelled() {
+    // The node-state surface: this machine's own readings beside the other
+    // local facts, a bound peer's readings joined onto its row, and the
+    // freshness verdict on every row — a number past twice the awareness
+    // interval is named stale, never read as last-known-good.
+    const FOLLOWER: [u8; 16] = [7; 16]; // 07070707-0707-0707-0707-070707070707
+    const WATCHER: [u8; 16] = [8; 16]; // 08080808-0808-0808-0808-080808080808
+    let db = Arc::new(Db::in_memory().now().unwrap());
+    let node = Arc::new(Node::bind(Arc::clone(&db), "127.0.0.1:0").unwrap());
+    let address = node.address();
+    let serving = Arc::clone(&node);
+    std::thread::spawn(move || crate::serve_until_the_test_ends(&serving));
+    let (status, _, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE USER root ROLE owner PASSWORD 'root secret';",
+        None,
+    );
+    assert_eq!(status, 200, "{body}");
+
+    // Before the sampler's first pass the self row is null — never measured
+    // is its own statement, distinct from a sample whose figures are absent.
+    let (status, _, said) = send(&address, "POST", "/script", "INFO FOR NODE;", Some(ROOT));
+    assert_eq!(status, 200, "{said}");
+    assert!(said.contains("\"resources\":null"), "unsampled: {said}");
+
+    db.store().readings_sampled(tessari_storage::Readings {
+        cpu_cores: Some(8),
+        cpu_busy: Some(4_200),
+        memory_total: Some(16_000_000_000),
+        memory_used: Some(4_000_000_000),
+        disk_total: Some(500_000_000_000),
+        disk_free: Some(300_000_000_000),
+        network_received: Some(25_000_000),
+        network_transmitted: Some(10_000_000),
+    });
+    let (status, _, said) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE REPLICA follower AT '127.0.0.1:47951' NODE '07070707-0707-0707-0707-070707070707' \
+         ROLES serving REPLICATES STORE; \
+         DEFINE REPLICA watcher AT '127.0.0.1:47952' NODE '08080808-0808-0808-0808-080808080808' \
+         ROLES serving REPLICATES STORE;",
+        Some(ROOT),
+    );
+    assert_eq!(status, 200, "{said}");
+    // A hearing inside the freshness bound, and one past it: the answer must
+    // name the second stale rather than serve it as current.
+    db.store().readings_heard(
+        FOLLOWER,
+        tessari_storage::Readings {
+            cpu_cores: Some(4),
+            cpu_busy: None, // unmeasurable on the peer: rendered null, not zero
+            memory_total: Some(8_000_000_000),
+            memory_used: Some(2_000_000_000),
+            disk_total: Some(200_000_000_000),
+            disk_free: Some(50_000_000_000),
+            network_received: Some(5_000_000),
+            network_transmitted: None,
+        },
+        std::time::Duration::ZERO,
+    );
+    db.store().readings_heard(
+        WATCHER,
+        tessari_storage::Readings {
+            cpu_cores: Some(16),
+            cpu_busy: Some(9_000),
+            memory_total: Some(32_000_000_000),
+            memory_used: Some(30_000_000_000),
+            disk_total: Some(1_000_000_000_000),
+            disk_free: Some(20_000_000_000),
+            network_received: None,
+            network_transmitted: Some(40_000_000),
+        },
+        // Past twice the built-in awareness interval: the verdict is stale on
+        // arrival, whatever the transport adds.
+        std::time::Duration::from_secs(5),
+    );
+
+    let (status, _, said) = send(&address, "POST", "/script", "INFO FOR NODE;", Some(ROOT));
+    assert_eq!(status, 200, "{said}");
+    // The self row: the sample's figures, labelled with its age, not stale.
+    assert!(said.contains("\"cpu_cores\":8"), "self: {said}");
+    assert!(said.contains("\"cpu_busy\":4200"), "self: {said}");
+    assert!(
+        said.contains("\"memory_total\":16000000000"),
+        "self: {said}"
+    );
+    assert!(said.contains("\"disk_free\":300000000000"), "self: {said}");
+    assert!(
+        said.contains("\"network_received\":25000000"),
+        "self: {said}"
+    );
+    assert!(
+        said.contains("\"network_transmitted\":10000000"),
+        "self: {said}"
+    );
+    assert!(
+        said.contains("\"observed\":"),
+        "self carries its age: {said}"
+    );
+    // The peer rows: joined by the bound node id, the fresh one labelled
+    // current, the absent cpu_busy rendered null, and the old one named stale.
+    assert!(said.contains("\"name\":\"follower\""), "peers: {said}");
+    assert!(
+        said.contains("\"cpu_cores\":4"),
+        "the follower's figures: {said}"
+    );
+    assert!(
+        said.contains("\"cpu_busy\":null"),
+        "unmeasurable is null: {said}"
+    );
+    assert!(said.contains("\"name\":\"watcher\""), "peers: {said}");
+    assert!(
+        said.contains("\"cpu_busy\":9000"),
+        "the watcher's figures: {said}"
+    );
+    assert!(
+        said.contains("\"stale\":true"),
+        "the old hearing is named: {said}"
+    );
+    assert!(
+        said.contains("\"stale\":false"),
+        "the fresh one is labelled too: {said}"
+    );
+}
+
+#[test]
 fn the_certificate_a_surface_presents_says_when_it_expires_and_only_to_an_operator() {
     // ADR-0108 D6: an expired certificate is a refused handshake, so its date
     // is a number to alert on — and which certificates a node holds is about

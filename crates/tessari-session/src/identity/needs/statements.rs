@@ -31,14 +31,14 @@ impl Needs {
             // machine's position in a topology, and there is no smaller truthful
             // version of them to hand a `viewer` — the same reasoning that puts
             // `INFO FOR USER` here rather than beside the other four subjects.
-            StatementKind::Select(select) if matches!(select.from, tessari_ql::Source::Node) => {
+            StatementKind::Select(select) if matches!(select.from, tessari_ql::Source::Node | tessari_ql::Source::Nodes) => {
                 Self::OPERATE_STORE
             }
             // `EXPLAIN` of the same read needs the same permission, for the
             // reason `tables_named` gives it: a plan that named a source the
             // caller may not read is a disclosure wearing a diagnostic's
             // clothes.
-            StatementKind::Explain(select) if matches!(select.from, tessari_ql::Source::Node) => {
+            StatementKind::Explain(select) if matches!(select.from, tessari_ql::Source::Node | tessari_ql::Source::Nodes) => {
                 Self::OPERATE_STORE
             }
             // A binding is only as privileged as what it holds. `LET $x =

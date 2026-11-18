@@ -266,6 +266,17 @@ pub(super) async fn exchange(
                 None => Err(Error::UnknownFrame { tag }),
             }
         }
+        Ask::Readings => {
+            let (tag, body) = framed(bound, answer(link)).await?;
+            match PeerFrame::from_tag(tag) {
+                Some(PeerFrame::ReadingsServed) => Ok((
+                    heard,
+                    Answered::Readings(crate::peer::readings::decode_served(&body)?),
+                )),
+                Some(_) => Err(Error::OutOfTurn { tag }),
+                None => Err(Error::UnknownFrame { tag }),
+            }
+        }
     }
 }
 
@@ -280,6 +291,7 @@ fn asked(asking: &Ask<'_>) -> Option<(u8, Vec<u8>)> {
         Ask::Across(carried) => Some((PeerFrame::Across.tag(), carried.encode())),
         Ask::Coordinate(request) => Some((PeerFrame::Coordinate.tag(), request.encode())),
         Ask::Gather(gather) => Some((PeerFrame::Gather.tag(), gather.encode())),
+        Ask::Readings => Some((PeerFrame::Readings.tag(), Vec::new())),
     }
 }
 

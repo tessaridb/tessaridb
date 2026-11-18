@@ -205,6 +205,7 @@ impl Session<'_> {
             // from the resolution, in a message about what a view is rather than
             // about what this rewrite declined to do.
             source @ (Source::Node
+            | Source::Nodes
             | Source::Record(_)
             | Source::Range { .. }
             | Source::Traverse { .. }) => (source, false),

@@ -51,6 +51,7 @@ mod peer_door;
 mod peers;
 mod presented;
 mod raw;
+mod readings;
 mod reseeding;
 /// How a value is written back as TessariQL — the language's own, so a state
 /// script and this command line write one value the same way.
@@ -190,7 +191,14 @@ fn run(asked: Asked) -> Result<Ended, String> {
     })?;
 
     if let Source::Serve = &asked.source {
-        return serve(db, &asked.serving, asked.cluster.as_ref(), started, process);
+        return serve(
+            db,
+            &asked.serving,
+            asked.cluster.as_ref(),
+            started,
+            process,
+            asked.store.as_deref(),
+        );
     }
     let ended = (|| {
         // These are store operations rather than statements, so they never reach a

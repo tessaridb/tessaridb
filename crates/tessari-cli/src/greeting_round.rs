@@ -121,6 +121,22 @@ pub(crate) async fn dial_peers(
                     .collect()
             };
             let said = &said;
+            // Whether to ask a peer for its resource readings rides what that
+            // peer last said its build was: a responder of a build before
+            // `READINGS_FROM` answers an unknown follow-up by closing the
+            // link, which — the greeting having landed — reads to this node
+            // as a failed call and the peer as unheard. Asking only peers
+            // known to understand the frame is what keeps a rolling upgrade
+            // quiet. A peer never heard is not asked: one round of lag while
+            // the directory learns its build, then the ask rides as usual.
+            let ask_of = |endpoint: &str| {
+                match published.current().at(endpoint) {
+                    Some(heard) if heard.said.build >= tessari_wire::READINGS_FROM => {
+                        tessari_wire::Ask::Readings
+                    }
+                    _ => tessari_wire::Ask::Nothing,
+                }
+            };
             // Each greeting is bounded by this round's own period, as a ballot is
             // by its round: a peer that accepts and never answers held the round
             // for the greeting's ten seconds, and with it every other peer's
@@ -129,17 +145,29 @@ pub(crate) async fn dial_peers(
             let heard: std::collections::HashMap<_, Result<tessari_wire::Hello, String>> =
                 futures_util::future::join_all(targets.into_iter().map(
                     |(endpoint, node)| async move {
+                        let store = store.clone();
                         let answer = match said {
                             Ok(said) => tessari_wire::call_within(
                                 endpoint.as_str(),
                                 (keys, keys.duplicate()),
                                 node,
                                 said,
-                                tessari_wire::Ask::Nothing,
+                                ask_of(&endpoint),
                                 bound,
                             )
                             .await
-                            .map(|(said, _)| said)
+                            .map(|(said, answered)| {
+                                // What a peer served of its own resources is
+                                // kept where the rest of this process's
+                                // peer-reporting state lives, against the id
+                                // the greeting proved — a peer cannot record
+                                // somebody else's readings any more than it
+                                // can somebody else's progress.
+                                if let tessari_wire::Answered::Readings(served) = &answered {
+                                    store.readings_heard(node, served.sample, served.age);
+                                }
+                                said
+                            })
                             .map_err(|why| {
                                 // Said here rather than swallowed. The rounds keep only
                                 // a count, so without this the one line an operator

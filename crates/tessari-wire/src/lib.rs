@@ -170,6 +170,7 @@ pub use crate::message::{
 };
 #[cfg(feature = "server")]
 pub use crate::node::Node;
+pub use crate::peer::readings::{READINGS_FROM, ServedReadings};
 #[cfg(feature = "server")]
 pub use crate::peer::{Hello, Line, PeerFrame, Presented, Purpose, admit};
 pub use crate::push::{Became, Follow, Happened, Narrow, Progressed};

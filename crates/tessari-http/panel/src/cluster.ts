@@ -45,6 +45,11 @@ export const cluster = (): Node =>
             // thing it was read from — that is the same rule the statement log
             // follows for statements.
             el("div", { id: "cluster-map", class: "map" }),
+            // The grown-cluster view of the same answer: one row per server,
+            // find/sort/filters above it, the same drawer a card opens.
+            el("h3", { class: "servers-title" }, "Servers"),
+            el("div", { id: "table-filters", class: "row tight" }),
+            el("div", { id: "cluster-table", class: "answer small" }),
             // The drawer sits inside the pane and over the map, so opening it never
             // costs the view the decision is being made against.
             el(
@@ -55,6 +60,11 @@ export const cluster = (): Node =>
                     el("h3", { id: "drawer-title" }, "a node"),
                     button("drawer-close", "Close", "quiet"),
                 ),
+                // Everything this node can vouch for about the subject: identity,
+                // roles, placement, and the resource readings it holds — stated
+                // before the actions, because the action being weighed is the
+                // reading's reason for existing.
+                el("div", { id: "drawer-facts", class: "answer small" }),
                 el("div", { id: "drawer-missing" }),
                 row(
                     "default",

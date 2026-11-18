@@ -104,6 +104,7 @@ impl Store {
             retention: crate::retention::ProcessRetention::shared(),
             log_holds: crate::log_holds::LogHolds::shared(),
             followers: Arc::new(Followers::default()),
+            readings: Arc::new(crate::readings::Registry::default()),
             holds: Arc::new(crate::holds::Holds::default()),
             claiming: Arc::default(),
             collections: Arc::new(crate::collections::Collections::default()),

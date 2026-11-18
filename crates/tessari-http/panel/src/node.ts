@@ -7,10 +7,12 @@ import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
 import { draw as drawMap, type Layout, type Link, type Seen } from "./map.js";
+import { drawTable } from "./table.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
 import { know } from "./formation.js";
+import { resourceLines, type Readings } from "./readings.js";
 import { draw as drawTrust, type Trusted } from "./trust.js";
 
 const HEALTH_ROUTE = "/health";
@@ -118,7 +120,7 @@ export async function readNode(): Promise<void> {
     }
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.
-    const { cluster, clients, ...mine } = all;
+    const { cluster, clients, resources, ...mine } = all;
     // The format the store holds beside the one this build writes: they differ
     // until `ALTER STORE FINALIZE FORMAT`, which closes the way back (ADR-0118).
     const store = held(await valueOf("INFO FOR STORE;", "Node")) ?? {};
@@ -128,6 +130,10 @@ export async function readNode(): Promise<void> {
       listening: listening(clients),
       format: store["format"],
       writes: store["writes"],
+      // This machine's own readings, labelled by age and freshness the way the
+      // engine answers them — the raw object stays out of the table (a JSON
+      // blob in a facts cell would be a reading only a parser could use).
+      resources: resourceLines(resources as Readings | null),
     });
     const peers =
       typeof cluster === "object" && cluster !== null
@@ -217,6 +223,7 @@ export async function readNode(): Promise<void> {
     // keeps the thing read from beside the reading.
     clear("cluster-map");
     drawMap(at("cluster-map"), all as Seen, layout);
+    drawTable(at("table-filters"), at("cluster-table"), all as Seen);
     // A node with no peers drew one card and said nothing, so the map read the
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four

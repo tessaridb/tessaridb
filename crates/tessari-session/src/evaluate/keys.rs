@@ -157,7 +157,12 @@ impl Session<'_> {
         // with many — `FROM ONLY users WHERE email = $e` — which is the half of
         // this rule the source alone cannot tell. The read has already refused
         // if more than one answered, so there is at most one here either way.
-        if select.only.is_some() || matches!(select.from, Source::Record(_) | Source::Node) {
+        if select.only.is_some()
+            || matches!(
+                select.from,
+                Source::Record(_) | Source::Node | Source::Nodes
+            )
+        {
             return Ok(records
                 .into_iter()
                 .next()

@@ -198,7 +198,10 @@ impl Needs {
 /// with a viewer's permission, which is the whole reason this walks.
 pub(crate) fn holds_node_read(expr: &Expr) -> bool {
     match &expr.kind {
-        ExprKind::Select(select) => matches!(select.from, tessari_ql::Source::Node),
+        ExprKind::Select(select) => matches!(
+            select.from,
+            tessari_ql::Source::Node | tessari_ql::Source::Nodes
+        ),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => holds_node_read(inner),
         ExprKind::Route { value, .. } => holds_node_read(value),
         ExprKind::If {

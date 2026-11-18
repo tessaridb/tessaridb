@@ -294,6 +294,11 @@ pub struct Store {
     /// header: a follower's progress is a fact about a live relationship, and a
     /// persisted copy of it would outlive the relationship it describes.
     followers: Arc<Followers>,
+    /// What this node measures of its own resources, and what its peers have
+    /// served it — in memory for the reason `crate::readings` gives in its own
+    /// header: a utilization figure is a fact about a live process, and a
+    /// persisted copy would outlive the process that took it.
+    readings: Arc<crate::readings::Registry>,
     /// What each follower has made durable of this leader's logs, which a write
     /// waiting for a majority reads (ADR-0106 D6). In memory for the same reason
     /// as `followers`.

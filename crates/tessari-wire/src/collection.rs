@@ -423,6 +423,18 @@ pub trait Origin: Send + Sync {
     fn attempted(&self, _asked: &crate::budget::Attempt) -> bool {
         false
     }
+
+    /// What this node's own sampler last measured of its machine, served to
+    /// a peer that asked on the greeting it opened.
+    ///
+    /// Defaults to `None`, meaning *no sample*: the door answers with a
+    /// readings frame whose fields are all absent, which is the honest answer
+    /// for a process that cannot measure — never a refusal, since the ask is
+    /// a diagnostics question and a diagnostics answer that closed the door
+    /// would be read as a network fault.
+    fn readings(&self) -> Answering<'_, Option<crate::peer::readings::ServedReadings>> {
+        Box::pin(async move { None })
+    }
 }
 
 /// A door with no log behind it.

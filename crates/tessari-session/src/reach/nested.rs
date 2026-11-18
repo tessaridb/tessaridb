@@ -122,7 +122,10 @@ pub(crate) fn in_source(from: &Source) -> Vec<&TableRef> {
         // not governed here at all: `Needs::of` classifies it `Administer`
         // before this list is consulted, and `within_grants` refuses a
         // grant-governed user by role rather than by an empty answer.
-        Source::Node => Vec::new(),
+        // `$nodes` names the membership, not a table, and its emptiness is
+        // the `$node` shape for the same reason: `Needs::of` classifies it
+        // `Administer` before this list is consulted.
+        Source::Node | Source::Nodes => Vec::new(),
         // A search names no table: each member is read under its own table's
         // grants when the search runs (ADR-0105), so a member nobody granted is
         // left out rather than refused. Only its condition can hold a read.

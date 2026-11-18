@@ -54,6 +54,7 @@ use crate::identity::Identity;
 use crate::outcome::Outcome;
 use crate::redact::Visible;
 use crate::session::Session;
+pub(crate) use cluster::{described_readings, readings_stale_after};
 pub(crate) use consumers::{described_consumer, guarantees, running_state};
 pub(crate) use measures::{refining, reported};
 pub(crate) use replicas::{

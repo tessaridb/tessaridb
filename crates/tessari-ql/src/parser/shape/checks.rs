@@ -55,6 +55,7 @@ pub(crate) fn check_cursor(
         }
         Source::Record(target) => &target.table.name,
         Source::Node
+        | Source::Nodes
         | Source::Traverse { .. }
         | Source::Join { .. }
         | Source::Subquery { .. }
@@ -250,6 +251,7 @@ pub(crate) fn check_fold_positions(
         // The inner read was checked as it was parsed, so there is nothing left
         // to say about it here.
         Source::Node
+        | Source::Nodes
         | Source::Record(_)
         | Source::Table(_)
         | Source::Range { .. }

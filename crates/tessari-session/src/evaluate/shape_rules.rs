@@ -188,6 +188,7 @@ pub(crate) fn table_named(source: &Source) -> Option<&str> {
         }
         Source::Record(target) => Some(target.table.name.text.as_str()),
         Source::Node
+        | Source::Nodes
         | Source::Traverse { .. }
         | Source::Join { .. }
         | Source::Subquery { .. }
@@ -240,6 +241,44 @@ pub(crate) async fn node_row(store: &Store) -> Result<(RecordId, Value)> {
         ),
     );
     Ok((identity.record_id(), Value::Object(fields)))
+}
+
+/// The membership, as the rows `$nodes` answers — one per `DEFINE REPLICA`,
+/// in the catalog's order, each bound row carrying the resource readings this
+/// process has heard from that node.
+///
+/// The row is the `INFO FOR NODE` peer row by construction: the description
+/// comes from `described_replica`, the readings from the same registry and
+/// the same freshness verdict `INFO FOR NODE` renders, so a caller comparing
+/// the two surfaces reads one answer to one question. The id is the bound
+/// node's own for a bound row — a row's id is how a caller reaches it again —
+/// and the row's name for an unbound one, because a row that names nobody
+/// still has to be addressable or the answer cannot be paged.
+pub(crate) async fn nodes_rows(
+    store: &Store,
+    transaction: &mut tessari_storage::Transaction<'_>,
+) -> Result<Vec<(RecordId, Value)>> {
+    use tessari_types::Value;
+    let catalog = tessari_storage::Catalog::new(transaction);
+    let stale_after = crate::info::readings_stale_after(&catalog).await?;
+    let now = std::time::Instant::now();
+    let mut rows = Vec::new();
+    for replica in &catalog.replicas().await? {
+        let mut described = crate::info::described_replica(replica, &catalog).await?;
+        if let (Some(node), Value::Object(fields)) = (replica.node, &mut described) {
+            fields.insert(
+                "readings".to_owned(),
+                store.readings_of(&node).map_or(Value::Null, |held| {
+                    crate::info::described_readings(held.sample, held.age(now), stale_after)
+                }),
+            );
+        }
+        let id = replica
+            .node
+            .map_or_else(|| RecordId::Text(replica.name.clone()), RecordId::Uuid);
+        rows.push((id, described));
+    }
+    Ok(rows)
 }
 
 /// Whether the stages left between the source and the answer are all per-record.

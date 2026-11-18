@@ -98,6 +98,48 @@ impl Store {
         self.tally.finished(outcome);
     }
 
+    /// Publish this machine's own resource sample, taken by the node's sampler
+    /// on its own cadence. Replaced whole per pass; a pass that cannot measure
+    /// a figure leaves that field absent rather than inventing one.
+    pub fn readings_sampled(&self, sample: crate::readings::Readings) {
+        self.readings.sample(sample);
+    }
+
+    /// This machine's last resource sample and its age now, or `None` before
+    /// the sampler's first pass — which is the honest answer for a process
+    /// that has never measured.
+    #[must_use]
+    pub fn readings(&self) -> Option<(crate::readings::Readings, std::time::Duration)> {
+        self.readings.own(std::time::Instant::now())
+    }
+
+    /// Record what `node` served when asked for its resources: `sample`, whose
+    /// age at send the peer stated itself, received now. Called by the
+    /// greeting round where the answer lands, and nowhere else.
+    pub fn readings_heard(
+        &self,
+        node: [u8; NODE_ID_LEN],
+        sample: crate::readings::Readings,
+        age_at_send: std::time::Duration,
+    ) {
+        self.readings.heard(
+            node,
+            crate::readings::HeardReadings {
+                sample,
+                age_at_send,
+                received_at: std::time::Instant::now(),
+            },
+        );
+    }
+
+    /// What `node` last served of its resources, if this process has heard
+    /// from it — absent rather than empty, because *never heard* and *nothing
+    /// to say* are different answers.
+    #[must_use]
+    pub fn readings_of(&self, node: &[u8; NODE_ID_LEN]) -> Option<crate::readings::HeardReadings> {
+        self.readings.of(node)
+    }
+
     /// Record what a settling pass left standing here: records still
     /// `PENDING`, and transactions still holding intents.
     pub fn across_sampled(&self, pending: u64, with_intents: u64) {

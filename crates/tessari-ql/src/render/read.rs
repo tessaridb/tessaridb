@@ -186,6 +186,7 @@ pub(crate) fn write_source(out: &mut String, source: &Source, span: Span) -> Res
             write_expr(out, condition)
         }
         Source::Node => unwritten("a read of $node"),
+        Source::Nodes => unwritten("a read of $nodes"),
         Source::Record(_) => unwritten("a read of one record"),
         Source::Range { .. } => unwritten("a read of a span of identities"),
         Source::Traverse { .. } => unwritten("a traversal"),
