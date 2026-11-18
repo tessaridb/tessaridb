@@ -3355,7 +3355,9 @@ Shown once. The node keeps only its digest.`);
       let layout = {};
       try {
         const listed2 = held3(await valueOf("INFO FOR TOPOLOGIES;", "Node"));
-        const names2 = Array.isArray(listed2?.["topologies"]) ? listed2["topologies"].map((row) => row ?? {}).map((row) => typeof row["name"] === "string" ? row["name"] : null).filter((name) => name !== null) : [];
+        const names2 = Array.isArray(listed2?.["topologies"]) ? listed2["topologies"].filter(
+          (name) => typeof name === "string"
+        ) : [];
         if (names2.length === 0) {
           layout = { ...layout, topology: null };
         } else {
@@ -3374,8 +3376,6 @@ Shown once. The node keeps only its digest.`);
         writes: store["writes"]
       });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
-      clear("cluster-map");
-      draw5(at("cluster-map"), all2, layout);
       draw4(all2);
       know(all2["id"], all2["endpoints"], Array.isArray(peers) ? peers.length : 0);
       facts("cluster-facts", {
@@ -3429,6 +3429,8 @@ Shown once. The node keeps only its digest.`);
       } catch {
         state("replication-status", "empty", "Replication links need the store's operator to read them.");
       }
+      clear("cluster-map");
+      draw5(at("cluster-map"), all2, layout);
       const joining = Array.isArray(all2["certificates"]) && all2["certificates"].some(
         (shown3) => typeof shown3 === "object" && shown3 !== null && "surface" in shown3 && shown3.surface === "peers"
       );

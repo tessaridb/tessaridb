@@ -98,11 +98,13 @@ export async function readNode(): Promise<void> {
     let layout: Layout = {};
     try {
       const listed = held(await valueOf("INFO FOR TOPOLOGIES;", "Node"));
+      // The list answers the declared schemes by NAME — a bare string array,
+      // not rows: `INFO FOR TOPOLOGIES` lists, `INFO FOR TOPOLOGY <name>`
+      // describes (the same split INFO FOR REPLICATIONS / REPLICATION keeps).
       const names = Array.isArray(listed?.["topologies"])
-        ? listed["topologies"]
-            .map((row) => (row ?? {}) as Record<string, unknown>)
-            .map((row) => (typeof row["name"] === "string" ? (row["name"] as string) : null))
-            .filter((name): name is string => name !== null)
+        ? (listed["topologies"] as unknown[]).filter(
+            (name): name is string => typeof name === "string",
+          )
         : [];
       if (names.length === 0) {
         layout = { ...layout, topology: null };
@@ -137,11 +139,6 @@ export async function readNode(): Promise<void> {
     // a claim, on the one screen where that claim mattered most. `roles` is what
     // answers the question it looked like it was answering, and it comes from
     // the authority the node actually holds.
-    // The map first, then the answer it was read from. The layout carries the
-    // topology layer's two extra subjects (the scheme, the link edges), each
-    // absent rather than invented when its read did not land.
-    clear("cluster-map");
-    drawMap(at("cluster-map"), all as Seen, layout);
     drawTrust(all as Trusted);
     know(all["id"], all["endpoints"], Array.isArray(peers) ? peers.length : 0);
     facts("cluster-facts", {
@@ -213,6 +210,13 @@ export async function readNode(): Promise<void> {
     } catch {
       state("replication-status", "empty", "Replication links need the store's operator to read them.");
     }
+    // The map last of the reads, so the layout carries every layer: the
+    // cluster figures, the scheme, the link edges with the registry's
+    // confirmed positions — each absent rather than invented when its read
+    // did not land. Then the raw answer under it, the way the statement log
+    // keeps the thing read from beside the reading.
+    clear("cluster-map");
+    drawMap(at("cluster-map"), all as Seen, layout);
     // A node with no peers drew one card and said nothing, so the map read the
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four
