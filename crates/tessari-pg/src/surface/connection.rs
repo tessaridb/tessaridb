@@ -368,7 +368,7 @@ async fn query_once(
             return Ok(());
         }
         Ok(Some(super::session::Session::Transaction(verb))) => {
-            transaction(conn, verb, tx, held, shared).await?;
+            transaction(conn, verb, tx, held, shared, true).await?;
             return Ok(());
         }
         Ok(Some(super::session::Session::ShowNamespace)) => {
@@ -596,12 +596,13 @@ pub(crate) async fn answer_catalog(
 /// the two closing verbs of an aborted block answer here without touching the
 /// store — and `COMMIT` of a healthy block that the store refuses reports the
 /// refusal and closes, as the dialect counts.
-async fn transaction(
+pub(crate) async fn transaction(
     conn: &mut Conn,
     verb: super::session::TxVerb,
     tx: &mut codec::write::Tx,
     held: &mut super::running::Held,
     shared: &Arc<Shared>,
+    ready: bool,
 ) -> Result<()> {
     use super::session::TxVerb;
     match verb {
@@ -693,7 +694,12 @@ async fn transaction(
             }
         },
     }
-    conn.send(&codec::write::ready_for_query(*tx)).await?;
+    // The simple query owes the readiness with the answer; the extended
+    // protocol's Sync owns it there, and a verb's Execute answers the tag
+    // alone.
+    if ready {
+        conn.send(&codec::write::ready_for_query(*tx)).await?;
+    }
     Ok(())
 }
 

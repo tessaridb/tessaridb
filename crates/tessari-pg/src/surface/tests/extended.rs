@@ -440,3 +440,77 @@ async fn offset_applies_once_across_portal_windows() {
         "the completion names the post-offset count: {seen:?}"
     );
 }
+
+#[tokio::test]
+async fn a_transaction_verb_rides_the_extended_protocol() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // Parse("BEGIN"): the verb rides Parse/Bind/Execute like any statement,
+    // Describe answers no data, Execute opens the block.
+    client.parse("verb", "BEGIN", &[]).await;
+    client.bind("p", "verb", &[], &[], &[]).await;
+    client.describe(b'S', "verb").await;
+    client.execute("p", 0).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        seen.push(client.message().await);
+    }
+    assert!(
+        seen.contains(&Seen::ParseComplete) && seen.contains(&Seen::BindComplete),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::ParamDesc(oids) if oids.is_empty())),
+        "a verb declares no parameters: {seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::NoData)),
+        "a verb answers no rows: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "BEGIN")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'T'))),
+        "the block the Execute opened rides the readiness: {seen:?}"
+    );
+
+    // COMMIT closes the block the Execute opened.
+    client.parse("end", "COMMIT", &[]).await;
+    client.bind("p2", "end", &[], &[], &[]).await;
+    client.execute("p2", 0).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..4 {
+        seen.push(client.message().await);
+    }
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "COMMIT")),
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter().any(|m| matches!(m, Seen::Ready(b'I'))),
+        "{seen:?}"
+    );
+
+    // A session command that is not a verb refuses by name on this path —
+    // the simple query path is where those speak.
+    client.parse("s", "SET application_name TO 'x'", &[]).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..2 {
+        seen.push(client.message().await);
+    }
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Error(code, _) if code == "0A000")),
+        "{seen:?}"
+    );
+}
