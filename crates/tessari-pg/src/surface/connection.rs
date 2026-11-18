@@ -680,6 +680,12 @@ pub(crate) async fn answer(
     formats: &[u16],
 ) -> Result<bool> {
     use tessaridb::Outcome;
+    // A statement carrying a WARNING answers it beside the completion — the
+    // dropped column's kept values ride here, before whatever the outcome
+    // owes.
+    if let Some(notice) = &shape.notice {
+        conn.send(&codec::write::notice("00000", notice)).await?;
+    }
     match outcome {
         Outcome::Records { records, .. } => {
             // A write the client did not RETURN owes only the count — no

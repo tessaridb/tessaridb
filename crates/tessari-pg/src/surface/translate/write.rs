@@ -21,6 +21,7 @@ pub(crate) enum Tag {
     Delete,
     CreateTable,
     DropTable,
+    AlterTable,
     /// A transaction verb running as a store statement of its own — the
     /// simple query's explicit `BEGIN … COMMIT` block.
     Begin,
@@ -38,6 +39,7 @@ impl Tag {
             Tag::Delete => format!("DELETE {count}"),
             Tag::CreateTable => "CREATE TABLE".to_owned(),
             Tag::DropTable => "DROP TABLE".to_owned(),
+            Tag::AlterTable => "ALTER TABLE".to_owned(),
             Tag::Begin => "BEGIN".to_owned(),
             Tag::Commit => "COMMIT".to_owned(),
             Tag::Rollback => "ROLLBACK".to_owned(),
@@ -49,7 +51,7 @@ impl Tag {
 pub(crate) fn opens(first: &str) -> bool {
     matches!(
         first.to_ascii_lowercase().as_str(),
-        "insert" | "update" | "delete" | "create" | "drop"
+        "insert" | "update" | "delete" | "create" | "drop" | "alter"
     )
 }
 
@@ -105,9 +107,12 @@ pub(crate) fn statement(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     if parser.keyword("DROP").is_ok() {
         return drop_table(parser);
     }
+    if parser.keyword("ALTER").is_ok() {
+        return alter_table(parser);
+    }
     Err(Refused::surface(
         code::SYNTAX,
-        "a write starts with INSERT, UPDATE, DELETE, CREATE TABLE or DROP TABLE in this build",
+        "a write starts with INSERT, UPDATE, DELETE, CREATE TABLE, DROP TABLE or ALTER TABLE in this build",
     ))
 }
 
@@ -304,6 +309,157 @@ fn drop_table(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     shape(parser, Tag::DropTable, script, None)
 }
 
+/// `ALTER TABLE t <verb> …` — the DDL the mapping honestly serves, onto the
+/// engine's own table verbs: ADD/DROP COLUMN, RENAME (column and table),
+/// ALTER COLUMN TYPE. What those verbs cannot say — constraints, per-option
+/// mutations, USING, IF EXISTS — refuses by name, never half-runs.
+fn alter_table(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
+    if parser.keyword("TABLE").is_err() {
+        return Err(Refused::surface(
+            code::SYNTAX,
+            "ALTER wants TABLE in this build",
+        ));
+    }
+    let table = parser.ident()?;
+    if parser.keyword("ADD").is_ok() {
+        // Constraint spellings refuse as the class they are, before a name
+        // position reads them as a column.
+        for verb in [
+            "CONSTRAINT",
+            "PRIMARY",
+            "FOREIGN",
+            "UNIQUE",
+            "CHECK",
+            "EXCLUDE",
+            "GENERATED",
+        ] {
+            if parser.keyword(verb).is_ok() {
+                return Err(Refused::with_detail(
+                    code::FEATURE,
+                    "table constraints are not spoken in this build",
+                    format!("ADD {verb}"),
+                ));
+            }
+        }
+        let _ = parser.keyword("COLUMN");
+        if parser.keyword("IF").is_ok() {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "ADD COLUMN IF NOT EXISTS is not spoken in this build",
+            ));
+        }
+        let column = parser.ident()?;
+        let kind = field_kind(parser)?;
+        // NOT NULL and DEFAULT, either order, neither twice — the engine's
+        // own declaration posture.
+        let mut required = false;
+        let mut default: Option<String> = None;
+        loop {
+            if !required && parser.keyword("NOT").is_ok() {
+                if parser.keyword("NULL").is_err() {
+                    return Err(Refused::surface(code::SYNTAX, "NOT wants NULL"));
+                }
+                required = true;
+            } else if default.is_none() && parser.keyword("DEFAULT").is_ok() {
+                // The default is written into the declaration, not bound —
+                // DDL answers no Bind. A literal rides inline; anything else
+                // refuses by name.
+                let at = parser.snapshot();
+                if parser.placeholder().is_some() {
+                    return Err(Refused::surface(
+                        code::FEATURE,
+                        "a DEFAULT wants a literal in this build",
+                    ));
+                }
+                parser.restore(at);
+                let Some(literal) = parser.literal()? else {
+                    return Err(Refused::surface(
+                        code::FEATURE,
+                        "a DEFAULT wants a literal in this build",
+                    ));
+                };
+                default = Some(format!(" DEFAULT {}", parser.inline(literal)?));
+            } else {
+                break;
+            }
+        }
+        let required = if required { " REQUIRED" } else { "" };
+        let default = default.unwrap_or_default();
+        let script =
+            format!("ALTER TABLE {table} ADD FIELD {column} TYPE {kind}{required}{default};");
+        return shape(parser, Tag::AlterTable, script, None);
+    }
+    if parser.keyword("DROP").is_ok() {
+        let _ = parser.keyword("COLUMN");
+        if parser.keyword("IF").is_ok() {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "DROP COLUMN IF EXISTS is not spoken in this build",
+            ));
+        }
+        let column = parser.ident()?;
+        let script = format!("DROP FIELD {column} ON {table};");
+        let mut shaped = shape(parser, Tag::AlterTable, script, None)?;
+        // The engine drops the declaration, not the data: the values stored
+        // in existing records are kept. That rides the answer as a WARNING —
+        // the mapping's honesty lives in the notice, not in a doc paragraph.
+        shaped.notice = Some(format!(
+            "column {column} left the catalog; the values stored in existing records are kept"
+        ));
+        return Ok(shaped);
+    }
+    if parser.keyword("RENAME").is_ok() {
+        if parser.keyword("TO").is_ok() {
+            let new_name = parser.ident()?;
+            let script = format!("ALTER TABLE {table} RENAME TO {new_name};");
+            return shape(parser, Tag::AlterTable, script, None);
+        }
+        let _ = parser.keyword("COLUMN");
+        let from = parser.ident()?;
+        if parser.keyword("TO").is_err() {
+            return Err(Refused::surface(code::SYNTAX, "RENAME wants TO"));
+        }
+        let to = parser.ident()?;
+        let script = format!("ALTER TABLE {table} RENAME FIELD {from} TO {to};");
+        return shape(parser, Tag::AlterTable, script, None);
+    }
+    if parser.keyword("ALTER").is_ok() {
+        let _ = parser.keyword("COLUMN");
+        let column = parser.ident()?;
+        if parser.keyword("TYPE").is_err() {
+            return Err(Refused::with_detail(
+                code::FEATURE,
+                "ALTER COLUMN re-declares the whole field in this build; per-option changes are not spoken",
+                format!("ALTER COLUMN {column}"),
+            ));
+        }
+        let kind = field_kind(parser)?;
+        if parser.keyword("USING").is_ok() {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "ALTER COLUMN … USING is not spoken in this build",
+            ));
+        }
+        let script = format!("ALTER TABLE {table} ALTER FIELD {column} TYPE {kind};");
+        return shape(parser, Tag::AlterTable, script, None);
+    }
+    if parser.at == parser.source.len()
+        || parser.source[parser.at..]
+            .iter()
+            .all(|b| b.is_ascii_whitespace() || *b == b';')
+    {
+        return Err(Refused::surface(
+            code::SYNTAX,
+            "ALTER TABLE wants a verb in this build",
+        ));
+    }
+    Err(Refused::with_detail(
+        code::FEATURE,
+        "this ALTER TABLE verb is not spoken in this build",
+        format!("ALTER TABLE {table}"),
+    ))
+}
+
 /// The store field kind a dialect column type maps onto; anything outside
 /// the correspondence refuses by name rather than guessing.
 fn field_kind(parser: &mut Parser<'_>) -> Result<&'static str, Refused> {
@@ -397,6 +553,7 @@ fn shape(
         inference: Vec::new(),
         record_names: Vec::new(),
         offset: 0,
+        notice: None,
         tag,
         returning,
     })

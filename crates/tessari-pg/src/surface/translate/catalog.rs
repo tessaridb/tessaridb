@@ -316,6 +316,7 @@ pub(crate) fn rest(
         inference: Vec::new(),
         record_names: Vec::new(),
         offset: 0,
+        notice: None,
         tag: super::write::Tag::Select,
         returning: None,
     })

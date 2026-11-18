@@ -144,6 +144,10 @@ pub(crate) struct Shaped {
     /// exact: the store is asked for a wider bounded read (`LIMIT n+m`), and
     /// the port discards the first `m` rows of the answer it gets.
     pub(crate) offset: u64,
+    /// A WARNING the statement's answer carries beside the completion — the
+    /// dropped column's kept values, so the store's declaration-not-data
+    /// semantic is never silent.
+    pub(crate) notice: Option<String>,
     /// The completion tag the wire answers the statement under.
     pub(crate) tag: write::Tag,
     /// A write's RETURNING projection — `None` where the wire owes only the

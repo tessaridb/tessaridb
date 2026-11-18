@@ -79,6 +79,9 @@ pub(crate) enum Seen {
     Command(String),
     Empty,
     Error(String, String),
+    /// A WARNING frame the answer carries beside the completion — the
+    /// kept-values notice a dropped column owes.
+    Notice(String, String),
     ParseComplete,
     BindComplete,
     CloseComplete,
@@ -434,7 +437,7 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
             }
             Seen::ParamDesc(oids)
         }
-        b'E' => {
+        b'E' | b'N' => {
             let fields = fields(body);
             let code = fields
                 .iter()
@@ -446,7 +449,11 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
                 .find(|(k, _)| *k == b'M')
                 .map(|(_, v)| v.clone())
                 .unwrap_or_default();
-            Seen::Error(code, message)
+            if kind == b'E' {
+                Seen::Error(code, message)
+            } else {
+                Seen::Notice(code, message)
+            }
         }
         other => Seen::Command(format!("unspoken {other}")),
     }

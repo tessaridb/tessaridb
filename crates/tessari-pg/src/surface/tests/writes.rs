@@ -235,3 +235,83 @@ async fn extended_parse_binds_write_parameters() {
     );
     stop.cancel();
 }
+
+#[tokio::test]
+async fn alter_table_adds_a_column_and_the_default_backfills() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client
+        .query("ALTER TABLE orders ADD COLUMN qty int DEFAULT 7")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    // The stored rows read the backfilled default.
+    let seen = client.query("SELECT qty FROM orders").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("7".to_owned())]; 3],
+        "every stored row took the default: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn alter_table_drops_a_column_and_names_the_kept_values() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    client
+        .query("ALTER TABLE orders ADD COLUMN qty int DEFAULT 7")
+        .await;
+
+    let seen = client.query("ALTER TABLE orders DROP COLUMN qty").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Notice(code, message) if code == "00000" && message.contains("values"))),
+        "the kept-values warning rides the answer: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    // The store drops the declaration, not the data: the values still read by
+    // name — the notice above is what keeps that from being a silent surprise.
+    let seen = client.query("SELECT qty FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("7".to_owned())]],
+        "the kept values still read: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn alter_table_renames_a_column_and_the_read_moves() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client
+        .query("ALTER TABLE orders RENAME COLUMN name TO title")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    let seen = client
+        .query("SELECT title FROM orders WHERE band = 1")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "the read answers under the new name: {seen:?}"
+    );
+    stop.cancel();
+}

@@ -114,6 +114,7 @@ impl Parser<'_> {
             inference: Vec::new(),
             record_names: Vec::new(),
             offset: 0,
+            notice: None,
             tag,
             returning: None,
         }))
@@ -222,6 +223,7 @@ impl Parser<'_> {
             inference: std::mem::take(&mut self.inference),
             record_names: assembled.record_names,
             offset: assembled.offset,
+            notice: None,
             tag: super::write::Tag::Select,
             returning: None,
         })
