@@ -175,7 +175,7 @@ impl Session<'_> {
         // being written, so `REQUIRED` + `DEFAULT` keeps meaning "this field
         // always holds a value" even when a caller sets one to `none`.
         let (payload, partial) = self
-            .defaults_over(transaction, address.table, payload, partial)
+            .defaults_over(transaction, address.table, payload, partial, span)
             .await?;
         // A space key keeps the instant it had: an edit changes the value and
         // not how long the key lives, as `INCR` does. The space's own `SET` is

@@ -228,7 +228,7 @@ impl Session<'_> {
         // back anyway; not spending it keeps the sequence gapless for a reader,
         // and a gap in a sequence reads as a deletion.
         let payload = self.evaluate(transaction, value).await?;
-        let payload = self.with_defaults(transaction, id, payload).await?;
+        let payload = self.with_defaults(transaction, id, payload, span).await?;
         // A topic's repeated key, asked before an identity is spent on it
         // (ADR-0124 D8); a record the store names has no identity to repeat.
         let marker = self
@@ -509,7 +509,7 @@ impl Session<'_> {
                 );
             }
             let payload = self
-                .with_defaults(transaction, id, Value::Object(fields))
+                .with_defaults(transaction, id, Value::Object(fields), table.span)
                 .await?;
             // A row repeating a topic's key is skipped, its siblings appended
             // (ADR-0124 D8).

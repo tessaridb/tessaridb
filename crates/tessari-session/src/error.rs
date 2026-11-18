@@ -58,6 +58,22 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// JSON text an object-declared field received did not parse.
+    ///
+    /// The declared-type exception parses at the write: an object field naming
+    /// JSON text is the one place the declaration itself asks for the read, and
+    /// a text that does not read refuses here, naming the field and the byte —
+    /// never stored as a string the declaration did not accept.
+    #[error("the text written to field `{field}` does not parse as JSON ({detail})")]
+    JsonTextRefused {
+        /// The field the text was written to.
+        field: String,
+        /// What was wrong and at which byte.
+        detail: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A `DEFINE FAILOVER` names periods that do not hold together.
     ///
     /// The store owns the relations and the direction each one fails in, so the

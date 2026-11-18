@@ -40,12 +40,15 @@ impl Session<'_> {
         table: TableId,
         payload: Value,
         partial: Option<PartialSeal>,
+        span: tessari_ql::Span,
     ) -> Result<(Value, Option<PartialSeal>)> {
         let before: Vec<String> = match (&partial, &payload) {
             (Some(_), Value::Object(fields)) => fields.keys().cloned().collect(),
             _ => Vec::new(),
         };
-        let payload = self.with_defaults(transaction, table, payload).await?;
+        let payload = self
+            .with_defaults(transaction, table, payload, span)
+            .await?;
         let Some(mut edit) = partial else {
             return Ok((payload, None));
         };
@@ -64,11 +67,39 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         table: TableId,
         payload: Value,
+        span: tessari_ql::Span,
     ) -> Result<Value> {
         let Value::Object(mut fields) = payload else {
             return Ok(payload);
         };
         let declared = Catalog::new(transaction).declared_fields(table).await?;
+        // The declared-type exception, before defaults join: JSON text an
+        // object-declared field receives reads as the object it spells. The
+        // store refuses rather than coerces by discipline; this pair is the
+        // one place the declaration itself asks for the parse — the wire's
+        // json columns declare `object`, and the dialect speaks JSON text.
+        // A text that does not read refuses naming the field and the byte,
+        // never stored as a string the declaration did not accept.
+        for field in &declared {
+            if !matches!(field.kind, tessari_types::FieldKind::Object) {
+                continue;
+            }
+            let Some(Value::String(text)) = fields.get(&field.name) else {
+                continue;
+            };
+            match tessari_types::json::read(text.as_bytes()) {
+                Ok(parsed) => {
+                    fields.insert(field.name.clone(), parsed);
+                }
+                Err(malformed) => {
+                    return Err(Error::JsonTextRefused {
+                        field: field.name.clone(),
+                        detail: malformed.to_string(),
+                        span,
+                    });
+                }
+            }
+        }
         for field in declared {
             let Some(written) = field.default else {
                 continue;

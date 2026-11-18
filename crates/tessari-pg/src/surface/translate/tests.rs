@@ -531,3 +531,33 @@ fn alter_table_wants_a_known_verb() {
     let refused = translate("ALTER TABLE orders").expect_err("no verb");
     assert_eq!(refused.code, super::super::errors::code::SYNTAX);
 }
+
+#[test]
+fn json_navigation_operators_map_onto_paths() {
+    let (script, parameters, _) = translated("SELECT id FROM docs WHERE meta -> 'a' = 1");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta['a'] = $p1;");
+    assert_eq!(parameters.len(), 1);
+    // ->> rides the same path: the wire renders the value as text either way.
+    let (script, _, _) = translated("SELECT id FROM docs WHERE meta -> 'a' ->> 'b' = 'x'");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta['a']['b'] = $p1;");
+    // Numeric keys index arrays; a key with a space rides the bracket spelling.
+    let (script, _, _) =
+        translated("SELECT id FROM docs WHERE meta -> 'items' -> 0 ->> 'sku tag' = 'a'");
+    assert_eq!(
+        script,
+        "SELECT id FROM docs WHERE meta['items'][0]['sku tag'] = $p1;"
+    );
+}
+
+#[test]
+fn containment_maps_onto_the_document_operator() {
+    let (script, parameters, _) = translated("SELECT id FROM docs WHERE meta @> '{\"a\": 1}'");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta CONTAINS $p1;");
+    assert_eq!(parameters.len(), 1, "the JSON text binds as the object");
+    // A parameter on the right rides through.
+    let (script, _, _) = translated("SELECT id FROM docs WHERE meta @> $1");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta CONTAINS $e1;");
+    // Malformed JSON refuses by name.
+    let refused = translate("SELECT id FROM docs WHERE meta @> '{unclosed'").expect_err("bad JSON");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}

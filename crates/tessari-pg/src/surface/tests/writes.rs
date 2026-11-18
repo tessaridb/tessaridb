@@ -315,3 +315,49 @@ async fn alter_table_renames_a_column_and_the_read_moves() {
     );
     stop.cancel();
 }
+
+#[tokio::test]
+async fn json_columns_round_trip_and_navigate() {
+    let setup = "DEFINE TABLE docs SCHEMALESS; \
+                 DEFINE FIELD meta ON docs TYPE object;";
+    let (address, stop, _db) = serving_with(setup).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The dialect writes JSON text; the declared-kind parse lands it as an
+    // object, and the wire reads it back as JSON.
+    let seen = client
+        .query("INSERT INTO docs (meta) VALUES ('{\"a\": 1, \"tags\": [\"x\", \"y\"]}')")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "INSERT 0 1")),
+        "the JSON text accepted the write: {seen:?}"
+    );
+    let seen = client.query("SELECT meta FROM docs").await;
+    let row = &rows(&seen)[0][0];
+    let text = row.as_deref().unwrap_or_default();
+    assert!(
+        text.contains("\"a\"") && text.contains("\"tags\""),
+        "the object answers as JSON text: {seen:?}"
+    );
+    // The navigation operators read inside the object.
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta -> 'a' = 1")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta -> 'tags' -> 1 = 'y'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    // Containment asks the engine's own document operator.
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta @> '{\"tags\": [\"x\"]}'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta @> '{\"absent\": 1}'")
+        .await;
+    assert!(rows(&seen).is_empty(), "no row contains it: {seen:?}");
+    stop.cancel();
+}

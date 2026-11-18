@@ -195,7 +195,7 @@ impl Session<'_> {
         // An edge is an ordinary record, so an edge table's declarations apply
         // to it — including their defaults.
         let payload = self
-            .with_defaults(transaction, edge_table, Value::Object(fields))
+            .with_defaults(transaction, edge_table, Value::Object(fields), edges.span)
             .await?;
         self.put_record(transaction, address, payload, edges.span)
             .await?;
