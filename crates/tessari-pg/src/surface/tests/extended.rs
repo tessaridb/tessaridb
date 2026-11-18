@@ -405,3 +405,38 @@ async fn a_row_limited_portal_suspends_and_resumes() {
         "the spent portal answers empty: {seen:?}"
     );
 }
+
+#[tokio::test]
+async fn offset_applies_once_across_portal_windows() {
+    let (address, _stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The ordered read is [1, 3, 3]; the offset drops the head once, and the
+    // windows page what remains — never re-dropping on each Execute.
+    client
+        .parse(
+            "stmt",
+            "SELECT band FROM orders ORDER BY band LIMIT 2 OFFSET 1",
+            &[],
+        )
+        .await;
+    client.bind("p", "stmt", &[], &[], &[]).await;
+    client.execute("p", 1).await;
+    client.execute("p", 1).await;
+    client.sync().await;
+    let mut seen = Vec::new();
+    for _ in 0..6 {
+        seen.push(client.message().await);
+    }
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("3".to_owned())], vec![Some("3".to_owned())]],
+        "one head dropped, the rest paged: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 2")),
+        "the completion names the post-offset count: {seen:?}"
+    );
+}

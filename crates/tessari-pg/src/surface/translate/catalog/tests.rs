@@ -504,3 +504,21 @@ fn the_collation_subquery_names_the_default_for_text_columns() {
         "a text column names the default collation"
     );
 }
+
+#[test]
+fn offset_skips_the_local_rows_before_the_limit() {
+    let query = parse(
+        "SELECT t.typname FROM pg_catalog.pg_type t \
+         WHERE t.typname = 'bool' OFFSET 1",
+    );
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the query answers");
+    assert!(rows.is_empty(), "the only row is dropped: {rows:?}");
+    let query = parse(
+        "SELECT t.typname FROM pg_catalog.pg_type t \
+         WHERE t.typname = 'bool' LIMIT 1 OFFSET 0",
+    );
+    let rows = evaluate(&query, &[], &tessaridb::Parameters::new(), None, None)
+        .expect("the query answers");
+    assert_eq!(rows.len(), 1, "OFFSET 0 is the no-op: {rows:?}");
+}

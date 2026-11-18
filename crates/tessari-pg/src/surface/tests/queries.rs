@@ -186,3 +186,70 @@ async fn a_cancel_request_is_answered_by_closing() {
     assert!(matches!(got, Ok(Ok(0))), "the connection closes: {got:?}");
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offset_pages_the_ordered_read_exactly() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    // The control read: the whole ordered answer.
+    let control = rows(&client.query("SELECT name FROM orders ORDER BY band").await);
+    assert_eq!(control.len(), 3);
+    // OFFSET 0 is the no-op, indistinguishable from no OFFSET.
+    let zero = rows(
+        &client
+            .query("SELECT name FROM orders ORDER BY band LIMIT 3 OFFSET 0")
+            .await,
+    );
+    assert_eq!(zero, control, "OFFSET 0 changes nothing");
+    // One wider bounded read, the head dropped: the page equals the control's tail.
+    let seen = client
+        .query("SELECT name FROM orders ORDER BY band LIMIT 2 OFFSET 1")
+        .await;
+    assert_eq!(rows(&seen), control[1..], "the page is the tail: {seen:?}");
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 2")),
+        "the completion names the page: {seen:?}"
+    );
+    // Past the end the page is empty, honestly counted.
+    let seen = client
+        .query("SELECT name FROM orders ORDER BY band LIMIT 1 OFFSET 9")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        Vec::<Vec<Option<String>>>::new(),
+        "past the end: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 0")),
+        "the empty page counts zero: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn offset_without_order_by_is_the_walk_order_of_that_read() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    // Without ORDER BY the answer's order is the store's walk order for that
+    // snapshot — the same unspecified-order contract the dialect itself
+    // carries. The page is exact against the wider read's tail.
+    let wide = rows(&client.query("SELECT id FROM orders LIMIT 2").await);
+    let paged = rows(&client.query("SELECT id FROM orders LIMIT 1 OFFSET 1").await);
+    assert_eq!(
+        paged,
+        wide[1..],
+        "the page equals the wider read's tail: {paged:?}"
+    );
+    // OFFSET alone pages the whole read.
+    let all = rows(&client.query("SELECT id FROM orders OFFSET 2").await);
+    assert_eq!(
+        all.len(),
+        1,
+        "OFFSET alone drops the head of the read: {all:?}"
+    );
+    stop.cancel();
+}

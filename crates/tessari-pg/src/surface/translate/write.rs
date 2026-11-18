@@ -396,6 +396,7 @@ fn shape(
         catalog: None,
         inference: Vec::new(),
         record_names: Vec::new(),
+        offset: 0,
         tag,
         returning,
     })

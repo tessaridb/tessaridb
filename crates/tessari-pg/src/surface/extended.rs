@@ -620,12 +620,19 @@ impl Kitchen {
                     &shape.record_names,
                     shape.table.as_deref(),
                 );
-                let start = portal.served.min(all.len());
+                // The OFFSET head drops once, at the head: the windows page
+                // what remains — the count the completion names rides the
+                // post-offset rows, never the dropped front.
+                let head = usize::try_from(shape.offset)
+                    .unwrap_or(usize::MAX)
+                    .min(all.len());
+                let page = &all[head..];
+                let start = portal.served.min(page.len());
                 let end = start
                     .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
-                    .min(all.len());
+                    .min(page.len());
                 portal.served = end;
-                let window = &all[start..end];
+                let window = &page[start..end];
                 let encoded = match super::encode(&columns, window, &portal.formats) {
                     Ok(encoded) => encoded,
                     Err(refused) => {
@@ -637,7 +644,7 @@ impl Kitchen {
                 for row in &encoded {
                     conn.send(&codec::write::data_row(row)).await?;
                 }
-                if end < all.len() {
+                if end < page.len() {
                     portal.spent = Some(outcomes);
                     return conn.send(&codec::write::portal_suspended()).await;
                 }

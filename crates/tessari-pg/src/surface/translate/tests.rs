@@ -251,9 +251,12 @@ fn the_simple_query_wraps_several_statements_in_one_block() {
 }
 
 #[test]
-fn offset_refuses_by_name() {
-    let refused = translate("SELECT id FROM t LIMIT 5 OFFSET 3").expect_err("offset");
-    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+fn offset_pages_the_wider_bounded_read() {
+    // G091: OFFSET speaks — the store is asked for the wider read, the port
+    // drops the head. The refusal this test used to lock is gone by design.
+    let answer = translate("SELECT id FROM t LIMIT 5 OFFSET 3").expect("offset");
+    assert_eq!(answer.script, "SELECT id FROM t LIMIT 8;");
+    assert_eq!(answer.statements[0].offset, 3);
 }
 
 #[test]
@@ -373,4 +376,59 @@ fn projection_subqueries_parse_as_catalog_items() {
         columns,
         Columns::Named(vec!["attname".to_owned(), "pg_get_expr".to_owned()])
     );
+}
+
+#[test]
+fn limit_offset_widens_the_bounded_read() {
+    let answer = translate("SELECT name FROM orders LIMIT 2 OFFSET 1").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders LIMIT 3;");
+    assert_eq!(answer.statements[0].offset, 1);
+    // OFFSET 0 is the no-op, indistinguishable from no OFFSET at all.
+    let answer = translate("SELECT name FROM orders LIMIT 2 OFFSET 0").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders LIMIT 2;");
+    assert_eq!(answer.statements[0].offset, 0);
+}
+
+#[test]
+fn offset_alone_reads_unbounded() {
+    let answer = translate("SELECT name FROM orders OFFSET 2").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 2);
+}
+
+#[test]
+fn limit_all_is_no_bound() {
+    let answer = translate("SELECT name FROM orders LIMIT ALL").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 0);
+    let answer = translate("SELECT name FROM orders LIMIT ALL OFFSET 1").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 1);
+}
+
+#[test]
+fn offset_composes_with_order_by() {
+    let answer = translate("SELECT name FROM orders ORDER BY band DESC LIMIT 1 OFFSET 1")
+        .expect("translates");
+    assert_eq!(
+        answer.script,
+        "SELECT name FROM orders ORDER BY band DESC LIMIT 2;"
+    );
+    assert_eq!(answer.statements[0].offset, 1);
+}
+
+#[test]
+fn offset_refuses_what_the_number_position_refuses() {
+    // A parameter where the literal rides: named, exactly like LIMIT's posture.
+    let refused = translate("SELECT name FROM orders LIMIT 1 OFFSET $1").expect_err("placeholder");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // A negative number is not digits.
+    let refused = translate("SELECT name FROM orders OFFSET -1").expect_err("negative");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // A second OFFSET is the rest of the query, and the query is over.
+    let refused = translate("SELECT name FROM orders OFFSET 1 OFFSET 2").expect_err("twice");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // The projection-without-FROM shape owes no clauses: OFFSET there wants a FROM.
+    let refused = translate("SELECT 1 OFFSET 1").expect_err("no FROM");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
 }

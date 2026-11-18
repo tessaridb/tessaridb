@@ -691,6 +691,13 @@ pub(crate) async fn answer(
                 .await?;
                 return Ok(true);
             }
+            // The OFFSET head drops before the fold: the store answered the
+            // wider bounded read, the port pages it by discarding the front —
+            // the cost is the port's, the answer is exact.
+            let skipped = usize::try_from(shape.offset)
+                .unwrap_or(usize::MAX)
+                .min(records.len());
+            let records = &records[skipped..];
             let (mut columns, rows) = if records.is_empty()
                 && let translate::Columns::Named(names) = &shape.columns
             {

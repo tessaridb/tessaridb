@@ -140,6 +140,10 @@ pub(crate) struct Shaped {
     /// store's shape (the port's own `eN` alias), `None` where the wire
     /// name and the record name are the same.
     pub(crate) record_names: Vec<Option<String>>,
+    /// The rows the answer drops from its head — the dialect's `OFFSET m`,
+    /// exact: the store is asked for a wider bounded read (`LIMIT n+m`), and
+    /// the port discards the first `m` rows of the answer it gets.
+    pub(crate) offset: u64,
     /// The completion tag the wire answers the statement under.
     pub(crate) tag: write::Tag,
     /// A write's RETURNING projection — `None` where the wire owes only the
