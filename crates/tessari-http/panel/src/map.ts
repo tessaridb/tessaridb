@@ -595,6 +595,95 @@ function copied(upstream: Upstream | null | undefined): string | null {
     return `${told(upstream.copied_records)} record(s) in ${upstream.copies} cop${upstream.copies === 1 ? "y" : "ies"}`;
 }
 
+
+/**
+ * Every server this node can open a drawer on — itself first, then each
+ * declared peer, in the answer's order. Built once per read so the map and
+ * the table hand the drawer the SAME subject for the same server: two
+ * constructions that could drift would put one server's facts under
+ * another's name, which is the one mistake a drill-in cannot be allowed to
+ * make.
+ */
+export interface Roster {
+    readonly self: Subject;
+    readonly peers: Subject[];
+}
+
+export function subjects(seen: Seen): Roster {
+    const cluster = seen.cluster ?? {};
+    const mine = seen.roles ?? [];
+    const wanted = cluster.desired ?? null;
+    const self: Subject = {
+            name: "This node",
+            self: true,
+            endpoint: null,
+            node: null,
+            roles: mine,
+            declared: wanted,
+            about: {
+                id: told(seen.id),
+                version: seen.version ?? null,
+                build: seen.build ?? null,
+                "answers on": (seen.endpoints ?? []).join(", ") || null,
+                roles: mine.join(", ") || "none held",
+                "declared for it": wanted?.join(", ") ?? null,
+                retain: seen.retain === null ? "unbounded" : told(seen.retain),
+                resources: resourceLines(seen.resources),
+                lease: leaseText(cluster.lease),
+                epoch: told(cluster.epoch),
+                campaigns: told(cluster.campaigns),
+                "collecting from here": String((cluster.followers ?? []).length),
+                "each follower": behindEach(cluster.followers ?? []),
+                "leads, as the log records": leading(cluster.leaders ?? [], seen.id),
+                "sync with its upstream": cluster.upstream?.state ?? null,
+                "copied from its upstream": copied(cluster.upstream),
+                "across leaders": ended(cluster.across),
+                "balances leaderships":
+                    cluster.failover?.balance_leaderships === true
+                        ? "yes, when one node leads two lines more"
+                        : null,
+            },
+    };
+    const peers: Subject[] = (cluster.peers ?? []).map(
+        (peer) => ({
+                    name: peer.name ?? "",
+                    self: false,
+                    endpoint: peer.endpoint ?? null,
+                    node: peer.node ?? null,
+                    roles: peer.roles ?? [],
+                    // A peer's declaration is not this node's to read, and the drawer
+                    // offers it no drain to qualify.
+                    declared: null,
+                    about: {
+                        name: peer.name ?? null,
+                        "answers on": told(peer.endpoint),
+                        "clients reach it at": typeof peer.clients === "string" ? peer.clients : null,
+                        id: told(peer.node),
+                        roles: (peer.roles ?? []).join(", ") || "none declared",
+                        replicates: told(peer.replicates),
+                        region: typeof peer.region === "string" ? peer.region : null,
+                        leads: placement(peer),
+                        "leads, as the log records": leading(cluster.leaders ?? [], peer.node),
+                        fingerprint: peer.fingerprint ?? null,
+                        "join token expires": told(peer.join_expires_ms),
+                        // The peer's own figures, stated by the peer and heard
+                        // here — labelled as that kind of truth, and the label
+                        // rides the value rather than living in a heading.
+                        "resources, as this node last heard them": resourceLines(peer.readings),
+                    },
+            }),
+    );
+    return { self, peers };
+}
+
+/** The subject for one server, by its place ("self") or its peer name. */
+function subjectFor(seen: Seen, place: string): Subject {
+    const all = subjects(seen);
+    return place === "self"
+        ? all.self
+        : all.peers.find((one) => one.name === place) ?? all.self;
+}
+
 /** Draw the cluster as this node sees it, with the topology layer over it. */
 export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
     const cluster = seen.cluster ?? {};
@@ -635,37 +724,7 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
             fact("resources", resourceSummary(seen.resources)),
         ],
         "self",
-        {
-            name: "This node",
-            self: true,
-            endpoint: null,
-            node: null,
-            roles: mine,
-            declared: wanted,
-            about: {
-                id: told(seen.id),
-                version: seen.version ?? null,
-                build: seen.build ?? null,
-                "answers on": (seen.endpoints ?? []).join(", ") || null,
-                roles: mine.join(", ") || "none held",
-                "declared for it": wanted?.join(", ") ?? null,
-                retain: seen.retain === null ? "unbounded" : told(seen.retain),
-                resources: resourceLines(seen.resources),
-                lease: leaseText(cluster.lease),
-                epoch: told(cluster.epoch),
-                campaigns: told(cluster.campaigns),
-                "collecting from here": String((cluster.followers ?? []).length),
-                "each follower": behindEach(cluster.followers ?? []),
-                "leads, as the log records": leading(cluster.leaders ?? [], seen.id),
-                "sync with its upstream": cluster.upstream?.state ?? null,
-                "copied from its upstream": copied(cluster.upstream),
-                "across leaders": ended(cluster.across),
-                "balances leaderships":
-                    cluster.failover?.balance_leaderships === true
-                        ? "yes, when one node leads two lines more"
-                        : null,
-            },
-        },
+        subjectFor(seen, "self"),
     );
     into.appendChild(self);
 
@@ -715,33 +774,7 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
                     fact("resources, as heard here", resourceSummary(peer.readings)),
                 ],
                 "peer",
-                {
-                    name: peer.name ?? "",
-                    self: false,
-                    endpoint: peer.endpoint ?? null,
-                    node: peer.node ?? null,
-                    roles: peer.roles ?? [],
-                    // A peer's declaration is not this node's to read, and the drawer
-                    // offers it no drain to qualify.
-                    declared: null,
-                    about: {
-                        name: peer.name ?? null,
-                        "answers on": told(peer.endpoint),
-                        "clients reach it at": typeof peer.clients === "string" ? peer.clients : null,
-                        id: told(peer.node),
-                        roles: (peer.roles ?? []).join(", ") || "none declared",
-                        replicates: told(peer.replicates),
-                        region: typeof peer.region === "string" ? peer.region : null,
-                        leads: placement(peer),
-                        "leads, as the log records": leading(cluster.leaders ?? [], peer.node),
-                        fingerprint: peer.fingerprint ?? null,
-                        "join token expires": told(peer.join_expires_ms),
-                        // The peer's own figures, stated by the peer and heard
-                        // here — labelled as that kind of truth, and the label
-                        // rides the value rather than living in a heading.
-                        "resources, as this node last heard them": resourceLines(peer.readings),
-                    },
-                },
+                subjectFor(seen, peer.name ?? ""),
             ),
         );
     }

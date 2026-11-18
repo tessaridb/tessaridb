@@ -7,6 +7,7 @@ import { held, scrape, valueOf } from "./api.js";
 import { at, clear, say } from "./dom.js";
 import { facts } from "./draw.js";
 import { draw as drawMap, type Layout, type Link, type Seen } from "./map.js";
+import { drawTable } from "./table.js";
 import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
@@ -222,6 +223,7 @@ export async function readNode(): Promise<void> {
     // keeps the thing read from beside the reading.
     clear("cluster-map");
     drawMap(at("cluster-map"), all as Seen, layout);
+    drawTable(at("table-filters"), at("cluster-table"), all as Seen);
     // A node with no peers drew one card and said nothing, so the map read the
     // same whether this node is alone or the map simply had nothing to add.
     // They are different situations with different next actions, and the four

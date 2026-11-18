@@ -45,6 +45,11 @@ export const cluster = (): Node =>
             // thing it was read from — that is the same rule the statement log
             // follows for statements.
             el("div", { id: "cluster-map", class: "map" }),
+            // The grown-cluster view of the same answer: one row per server,
+            // find/sort/filters above it, the same drawer a card opens.
+            el("h3", { class: "servers-title" }, "Servers"),
+            el("div", { id: "table-filters", class: "row tight" }),
+            el("div", { id: "cluster-table", class: "answer small" }),
             // The drawer sits inside the pane and over the map, so opening it never
             // costs the view the decision is being made against.
             el(
