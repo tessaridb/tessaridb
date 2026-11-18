@@ -1,3 +1,6 @@
+// bgv-allow(panic): test-only module; a panic is how a test reports its failure, as in fault_tests.rs.
+#![allow(clippy::panic)]
+
 use super::*;
 
 #[test]

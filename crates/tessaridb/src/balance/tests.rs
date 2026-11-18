@@ -1,4 +1,7 @@
-#![allow(clippy::unwrap_used)]
+// bgv-allow(panic, cast_possible_truncation): test-only module; a panic is
+// how a test reports its failure, and the casts build fixed test identities
+// from their position, as in fault_tests.rs.
+#![allow(clippy::unwrap_used, clippy::panic, clippy::cast_possible_truncation)]
 
 use tessari_session::Outcome;
 use tessari_session::RunNow;
@@ -253,8 +256,12 @@ fn both_halves_serve_the_continued_traffic_within_the_stated_ratio() {
     );
     let hotter = served.iter().copied().max().unwrap_or(0);
     let cooler = served.iter().copied().min().unwrap_or(0);
+    // Both rates are floor(count * 1000 / elapsed_ms) of counts 3 and 2 over
+    // the same window, so the true ratio is exactly 3:2 and the floors can
+    // each lose just under one — the cross-multiplied comparison owes a +2
+    // truncation allowance (measured: elapsed 3 ms gives 1000 vs 666).
     assert!(
-        hotter.saturating_mul(2) <= cooler.saturating_mul(3),
+        hotter.saturating_mul(2) <= cooler.saturating_mul(3).saturating_add(2),
         "the busier half serves at most 3/5 (the stated 60/40): {served:?}"
     );
 }
@@ -718,7 +725,6 @@ fn the_bared_policy_is_the_stores_published_bounds() {
     );
 }
 
-#[test]
 #[test]
 fn a_table_born_under_a_default_splits_when_it_outgrows_the_bound() {
     // D-SG5-4 as amended: the table is BORN split under an inheriting

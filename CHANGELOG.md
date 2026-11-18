@@ -23,6 +23,34 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.48.0 — 2026-11-18
+
+A store written by 0.47.0 opens under 0.48.0 unchanged.
+
+- **The cluster at regional scale.** The catalog declares the topology a
+  cluster runs on: `DEFINE TOPOLOGY` names realms and the domains inside
+  them, each member row carries its realm, and the scheme states what a loss
+  must survive (`SURVIVES REALM LOSS`) — `INFO FOR TOPOLOGY` answers the
+  scheme's verdict live, with the arithmetic it rests on.
+- **Pooled tenants on one cluster.** Namespaces declare who may reach them
+  (`RESTRICT TO`) and confinement holds adversarially: a tenant's writes
+  land only on subscribed nodes, and the noisy-neighbour bound is measured,
+  with the statements a pooled cluster needs and the INFO surfaces that
+  prove them.
+- **A database across two regions.** `DEFINE REPLICATION … TO|FROM` declares
+  a database's copy on another cluster over a token-bound link; the
+  receiving copy is read-only by declaration, at-least-once with idempotent
+  application, and `INFO FOR REPLICATION` reports each shipped log's
+  confirmed position.
+- **Split and merge by default.** `SPLIT AUTOMATICALLY` on a namespace or a
+  table balances a growing table without a hand on it: baked record and rate
+  bounds for the bare form, `MIN`/`MAX SHARDS` to state the range, a
+  load-aware cut at the traffic median, and anti-flapping merge bounds.
+- **The cluster map in the console.** The built-in console draws the
+  declared topology — realms as group boxes with the survival verdict,
+  cross-cluster links as labelled edges with each log's confirmed position,
+  and split tables as shard glyphs with the balancer's own last act.
+
 ## 0.47.0 — 2026-11-17
 
 A store written by 0.46.0 opens under 0.47.0 unchanged.

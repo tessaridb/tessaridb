@@ -18,6 +18,9 @@
 #![allow(clippy::panic, clippy::unwrap_used)]
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![allow(clippy::expect_used, clippy::as_conversions)]
+// bgv-allow(cast_possible_wrap): test-only binary; the usize→i64 casts size
+// fixed test fixtures beside the i64 the wire answers with, as in fault_tests.rs.
+#![allow(clippy::cast_possible_wrap)]
 
 use std::collections::BTreeMap;
 use std::net::TcpStream;
@@ -2588,10 +2591,10 @@ fn leader_of(
                 if held != range {
                     continue;
                 }
-                if let Some(at) = ids.iter().position(|id| *id == node) {
-                    if found.is_none_or(|(_, seen)| epoch > seen) {
-                        found = Some((at, epoch));
-                    }
+                if let Some(at) = ids.iter().position(|id| *id == node)
+                    && found.is_none_or(|(_, seen)| epoch > seen)
+                {
+                    found = Some((at, epoch));
                 }
             }
         }

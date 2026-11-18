@@ -55,13 +55,12 @@ impl AutoSplit {
     /// The bounds a bare `SPLIT AUTOMATICALLY` declares and an inherited
     /// namespace default resolves to — the same numbers, from the single
     /// home in `tessari_types`, so the two paths cannot drift apart.
+    #[allow(clippy::as_conversions)]
     pub const BARED: Self = Self {
-        // bgv-allow(M18): u32→u64 widening is infallible and `u64::from` is
-        // not const-callable on this toolchain (E0658); the numbers' single
-        // home is the types constant on the right, and the balance suite
-        // pins the pair together.
+        // bgv-allow(numeric-as-cast): u32→u64 widening is infallible and `u64::from` is not const-callable on this toolchain (E0658); the numbers' single home is the types constant on the right, and the balance suite pins the pair together.
         above: tessari_types::BARE_SPLIT_ABOVE_RECORDS as u64,
         writes_per_second: None,
+        // bgv-allow(numeric-as-cast): same const-context widening as `above`.
         merge_below: tessari_types::BARE_SPLIT_MERGE_RECORDS as u64,
         min_shards: 1,
         max_shards: None,
