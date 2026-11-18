@@ -12,7 +12,8 @@ use tessaridb::{Outcome, Parameters};
 use crate::codec::{self, Frontend};
 use crate::error::Result;
 
-use super::connection::{Conn, answer};
+use super::answer::answer;
+use super::connection::Conn;
 use super::errors::{Refused, code};
 use super::running::{Held, run_refusal};
 use super::translate::{self, Columns};
@@ -611,8 +612,7 @@ impl Kitchen {
             // The verb the Parse named runs here, against the connection's
             // own block state — the same words the simple path answers.
             portal.done = true;
-            return super::connection::transaction(conn, verb, &mut self.tx, held, shared, false)
-                .await;
+            return super::answer::transaction(conn, verb, &mut self.tx, held, shared, false).await;
         }
         if let Some(query) = portal
             .translated
@@ -658,7 +658,7 @@ impl Kitchen {
                 let window = &catalog_rows[start..end];
                 let described = true;
                 let answered =
-                    super::connection::answer_catalog(conn, &query, window, described, &formats)
+                    super::answer::answer_catalog(conn, &query, window, described, &formats)
                         .await?;
                 if !answered {
                     self.skipping = true;
@@ -675,7 +675,7 @@ impl Kitchen {
             // Describe answered it, or the client never asked.
             let described = true;
             let answered =
-                super::connection::answer_catalog(conn, &query, &catalog_rows, described, &formats)
+                super::answer::answer_catalog(conn, &query, &catalog_rows, described, &formats)
                     .await?;
             if !answered {
                 self.skipping = true;
