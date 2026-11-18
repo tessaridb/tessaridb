@@ -53,6 +53,7 @@
 
 import { valueOf } from "./api.js";
 import { at, clear, disable, hide, made, say, setValue, trimmed } from "./dom.js";
+import { facts } from "./draw.js";
 import { told } from "./session.js";
 import { hereAgain } from "./tabs.js";
 import { aName } from "./topic-names.js";
@@ -69,6 +70,12 @@ export interface Subject {
    * does. Read by the drain, which a declaration outlives.
    */
   readonly declared: readonly string[] | null;
+  /**
+   * Everything this node can vouch for about the subject — the facts table
+   * the drawer opens with. For a peer, only what the membership row and this
+   * node's own hearing carry; the table never says more than that.
+   */
+  readonly about: Record<string, unknown>;
 }
 
 let open: Subject | null = null;
@@ -151,6 +158,7 @@ export function show(subject: Subject): void {
     (at(`drawer-${bit}`) as HTMLInputElement).checked = subject.roles.includes(bit);
   }
   clear("drawer-missing");
+  facts("drawer-facts", subject.about);
   hide("drawer-remove-part", subject.self);
   setValue("drawer-remove-confirm", "");
   shapeRemove();

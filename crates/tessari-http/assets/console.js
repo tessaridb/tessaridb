@@ -310,8 +310,8 @@
     return "Basic " + basic(user, password);
   }
   function basic(user, password) {
-    const bytes = new TextEncoder().encode(user + ":" + password);
-    return btoa(String.fromCharCode(...bytes));
+    const bytes2 = new TextEncoder().encode(user + ":" + password);
+    return btoa(String.fromCharCode(...bytes2));
   }
   function credential() {
     if (held2 !== null) {
@@ -1891,6 +1891,7 @@
       at(`drawer-${bit}`).checked = subject.roles.includes(bit);
     }
     clear("drawer-missing");
+    facts("drawer-facts", subject.about);
     hide("drawer-remove-part", subject.self);
     setValue("drawer-remove-confirm", "");
     shapeRemove();
@@ -2886,6 +2887,87 @@ Shown once. The node keeps only its digest.`);
     at("signed-in").before(icon("user"));
   }
 
+  // src/readings.ts
+  //! Resource readings, as the console renders them.
+  //!
+  //! What `INFO FOR NODE` now answers of a machine — its own, and each bound
+  //! peer's as this node last heard it. Every number keeps the two labels the
+  //! engine puts on it: `observed` (how old the sample is) and `stale` (whether
+  //! the freshness bound the cluster's policy sets still admits it). A stale
+  //! reading is drawn as stale, never silently as the present — that is the one
+  //! thing this module must never do.
+  //!
+  //! A figure the node could not measure answers `null`, and renders as "not
+  //! reported" rather than a zero: absence and zero are different claims, and
+  //! the console does not get to pick the more comfortable one.
+  function bytes(held6) {
+    const units = ["B", "KB", "MB", "GB", "TB"];
+    let value2 = held6;
+    let unit = 0;
+    while (value2 >= 1024 && unit < units.length - 1) {
+      value2 /= 1024;
+      unit += 1;
+    }
+    return `${unit === 0 ? value2 : value2.toFixed(1)} ${units[unit]}`;
+  }
+  function percent(points) {
+    return typeof points === "number" ? `${(points / 100).toFixed(1)}%` : null;
+  }
+  function rate(perSecond) {
+    return typeof perSecond === "number" ? `${bytes(perSecond)}/s` : null;
+  }
+  function freshness(held6) {
+    if (held6 === null || held6 === void 0) {
+      return null;
+    }
+    const observed = typeof held6.observed === "number" ? held6.observed : null;
+    if (observed === null) {
+      return "no sample held";
+    }
+    const when = observed === 0 ? "just now" : `${observed}s ago`;
+    return held6.stale === true ? `stale — observed ${when}, past the freshness bound` : `observed ${when}`;
+  }
+  function resourceLines(held6) {
+    if (held6 === null || held6 === void 0) {
+      return "no readings held";
+    }
+    const cores = typeof held6.cpu_cores === "number" ? `${held6.cpu_cores} core${held6.cpu_cores === 1 ? "" : "s"}` : "cores not reported";
+    const busy = percent(held6.cpu_busy);
+    const used = typeof held6.memory_used === "number" && typeof held6.memory_total === "number" ? `${bytes(held6.memory_used)} of ${bytes(held6.memory_total)} used` : "memory not reported";
+    const disk = typeof held6.disk_free === "number" && typeof held6.disk_total === "number" ? `${bytes(held6.disk_free)} of ${bytes(held6.disk_total)} free` : "disk not reported";
+    const net = rate(held6.network_received) !== null && rate(held6.network_transmitted) !== null ? `in ${rate(held6.network_received)}, out ${rate(held6.network_transmitted)}` : "network not reported";
+    const fresh = freshness(held6);
+    return [
+      busy === null ? cores : `${cores} · ${busy} busy`,
+      used,
+      disk,
+      net,
+      fresh ?? "no sample held"
+    ].join("\n");
+  }
+  function resourceSummary(held6) {
+    if (held6 === null || held6 === void 0) {
+      return null;
+    }
+    const parts = [];
+    const busy = percent(held6.cpu_busy);
+    if (busy !== null) {
+      parts.push(`${busy} busy`);
+    }
+    if (typeof held6.memory_used === "number" && typeof held6.memory_total === "number" && held6.memory_total > 0) {
+      parts.push(`${Math.round(held6.memory_used / held6.memory_total * 100)}% memory`);
+    }
+    if (typeof held6.disk_free === "number" && typeof held6.disk_total === "number" && held6.disk_total > 0) {
+      parts.push(`${Math.round(held6.disk_free / held6.disk_total * 100)}% disk free`);
+    }
+    if (parts.length === 0) {
+      return null;
+    }
+    const fresh = freshness(held6);
+    const said3 = parts.join(" · ");
+    return fresh === null ? said3 : `${said3} (${fresh})`;
+  }
+
   // src/map.ts
   //! The cluster, drawn.
   //!
@@ -2994,14 +3076,21 @@ Shown once. The node keeps only its digest.`);
   }
   var told2 = (value2) => value2 === void 0 || value2 === null ? null : String(value2);
   function lease(held6) {
-    if (held6 === void 0 || held6 === null) {
+    const said3 = leaseText(held6);
+    if (said3 === null) {
       return null;
     }
     const badge = made("div", "lease");
+    badge.textContent = said3;
+    return badge;
+  }
+  function leaseText(held6) {
+    if (held6 === void 0 || held6 === null) {
+      return null;
+    }
     const held_ = held6;
     const until = told2(held_.until ?? held_.expires ?? held6);
-    badge.textContent = until === null ? "holds the lease" : `holds the lease until ${until}`;
-    return badge;
+    return until === null ? "holds the lease" : `holds the lease until ${until}`;
   }
   var drained = (has) => has.length === 0;
   function figure(title, has, wanted2, facts2, kind3, subject) {
@@ -3241,7 +3330,8 @@ Shown once. The node keeps only its digest.`);
           "balances leaderships",
           cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
         ),
-        wanted2 === null ? null : fact("declared for it", wanted2.join(", "))
+        wanted2 === null ? null : fact("declared for it", wanted2.join(", ")),
+        fact("resources", resourceSummary(seen.resources))
       ],
       "self",
       {
@@ -3250,7 +3340,27 @@ Shown once. The node keeps only its digest.`);
         endpoint: null,
         node: null,
         roles: mine2,
-        declared: wanted2
+        declared: wanted2,
+        about: {
+          id: told2(seen.id),
+          version: seen.version ?? null,
+          build: seen.build ?? null,
+          "answers on": (seen.endpoints ?? []).join(", ") || null,
+          roles: mine2.join(", ") || "none held",
+          "declared for it": wanted2?.join(", ") ?? null,
+          retain: seen.retain === null ? "unbounded" : told2(seen.retain),
+          resources: resourceLines(seen.resources),
+          lease: leaseText(cluster.lease),
+          epoch: told2(cluster.epoch),
+          campaigns: told2(cluster.campaigns),
+          "collecting from here": String((cluster.followers ?? []).length),
+          "each follower": behindEach(cluster.followers ?? []),
+          "leads, as the log records": leading(cluster.leaders ?? [], seen.id),
+          "sync with its upstream": cluster.upstream?.state ?? null,
+          "copied from its upstream": copied(cluster.upstream),
+          "across leaders": ended2(cluster.across),
+          "balances leaderships": cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null
+        }
       }
     );
     into.appendChild(self);
@@ -3288,7 +3398,8 @@ Shown once. The node keeps only its digest.`);
             fact("replicates", told2(peer.replicates)),
             fact("region", typeof peer.region === "string" ? peer.region : null),
             fact("leads", placement(peer)),
-            fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node))
+            fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
+            fact("resources, as heard here", resourceSummary(peer.readings))
           ],
           "peer",
           {
@@ -3299,7 +3410,24 @@ Shown once. The node keeps only its digest.`);
             roles: peer.roles ?? [],
             // A peer's declaration is not this node's to read, and the drawer
             // offers it no drain to qualify.
-            declared: null
+            declared: null,
+            about: {
+              name: peer.name ?? null,
+              "answers on": told2(peer.endpoint),
+              "clients reach it at": typeof peer.clients === "string" ? peer.clients : null,
+              id: told2(peer.node),
+              roles: (peer.roles ?? []).join(", ") || "none declared",
+              replicates: told2(peer.replicates),
+              region: typeof peer.region === "string" ? peer.region : null,
+              leads: placement(peer),
+              "leads, as the log records": leading(cluster.leaders ?? [], peer.node),
+              fingerprint: peer.fingerprint ?? null,
+              "join token expires": told2(peer.join_expires_ms),
+              // The peer's own figures, stated by the peer and heard
+              // here — labelled as that kind of truth, and the label
+              // rides the value rather than living in a heading.
+              "resources, as this node last heard them": resourceLines(peer.readings)
+            }
           }
         )
       );
@@ -3366,14 +3494,18 @@ Shown once. The node keeps only its digest.`);
         }
       } catch {
       }
-      const { cluster, clients, ...mine2 } = all2;
+      const { cluster, clients, resources, ...mine2 } = all2;
       const store = held3(await valueOf("INFO FOR STORE;", "Node")) ?? {};
       facts("node-facts", {
         ...mine2,
         clients: served(clients),
         listening: listening(clients),
         format: store["format"],
-        writes: store["writes"]
+        writes: store["writes"],
+        // This machine's own readings, labelled by age and freshness the way the
+        // engine answers them — the raw object stays out of the table (a JSON
+        // blob in a facts cell would be a reading only a parser could use).
+        resources: resourceLines(resources)
       });
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       draw4(all2);
@@ -4041,15 +4173,15 @@ Shown once. The node keeps only its digest.`);
     const name = aName(trimmed("new-topic-name"));
     const retain = optional("new-topic-retain", aDuration);
     const kept2 = optional("new-topic-kept", aWhole);
-    const bytes = optional("new-topic-bytes", aWhole);
+    const bytes2 = optional("new-topic-bytes", aWhole);
     if (place2 === null) return { missing: PLACE };
     if (name === null) return { missing: "a name: a letter or _, then letters, digits or _" };
     if (retain === null) return { missing: "keep for is " + DURATION2 };
     if (kept2 === null || kept2 === 0) return { missing: "keep at most is a whole number of bytes above zero" };
-    if (bytes === null || bytes === 0) return { missing: "the largest message is a whole number of bytes" };
+    if (bytes2 === null || bytes2 === 0) return { missing: "the largest message is a whole number of bytes" };
     return {
-      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (kept2 === void 0 ? "" : ` RETAIN BYTES ${kept2}`) + (bytes === void 0 ? "" : ` MAX BYTES ${bytes}`) + ";",
-      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (kept2 === void 0 ? "" : `, removing the oldest once it holds over ${kept2} bytes`) + (bytes === void 0 ? "." : ` and refusing a message over ${bytes} bytes.`)
+      statement: `DEFINE TOPIC ${name}` + (retain === void 0 ? "" : ` RETAIN ${retain}`) + (kept2 === void 0 ? "" : ` RETAIN BYTES ${kept2}`) + (bytes2 === void 0 ? "" : ` MAX BYTES ${bytes2}`) + ";",
+      says: `Creates ${name} in ${place2.namespace}.${place2.database}, keeping ` + (retain === void 0 ? "every message" : `each message for ${retain}`) + (kept2 === void 0 ? "" : `, removing the oldest once it holds over ${kept2} bytes`) + (bytes2 === void 0 ? "." : ` and refusing a message over ${bytes2} bytes.`)
     };
   }
   function dropTopic() {
@@ -4333,9 +4465,9 @@ Shown once. The node keeps only its digest.`);
   async function backUp() {
     const written = await send3(composeBackup(), "backup-run", "backup-status", "backup-answer", (answered2) => {
       const path = typeof answered2?.path === "string" ? answered2.path : trimmed("backup-name");
-      const bytes = typeof answered2?.bytes === "number" ? answered2.bytes : null;
-      return bytes === null ? path : `${path}
-${bytes.toLocaleString("en")} bytes`;
+      const bytes2 = typeof answered2?.bytes === "number" ? answered2.bytes : null;
+      return bytes2 === null ? path : `${path}
+${bytes2.toLocaleString("en")} bytes`;
     });
     if (written) {
       ours = true;

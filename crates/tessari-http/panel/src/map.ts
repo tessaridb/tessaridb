@@ -55,6 +55,7 @@
 //! made.
 
 import { made } from "./dom.js";
+import { resourceLines, resourceSummary, type Readings } from "./readings.js";
 import { show, type Subject } from "./drawer.js";
 
 /** The three bits, in the order the engine defines them. */
@@ -92,6 +93,16 @@ export interface Peer {
     /** The region a `LOCAL MAJORITY` counts it in, `null` when its row names none. */
     readonly region?: string | null;
     readonly roles?: readonly string[];
+    /** The certificate pinned to the row (ADR-0108 D9), as `FINGERPRINT` spells it. */
+    readonly fingerprint?: string | null;
+    /** When a waiting join token stops binding, milliseconds since the epoch. */
+    readonly join_expires_ms?: number | null;
+    /**
+     * What this node last heard of the peer's own resources — the peer's own
+     * sampler's figures, joined here by the id the greeting proved, never
+     * inferred. `null` when this node has not heard from it.
+     */
+    readonly readings?: Readings | null;
 }
 
 /** Where this node stands against the peer it collects from (ADR-0094 D4). */
@@ -187,6 +198,11 @@ export interface Seen {
     readonly id?: string;
     readonly roles?: readonly string[];
     readonly endpoints?: readonly string[];
+    readonly version?: string;
+    readonly build?: string;
+    readonly retain?: number | null;
+    /** This machine's own resource readings — the local sampler's last pass. */
+    readonly resources?: Readings | null;
     readonly cluster?: {
         readonly lease?: unknown;
         readonly epoch?: unknown;
@@ -271,15 +287,23 @@ const told = (value: unknown): string | null =>
  * this node cannot make — it knows only about itself.
  */
 function lease(held: unknown): HTMLElement | null {
-    if (held === undefined || held === null) {
+    const said = leaseText(held);
+    if (said === null) {
         return null;
     }
     const badge = made("div", "lease");
+    badge.textContent = said;
+    return badge;
+}
+
+/** The lease as a sentence, `null` when nobody granted one. */
+function leaseText(held: unknown): string | null {
+    if (held === undefined || held === null) {
+        return null;
+    }
     const held_ = held as { until?: unknown; expires?: unknown };
     const until = told(held_.until ?? held_.expires ?? held);
-    badge.textContent =
-        until === null ? "holds the lease" : `holds the lease until ${until}`;
-    return badge;
+    return until === null ? "holds the lease" : `holds the lease until ${until}`;
 }
 
 /** Three unlit lamps is a state with a name, and the name belongs on screen. */
@@ -608,6 +632,7 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
                 cluster.failover?.balance_leaderships === true ? "yes, when one node leads two lines more" : null,
             ),
             wanted === null ? null : fact("declared for it", wanted.join(", ")),
+            fact("resources", resourceSummary(seen.resources)),
         ],
         "self",
         {
@@ -617,6 +642,29 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
             node: null,
             roles: mine,
             declared: wanted,
+            about: {
+                id: told(seen.id),
+                version: seen.version ?? null,
+                build: seen.build ?? null,
+                "answers on": (seen.endpoints ?? []).join(", ") || null,
+                roles: mine.join(", ") || "none held",
+                "declared for it": wanted?.join(", ") ?? null,
+                retain: seen.retain === null ? "unbounded" : told(seen.retain),
+                resources: resourceLines(seen.resources),
+                lease: leaseText(cluster.lease),
+                epoch: told(cluster.epoch),
+                campaigns: told(cluster.campaigns),
+                "collecting from here": String((cluster.followers ?? []).length),
+                "each follower": behindEach(cluster.followers ?? []),
+                "leads, as the log records": leading(cluster.leaders ?? [], seen.id),
+                "sync with its upstream": cluster.upstream?.state ?? null,
+                "copied from its upstream": copied(cluster.upstream),
+                "across leaders": ended(cluster.across),
+                "balances leaderships":
+                    cluster.failover?.balance_leaderships === true
+                        ? "yes, when one node leads two lines more"
+                        : null,
+            },
         },
     );
     into.appendChild(self);
@@ -664,6 +712,7 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
                     fact("region", typeof peer.region === "string" ? peer.region : null),
                     fact("leads", placement(peer)),
                     fact("leads, as the log records", leading(cluster.leaders ?? [], peer.node)),
+                    fact("resources, as heard here", resourceSummary(peer.readings)),
                 ],
                 "peer",
                 {
@@ -675,6 +724,23 @@ export function draw(into: HTMLElement, seen: Seen, layout?: Layout): void {
                     // A peer's declaration is not this node's to read, and the drawer
                     // offers it no drain to qualify.
                     declared: null,
+                    about: {
+                        name: peer.name ?? null,
+                        "answers on": told(peer.endpoint),
+                        "clients reach it at": typeof peer.clients === "string" ? peer.clients : null,
+                        id: told(peer.node),
+                        roles: (peer.roles ?? []).join(", ") || "none declared",
+                        replicates: told(peer.replicates),
+                        region: typeof peer.region === "string" ? peer.region : null,
+                        leads: placement(peer),
+                        "leads, as the log records": leading(cluster.leaders ?? [], peer.node),
+                        fingerprint: peer.fingerprint ?? null,
+                        "join token expires": told(peer.join_expires_ms),
+                        // The peer's own figures, stated by the peer and heard
+                        // here — labelled as that kind of truth, and the label
+                        // rides the value rather than living in a heading.
+                        "resources, as this node last heard them": resourceLines(peer.readings),
+                    },
                 },
             ),
         );

@@ -55,6 +55,11 @@ export const cluster = (): Node =>
                     el("h3", { id: "drawer-title" }, "a node"),
                     button("drawer-close", "Close", "quiet"),
                 ),
+                // Everything this node can vouch for about the subject: identity,
+                // roles, placement, and the resource readings it holds — stated
+                // before the actions, because the action being weighed is the
+                // reading's reason for existing.
+                el("div", { id: "drawer-facts", class: "answer small" }),
                 el("div", { id: "drawer-missing" }),
                 row(
                     "default",

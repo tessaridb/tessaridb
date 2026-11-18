@@ -11,6 +11,7 @@ import { told } from "./session.js";
 import { settled, state } from "./states.js";
 import { onArrival } from "./tabs.js";
 import { know } from "./formation.js";
+import { resourceLines, type Readings } from "./readings.js";
 import { draw as drawTrust, type Trusted } from "./trust.js";
 
 const HEALTH_ROUTE = "/health";
@@ -118,7 +119,7 @@ export async function readNode(): Promise<void> {
     }
     // `cluster` is its own object and belongs on the cluster tab; what is left
     // is this machine, which is what this pane claims to show.
-    const { cluster, clients, ...mine } = all;
+    const { cluster, clients, resources, ...mine } = all;
     // The format the store holds beside the one this build writes: they differ
     // until `ALTER STORE FINALIZE FORMAT`, which closes the way back (ADR-0118).
     const store = held(await valueOf("INFO FOR STORE;", "Node")) ?? {};
@@ -128,6 +129,10 @@ export async function readNode(): Promise<void> {
       listening: listening(clients),
       format: store["format"],
       writes: store["writes"],
+      // This machine's own readings, labelled by age and freshness the way the
+      // engine answers them — the raw object stays out of the table (a JSON
+      // blob in a facts cell would be a reading only a parser could use).
+      resources: resourceLines(resources as Readings | null),
     });
     const peers =
       typeof cluster === "object" && cluster !== null
