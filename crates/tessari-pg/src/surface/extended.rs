@@ -32,6 +32,13 @@ pub(crate) struct Kitchen {
     /// The transaction block the readiness reports, shared with the simple
     /// query path through [`Self::tx`].
     pub(crate) tx: codec::write::Tx,
+    /// The session parameters this connection answers SET/SHOW/RESET
+    /// against — seeded from the startup greeting's own reported set, so a
+    /// SHOW never answers a value the client never saw reported. One
+    /// connection is one task, so a plain map is the right hold.
+    pub(crate) params: std::collections::BTreeMap<String, String>,
+    /// The startup-reported values RESET returns to.
+    pub(crate) defaults: std::collections::BTreeMap<String, String>,
 }
 
 /// A parsed statement: its translation and the parameter types it declared.
@@ -70,7 +77,26 @@ impl Kitchen {
             portals: HashMap::new(),
             skipping: false,
             tx: codec::write::Tx::Idle,
+            params: std::collections::BTreeMap::new(),
+            defaults: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Seed the parameter hold from the greeting's own reported set — one
+    /// source of truth, so SHOW never answers a value ParameterStatus never
+    /// carried. `application_name` is settable whether or not the startup
+    /// named one; its default is the empty name.
+    pub(crate) fn seed_params(&mut self, reported: &[(String, String)]) {
+        for (name, value) in reported {
+            self.params.insert(name.clone(), value.clone());
+            self.defaults.insert(name.clone(), value.clone());
+        }
+        self.params
+            .entry("application_name".to_owned())
+            .or_default();
+        self.defaults
+            .entry("application_name".to_owned())
+            .or_default();
     }
 
     /// One message of the extended protocol. A refusal answers the message and

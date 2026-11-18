@@ -202,6 +202,7 @@ async fn session(
     // inside answer as themselves, and the divergence a held snapshot would
     // close is named on the defer list.
     let mut kitchen = super::extended::Kitchen::new();
+    kitchen.seed_params(&super::parameters(&application, held.namespace()));
     loop {
         tokio::select! {
             biased;
@@ -270,7 +271,99 @@ async fn query_once(
     match super::session::parse(query) {
         Ok(Some(super::session::Session::Namespace(namespace))) => {
             held.set_namespace(&namespace);
+            kitchen
+                .params
+                .insert("search_path".to_owned(), namespace.clone());
             conn.send(&codec::write::command_complete("SET")).await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::Set { name, value })) => {
+            // Accept-and-report: the hold takes the value, a change rides
+            // ParameterStatus as the dialect counts it, and nothing else on
+            // the store moves — search_path alone has an effect.
+            let changed = kitchen.params.get(&name) != Some(&value);
+            kitchen.params.insert(name.clone(), value.clone());
+            if changed {
+                conn.send(&codec::write::parameter_status(&name, &value))
+                    .await?;
+            }
+            conn.send(&codec::write::command_complete("SET")).await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::Show { name })) => {
+            let value = kitchen.params.get(&name).cloned().unwrap_or_default();
+            let column = codec::write::Column {
+                name,
+                type_oid: super::types::oid::TEXT,
+                type_len: -1,
+                format: 0,
+            };
+            conn.send(&codec::write::row_description(std::slice::from_ref(
+                &column,
+            )))
+            .await?;
+            conn.send(&codec::write::data_row(&[Some(value.into_bytes())]))
+                .await?;
+            conn.send(&codec::write::command_complete("SHOW")).await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::ShowAll)) => {
+            let columns = [
+                ("name", super::types::oid::TEXT),
+                ("setting", super::types::oid::TEXT),
+                ("description", super::types::oid::TEXT),
+            ]
+            .map(|(name, oid)| codec::write::Column {
+                name: name.to_owned(),
+                type_oid: oid,
+                type_len: -1,
+                format: 0,
+            });
+            conn.send(&codec::write::row_description(&columns)).await?;
+            for (name, value) in &kitchen.params {
+                conn.send(&codec::write::data_row(&[
+                    Some(name.clone().into_bytes()),
+                    Some(value.clone().into_bytes()),
+                    Some(Vec::new()),
+                ]))
+                .await?;
+            }
+            conn.send(&codec::write::command_complete(&format!(
+                "SHOW {}",
+                kitchen.params.len()
+            )))
+            .await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::Reset { name })) => {
+            if name == "search_path" {
+                let default = kitchen
+                    .defaults
+                    .get("search_path")
+                    .cloned()
+                    .unwrap_or_default();
+                held.set_namespace(&default);
+                kitchen.params.insert("search_path".to_owned(), default);
+            } else if let Some(value) = kitchen.defaults.get(&name).cloned() {
+                kitchen.params.insert(name, value);
+            }
+            conn.send(&codec::write::command_complete("RESET")).await?;
+            conn.send(&codec::write::ready_for_query(*tx)).await?;
+            return Ok(());
+        }
+        Ok(Some(super::session::Session::ResetAll)) => {
+            kitchen.params = kitchen.defaults.clone();
+            let default = kitchen
+                .defaults
+                .get("search_path")
+                .cloned()
+                .unwrap_or_default();
+            held.set_namespace(&default);
+            conn.send(&codec::write::command_complete("RESET")).await?;
             conn.send(&codec::write::ready_for_query(*tx)).await?;
             return Ok(());
         }
