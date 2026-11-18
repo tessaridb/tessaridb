@@ -90,6 +90,7 @@ impl Error {
             | Self::FoldOutsideAGroup { .. } => RefusalClass::Internal,
             Self::UndeclaredField { .. }
             | Self::Thrown { .. }
+            | Self::JsonTextRefused { .. }
             | Self::FailoverRefused { .. }
             // A scheme that does not hold together is a request to fix, the
             // policy's class; one that would replace a held scheme is the

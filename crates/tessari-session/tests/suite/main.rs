@@ -107,6 +107,7 @@ mod join_choice;
 mod join_keys;
 mod join_sources;
 mod joins;
+mod json_fields;
 mod key_routes;
 mod key_value;
 mod kinds;

@@ -251,9 +251,12 @@ fn the_simple_query_wraps_several_statements_in_one_block() {
 }
 
 #[test]
-fn offset_refuses_by_name() {
-    let refused = translate("SELECT id FROM t LIMIT 5 OFFSET 3").expect_err("offset");
-    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+fn offset_pages_the_wider_bounded_read() {
+    // G091: OFFSET speaks — the store is asked for the wider read, the port
+    // drops the head. The refusal this test used to lock is gone by design.
+    let answer = translate("SELECT id FROM t LIMIT 5 OFFSET 3").expect("offset");
+    assert_eq!(answer.script, "SELECT id FROM t LIMIT 8;");
+    assert_eq!(answer.statements[0].offset, 3);
 }
 
 #[test]
@@ -373,4 +376,188 @@ fn projection_subqueries_parse_as_catalog_items() {
         columns,
         Columns::Named(vec!["attname".to_owned(), "pg_get_expr".to_owned()])
     );
+}
+
+#[test]
+fn limit_offset_widens_the_bounded_read() {
+    let answer = translate("SELECT name FROM orders LIMIT 2 OFFSET 1").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders LIMIT 3;");
+    assert_eq!(answer.statements[0].offset, 1);
+    // OFFSET 0 is the no-op, indistinguishable from no OFFSET at all.
+    let answer = translate("SELECT name FROM orders LIMIT 2 OFFSET 0").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders LIMIT 2;");
+    assert_eq!(answer.statements[0].offset, 0);
+}
+
+#[test]
+fn offset_alone_reads_unbounded() {
+    let answer = translate("SELECT name FROM orders OFFSET 2").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 2);
+}
+
+#[test]
+fn limit_all_is_no_bound() {
+    let answer = translate("SELECT name FROM orders LIMIT ALL").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 0);
+    let answer = translate("SELECT name FROM orders LIMIT ALL OFFSET 1").expect("translates");
+    assert_eq!(answer.script, "SELECT name FROM orders;");
+    assert_eq!(answer.statements[0].offset, 1);
+}
+
+#[test]
+fn offset_composes_with_order_by() {
+    let answer = translate("SELECT name FROM orders ORDER BY band DESC LIMIT 1 OFFSET 1")
+        .expect("translates");
+    assert_eq!(
+        answer.script,
+        "SELECT name FROM orders ORDER BY band DESC LIMIT 2;"
+    );
+    assert_eq!(answer.statements[0].offset, 1);
+}
+
+#[test]
+fn offset_refuses_what_the_number_position_refuses() {
+    // A parameter where the literal rides: named, exactly like LIMIT's posture.
+    let refused = translate("SELECT name FROM orders LIMIT 1 OFFSET $1").expect_err("placeholder");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // A negative number is not digits.
+    let refused = translate("SELECT name FROM orders OFFSET -1").expect_err("negative");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // A second OFFSET is the rest of the query, and the query is over.
+    let refused = translate("SELECT name FROM orders OFFSET 1 OFFSET 2").expect_err("twice");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    // The projection-without-FROM shape owes no clauses: OFFSET there wants a FROM.
+    let refused = translate("SELECT 1 OFFSET 1").expect_err("no FROM");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+}
+
+#[test]
+fn alter_table_add_column_maps_onto_add_field() {
+    let (script, parameters, _) = translated("ALTER TABLE orders ADD COLUMN qty int");
+    assert_eq!(script, "ALTER TABLE orders ADD FIELD qty TYPE int;");
+    assert!(parameters.is_empty());
+    // COLUMN is the dialect's optional noise word.
+    let (script, _, _) = translated("ALTER TABLE orders ADD qty int");
+    assert_eq!(script, "ALTER TABLE orders ADD FIELD qty TYPE int;");
+    // The type correspondence is CREATE TABLE's, both directions.
+    let (script, _, _) = translated("ALTER TABLE orders ADD COLUMN ref uuid");
+    assert_eq!(script, "ALTER TABLE orders ADD FIELD ref TYPE uuid;");
+    // NOT NULL is the engine's REQUIRED; DEFAULT rides inline, written not bound.
+    let (script, parameters, _) =
+        translated("ALTER TABLE orders ADD COLUMN note text NOT NULL DEFAULT 'n/a'");
+    assert_eq!(
+        script,
+        "ALTER TABLE orders ADD FIELD note TYPE string REQUIRED DEFAULT 'n/a';"
+    );
+    assert!(
+        parameters.is_empty(),
+        "DEFAULT is written, not bound: {parameters:?}"
+    );
+    // A parameter where the default rides refuses by name.
+    let refused = translate("ALTER TABLE orders ADD COLUMN note text DEFAULT $1")
+        .expect_err("a bound default");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // An unmapped type refuses by name, as it does in CREATE TABLE.
+    let refused =
+        translate("ALTER TABLE orders ADD COLUMN points point").expect_err("an unmapped type");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn alter_table_drop_column_maps_onto_drop_field_with_its_notice() {
+    let answer = translate("ALTER TABLE orders DROP COLUMN qty").expect("translates");
+    assert_eq!(answer.script, "DROP FIELD qty ON orders;");
+    assert_eq!(
+        answer.statements[0].tag,
+        super::super::translate::write::Tag::AlterTable
+    );
+    assert!(
+        answer.statements[0].notice.is_some(),
+        "the kept values ride a notice, never silence"
+    );
+    // COLUMN is optional here too.
+    let (script, _, _) = translated("ALTER TABLE orders DROP qty");
+    assert_eq!(script, "DROP FIELD qty ON orders;");
+    // IF EXISTS is not spoken: the engine verb carries no such flag.
+    let refused = translate("ALTER TABLE orders DROP COLUMN IF EXISTS qty").expect_err("IF EXISTS");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("ALTER TABLE orders ADD COLUMN IF NOT EXISTS qty int")
+        .expect_err("IF NOT EXISTS");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn alter_table_renames_ride_the_engine_verbs() {
+    let (script, _, _) = translated("ALTER TABLE orders RENAME COLUMN name TO title");
+    assert_eq!(script, "ALTER TABLE orders RENAME FIELD name TO title;");
+    let (script, _, _) = translated("ALTER TABLE orders RENAME name TO title");
+    assert_eq!(script, "ALTER TABLE orders RENAME FIELD name TO title;");
+    let (script, _, _) = translated("ALTER TABLE orders RENAME TO purchases");
+    assert_eq!(script, "ALTER TABLE orders RENAME TO purchases;");
+}
+
+#[test]
+fn alter_table_alter_column_type_and_the_refuse_list() {
+    let (script, _, _) = translated("ALTER TABLE orders ALTER COLUMN qty TYPE text");
+    assert_eq!(script, "ALTER TABLE orders ALTER FIELD qty TYPE string;");
+    let (script, _, _) = translated("ALTER TABLE orders ALTER qty TYPE text");
+    assert_eq!(script, "ALTER TABLE orders ALTER FIELD qty TYPE string;");
+    // USING is not spoken in this round.
+    let refused =
+        translate("ALTER TABLE orders ALTER COLUMN qty TYPE text USING qty").expect_err("USING");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // The verbs the mapping cannot serve refuse by name.
+    let refused = translate("ALTER TABLE orders ADD CONSTRAINT qty CHECK (qty > 0)")
+        .expect_err("a constraint");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("ALTER TABLE orders ADD PRIMARY KEY (band)").expect_err("a key");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("ALTER TABLE orders ALTER COLUMN qty SET DEFAULT 1")
+        .expect_err("a per-option mutation");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("ALTER TABLE orders ALTER COLUMN qty DROP NOT NULL")
+        .expect_err("a per-option mutation");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("ALTER TABLE orders OWNER TO ada").expect_err("an owner change");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn alter_table_wants_a_known_verb() {
+    let refused = translate("ALTER TABLE").expect_err("no table");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    let refused = translate("ALTER TABLE orders").expect_err("no verb");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+}
+
+#[test]
+fn json_navigation_operators_map_onto_paths() {
+    let (script, parameters, _) = translated("SELECT id FROM docs WHERE meta -> 'a' = 1");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta['a'] = $p1;");
+    assert_eq!(parameters.len(), 1);
+    // ->> rides the same path: the wire renders the value as text either way.
+    let (script, _, _) = translated("SELECT id FROM docs WHERE meta -> 'a' ->> 'b' = 'x'");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta['a']['b'] = $p1;");
+    // Numeric keys index arrays; a key with a space rides the bracket spelling.
+    let (script, _, _) =
+        translated("SELECT id FROM docs WHERE meta -> 'items' -> 0 ->> 'sku tag' = 'a'");
+    assert_eq!(
+        script,
+        "SELECT id FROM docs WHERE meta['items'][0]['sku tag'] = $p1;"
+    );
+}
+
+#[test]
+fn containment_maps_onto_the_document_operator() {
+    let (script, parameters, _) = translated("SELECT id FROM docs WHERE meta @> '{\"a\": 1}'");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta CONTAINS $p1;");
+    assert_eq!(parameters.len(), 1, "the JSON text binds as the object");
+    // A parameter on the right rides through.
+    let (script, _, _) = translated("SELECT id FROM docs WHERE meta @> $1");
+    assert_eq!(script, "SELECT id FROM docs WHERE meta CONTAINS $e1;");
+    // Malformed JSON refuses by name.
+    let refused = translate("SELECT id FROM docs WHERE meta @> '{unclosed'").expect_err("bad JSON");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
 }

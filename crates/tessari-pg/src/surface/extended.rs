@@ -12,7 +12,8 @@ use tessaridb::{Outcome, Parameters};
 use crate::codec::{self, Frontend};
 use crate::error::Result;
 
-use super::connection::{Conn, answer};
+use super::answer::answer;
+use super::connection::Conn;
 use super::errors::{Refused, code};
 use super::running::{Held, run_refusal};
 use super::translate::{self, Columns};
@@ -32,17 +33,33 @@ pub(crate) struct Kitchen {
     /// The transaction block the readiness reports, shared with the simple
     /// query path through [`Self::tx`].
     pub(crate) tx: codec::write::Tx,
+    /// The session parameters this connection answers SET/SHOW/RESET
+    /// against — seeded from the startup greeting's own reported set, so a
+    /// SHOW never answers a value the client never saw reported. One
+    /// connection is one task, so a plain map is the right hold.
+    pub(crate) params: std::collections::BTreeMap<String, String>,
+    /// The startup-reported values RESET returns to.
+    pub(crate) defaults: std::collections::BTreeMap<String, String>,
 }
 
-/// A parsed statement: its translation and the parameter types it declared.
-struct Prepared {
-    translated: translate::Translated,
-    types: Vec<u32>,
+/// What a Parse named: a read or write, or a transaction verb the Execute
+/// drives like the simple path's own block words.
+enum Prepared {
+    /// A read or write: its translation and the parameter types it declared.
+    Query {
+        translated: translate::Translated,
+        types: Vec<u32>,
+    },
+    /// `BEGIN` / `COMMIT` / `ROLLBACK` parsed on the extended path.
+    Verb(super::session::TxVerb),
 }
 
 /// A bound portal: the statement's shape, the values its placeholders took,
 /// and what a Describe already ran so an Execute replays instead of re-runs.
 struct Portal {
+    /// A transaction verb this portal drives at Execute, where the statement
+    /// held no translation at all.
+    verb: Option<super::session::TxVerb>,
     translated: translate::Translated,
     parameters: Parameters,
     /// The result formats the Bind asked for: one word names every column,
@@ -70,7 +87,26 @@ impl Kitchen {
             portals: HashMap::new(),
             skipping: false,
             tx: codec::write::Tx::Idle,
+            params: std::collections::BTreeMap::new(),
+            defaults: std::collections::BTreeMap::new(),
         }
+    }
+
+    /// Seed the parameter hold from the greeting's own reported set — one
+    /// source of truth, so SHOW never answers a value ParameterStatus never
+    /// carried. `application_name` is settable whether or not the startup
+    /// named one; its default is the empty name.
+    pub(crate) fn seed_params(&mut self, reported: &[(String, String)]) {
+        for (name, value) in reported {
+            self.params.insert(name.clone(), value.clone());
+            self.defaults.insert(name.clone(), value.clone());
+        }
+        self.params
+            .entry("application_name".to_owned())
+            .or_default();
+        self.defaults
+            .entry("application_name".to_owned())
+            .or_default();
     }
 
     /// One message of the extended protocol. A refusal answers the message and
@@ -145,77 +181,22 @@ impl Kitchen {
         if self.skipping {
             return Ok(());
         }
-        let refusal = match translate::translate(query) {
-            Err(refused) => Some(refused),
-            Ok(translated) => {
-                if !types.is_empty() && translated.slots.len() > types.len() {
-                    Some(Refused::with_detail(
-                        code::SYNTAX,
-                        "the query uses more parameters than the Parse declared",
-                        format!("uses ${}, declared {}", translated.slots.len(), types.len()),
+        // The session commands parse first: a transaction verb rides the
+        // extended protocol like any statement (the dialect's drivers send
+        // verbs this way); the other session commands speak on the simple
+        // query path and refuse by name here.
+        let refusal = match super::session::parse(query) {
+            Ok(Some(super::session::Session::Transaction(verb))) => {
+                if !types.is_empty() {
+                    Some(Refused::surface(
+                        code::FEATURE,
+                        "a transaction verb takes no parameters in this build",
                     ))
                 } else if name.is_empty() || self.statements.len() < MAX_NAMED {
-                    let mut resolved = types.to_vec();
-                    if let Some(query) = translated
-                        .statements
-                        .first()
-                        .and_then(|shape| shape.catalog.as_ref())
-                    {
-                        for (index, inferred) in query.param_types.iter().enumerate() {
-                            if resolved.get(index).copied().unwrap_or(0) == 0 {
-                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
-                                resolved[index] = *inferred;
-                            }
-                        }
-                    }
-                    // Store-side inference: a `column = $n` the Parse left
-                    // unspecified reads the column's type from the table's
-                    // own catalog, as the dialect's servers infer at Parse
-                    // time. A table the store refuses refuses the Parse in
-                    // the store's words, exactly where a real server fails.
-                    let unresolved = |index: usize| resolved.get(index).copied().unwrap_or(0) == 0;
-                    let first = translated.statements.first();
-                    let needs_inference = first.is_some_and(|shape| {
-                        shape.catalog.is_none()
-                            && shape.inference.iter().any(|(slot, _)| unresolved(*slot))
-                    });
-                    let inference = if needs_inference {
-                        let Some(shape) = first else {
-                            unreachable!("the check above names it");
-                        };
-                        infer_table_types(
-                            held,
-                            shared,
-                            &shape.inference,
-                            shape.table.as_deref(),
-                            &resolved,
-                        )
-                        .await
-                        .map(|filled| {
-                            for (index, oid) in filled {
-                                resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
-                                if resolved[index] == 0 {
-                                    resolved[index] = oid;
-                                }
-                            }
-                        })
-                    } else {
-                        Ok(())
-                    };
-                    match inference {
-                        Err(refused) => Some(refused),
-                        Ok(()) => {
-                            self.statements.insert(
-                                name.to_owned(),
-                                Prepared {
-                                    translated,
-                                    types: resolved,
-                                },
-                            );
-                            conn.send(&codec::write::parse_complete()).await?;
-                            None
-                        }
-                    }
+                    self.statements
+                        .insert(name.to_owned(), Prepared::Verb(verb));
+                    conn.send(&codec::write::parse_complete()).await?;
+                    None
                 } else {
                     Some(Refused::surface(
                         code::LIMIT,
@@ -223,6 +204,91 @@ impl Kitchen {
                     ))
                 }
             }
+            Ok(Some(_)) => Some(Refused::surface(
+                code::FEATURE,
+                "this session command speaks on the simple query path in this build",
+            )),
+            Ok(None) => match translate::translate(query) {
+                Err(refused) => Some(refused),
+                Ok(translated) => {
+                    if !types.is_empty() && translated.slots.len() > types.len() {
+                        Some(Refused::with_detail(
+                            code::SYNTAX,
+                            "the query uses more parameters than the Parse declared",
+                            format!("uses ${}, declared {}", translated.slots.len(), types.len()),
+                        ))
+                    } else if name.is_empty() || self.statements.len() < MAX_NAMED {
+                        let mut resolved = types.to_vec();
+                        if let Some(query) = translated
+                            .statements
+                            .first()
+                            .and_then(|shape| shape.catalog.as_ref())
+                        {
+                            for (index, inferred) in query.param_types.iter().enumerate() {
+                                if resolved.get(index).copied().unwrap_or(0) == 0 {
+                                    resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                    resolved[index] = *inferred;
+                                }
+                            }
+                        }
+                        // Store-side inference: a `column = $n` the Parse left
+                        // unspecified reads the column's type from the table's
+                        // own catalog, as the dialect's servers infer at Parse
+                        // time. A table the store refuses refuses the Parse in
+                        // the store's words, exactly where a real server fails.
+                        let unresolved =
+                            |index: usize| resolved.get(index).copied().unwrap_or(0) == 0;
+                        let first = translated.statements.first();
+                        let needs_inference = first.is_some_and(|shape| {
+                            shape.catalog.is_none()
+                                && shape.inference.iter().any(|(slot, _)| unresolved(*slot))
+                        });
+                        let inference = if needs_inference {
+                            let Some(shape) = first else {
+                                unreachable!("the check above names it");
+                            };
+                            infer_table_types(
+                                held,
+                                shared,
+                                &shape.inference,
+                                shape.table.as_deref(),
+                                &resolved,
+                            )
+                            .await
+                            .map(|filled| {
+                                for (index, oid) in filled {
+                                    resolved.resize(index.saturating_add(1).max(resolved.len()), 0);
+                                    if resolved[index] == 0 {
+                                        resolved[index] = oid;
+                                    }
+                                }
+                            })
+                        } else {
+                            Ok(())
+                        };
+                        match inference {
+                            Err(refused) => Some(refused),
+                            Ok(()) => {
+                                self.statements.insert(
+                                    name.to_owned(),
+                                    Prepared::Query {
+                                        translated,
+                                        types: resolved,
+                                    },
+                                );
+                                conn.send(&codec::write::parse_complete()).await?;
+                                None
+                            }
+                        }
+                    } else {
+                        Some(Refused::surface(
+                            code::LIMIT,
+                            "this connection holds as many named statements as it takes",
+                        ))
+                    }
+                }
+            },
+            Err(refused) => Some(refused),
         };
         if let Some(refused) = refusal {
             self.fail(conn, held, shared, &refused).await?;
@@ -260,12 +326,15 @@ impl Kitchen {
                 ));
             }
         }
-        let slots = &prepared.translated.slots;
-        if values.len() != slots.len() {
+        let (slot_count, verb) = match prepared {
+            Prepared::Query { translated, .. } => (translated.slots.len(), None),
+            Prepared::Verb(verb) => (0, Some(*verb)),
+        };
+        if values.len() != slot_count {
             return Err(Refused::with_detail(
                 code::PROTOCOL,
                 "the Bind's values do not match the statement's parameters",
-                format!("expected {}, got {}", slots.len(), values.len()),
+                format!("expected {}, got {}", slot_count, values.len()),
             ));
         }
         if !portal.is_empty() && self.portals.len() >= MAX_NAMED {
@@ -274,16 +343,31 @@ impl Kitchen {
                 "this connection holds as many named portals as it takes",
             ));
         }
-        let mut parameters = prepared.translated.parameters.clone();
+        let Prepared::Query { translated, types } = prepared else {
+            return Ok(Portal {
+                verb,
+                translated: translate::Translated {
+                    script: String::new(),
+                    parameters: tessaridb::Parameters::new(),
+                    statements: Vec::new(),
+                    slots: Vec::new(),
+                },
+                parameters: tessaridb::Parameters::new(),
+                formats: results.to_vec(),
+                spent: None,
+                described: false,
+                done: false,
+                catalog_rows: None,
+                served: 0,
+            });
+        };
+        let slots = &translated.slots;
+        let mut parameters = translated.parameters.clone();
         for (index, value) in values.iter().enumerate() {
             let Some(name) = &slots[index] else {
                 continue;
             };
-            let type_oid = prepared
-                .types
-                .get(index)
-                .copied()
-                .unwrap_or(types::oid::TEXT);
+            let type_oid = types.get(index).copied().unwrap_or(types::oid::TEXT);
             let decoded = match value {
                 None => tessaridb::Value::Null,
                 Some(bytes) if param_formats[index] == 1 => {
@@ -299,7 +383,8 @@ impl Kitchen {
             parameters.insert(name.clone(), decoded);
         }
         Ok(Portal {
-            translated: prepared.translated.clone(),
+            verb,
+            translated: translated.clone(),
             parameters,
             formats: results.to_vec(),
             spent: None,
@@ -371,9 +456,16 @@ impl Kitchen {
         let oids = described_types(prepared);
         conn.send(&codec::write::parameter_description(&oids))
             .await?;
-        let mut columns = columns_of(&prepared.translated);
+        if matches!(prepared, Prepared::Verb(_)) {
+            conn.send(&codec::write::no_data()).await?;
+            return Ok(());
+        }
+        let Prepared::Query { translated, .. } = prepared else {
+            unreachable!("the verb arm above returns");
+        };
+        let mut columns = columns_of(translated);
         if let Some(columns) = &mut columns
-            && let Some(shape) = prepared.translated.statements.first()
+            && let Some(shape) = translated.statements.first()
             && let Some(table) = shape.table.as_deref()
             && let Ok(fields) = table_fields(held, shared, table).await
         {
@@ -417,6 +509,10 @@ impl Kitchen {
                 )
                 .await;
         };
+        if portal.verb.is_some() {
+            conn.send(&codec::write::no_data()).await?;
+            return Ok(());
+        }
         let Some(query) = portal
             .translated
             .statements
@@ -512,6 +608,12 @@ impl Kitchen {
         if portal.done {
             return conn.send(&codec::write::command_complete("SELECT 0")).await;
         }
+        if let Some(verb) = portal.verb {
+            // The verb the Parse named runs here, against the connection's
+            // own block state — the same words the simple path answers.
+            portal.done = true;
+            return super::answer::transaction(conn, verb, &mut self.tx, held, shared, false).await;
+        }
         if let Some(query) = portal
             .translated
             .statements
@@ -556,7 +658,7 @@ impl Kitchen {
                 let window = &catalog_rows[start..end];
                 let described = true;
                 let answered =
-                    super::connection::answer_catalog(conn, &query, window, described, &formats)
+                    super::answer::answer_catalog(conn, &query, window, described, &formats)
                         .await?;
                 if !answered {
                     self.skipping = true;
@@ -573,7 +675,7 @@ impl Kitchen {
             // Describe answered it, or the client never asked.
             let described = true;
             let answered =
-                super::connection::answer_catalog(conn, &query, &catalog_rows, described, &formats)
+                super::answer::answer_catalog(conn, &query, &catalog_rows, described, &formats)
                     .await?;
             if !answered {
                 self.skipping = true;
@@ -620,12 +722,19 @@ impl Kitchen {
                     &shape.record_names,
                     shape.table.as_deref(),
                 );
-                let start = portal.served.min(all.len());
+                // The OFFSET head drops once, at the head: the windows page
+                // what remains — the count the completion names rides the
+                // post-offset rows, never the dropped front.
+                let head = usize::try_from(shape.offset)
+                    .unwrap_or(usize::MAX)
+                    .min(all.len());
+                let page = &all[head..];
+                let start = portal.served.min(page.len());
                 let end = start
                     .saturating_add(usize::try_from(rows).unwrap_or(usize::MAX))
-                    .min(all.len());
+                    .min(page.len());
                 portal.served = end;
-                let window = &all[start..end];
+                let window = &page[start..end];
                 let encoded = match super::encode(&columns, window, &portal.formats) {
                     Ok(encoded) => encoded,
                     Err(refused) => {
@@ -637,7 +746,7 @@ impl Kitchen {
                 for row in &encoded {
                     conn.send(&codec::write::data_row(row)).await?;
                 }
-                if end < all.len() {
+                if end < page.len() {
                     portal.spent = Some(outcomes);
                     return conn.send(&codec::write::portal_suspended()).await;
                 }
@@ -750,10 +859,13 @@ impl Kitchen {
 /// not invent a type it never resolved, and the dialect's clients read zero
 /// as "use your own inference", exactly as the protocol intends.
 fn described_types(prepared: &Prepared) -> Vec<u32> {
-    let slots = prepared.translated.slots.len();
+    let Prepared::Query { translated, types } = prepared else {
+        return Vec::new();
+    };
+    let slots = translated.slots.len();
     let mut oids = Vec::with_capacity(slots);
     for index in 0..slots {
-        oids.push(prepared.types.get(index).copied().unwrap_or(0));
+        oids.push(types.get(index).copied().unwrap_or(0));
     }
     oids
 }

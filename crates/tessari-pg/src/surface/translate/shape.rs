@@ -6,6 +6,16 @@ use super::parser::Parser;
 use super::{Columns, Projection, Shaped, Translated, UNNAMED};
 use super::{Refused, code};
 
+/// What [`Parser::assemble`] hands back: the store script, the projection's
+/// column shape, the record-name mapping, and the OFFSET the answer drops —
+/// one struct instead of a tuple the lint reads as too complex.
+struct Assembled {
+    script: String,
+    columns: Columns,
+    record_names: Vec<Option<String>>,
+    offset: u64,
+}
+
 impl Parser<'_> {
     pub(crate) fn select(&mut self) -> Result<Translated, Refused> {
         self.depth_guard()?;
@@ -103,6 +113,8 @@ impl Parser<'_> {
             catalog: None,
             inference: Vec::new(),
             record_names: Vec::new(),
+            offset: 0,
+            notice: None,
             tag,
             returning: None,
         }))
@@ -185,26 +197,33 @@ impl Parser<'_> {
             None
         };
         let limit = if self.keyword("LIMIT").is_ok() {
+            // `LIMIT ALL` is the dialect's no-bound spelling; a number is the
+            // bound exactly as before.
+            if self.keyword("ALL").is_err() {
+                Some(self.number()?)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        let offset = if self.keyword("OFFSET").is_ok() {
             Some(self.number()?)
         } else {
             None
         };
-        if self.keyword("OFFSET").is_ok() {
-            return Err(Refused::surface(
-                code::FEATURE,
-                "OFFSET is not spoken in this build",
-            ));
-        }
-        let (script, columns, record_names) = self.assemble(
-            projection, &from, alias, condition, group, having, order, limit, joins,
+        let assembled = self.assemble(
+            projection, &from, alias, condition, group, having, order, limit, offset, joins,
         )?;
         Ok(Shaped {
-            script,
-            columns,
+            script: assembled.script,
+            columns: assembled.columns,
             table: from,
             catalog: None,
             inference: std::mem::take(&mut self.inference),
-            record_names,
+            record_names: assembled.record_names,
+            offset: assembled.offset,
+            notice: None,
             tag: super::write::Tag::Select,
             returning: None,
         })
@@ -213,6 +232,8 @@ impl Parser<'_> {
     /// The clause words are consumed; the script is built. Kept separate from
     /// [`Self::shape`] so nothing here decides where the query ends — the
     /// caller owns that (the end of the text, or the subquery's close paren).
+    /// `offset` rides only in the answer: the store is asked for the wider
+    /// bounded read and the port drops the head of what it gets.
     #[allow(clippy::too_many_arguments)]
     fn assemble(
         &mut self,
@@ -224,8 +245,9 @@ impl Parser<'_> {
         having: Option<String>,
         order: Option<String>,
         limit: Option<u64>,
+        offset: Option<u64>,
         joins: String,
-    ) -> Result<(String, Columns, Vec<Option<String>>), Refused> {
+    ) -> Result<Assembled, Refused> {
         // Computed projections (CASE mappings, catalog function calls) are
         // the catalog's own: the store speaks neither, so they refuse by
         // name rather than half-running. A bare literal is the exception —
@@ -285,8 +307,21 @@ impl Parser<'_> {
                     script.push_str(" ORDER BY ");
                     script.push_str(&order);
                 }
-                if let Some(limit) = limit {
-                    script.push_str(&format!(" LIMIT {limit}"));
+                // The wider read: limit + offset rows, so the answer after the
+                // head drop holds at most `limit`. A sum that does not fit is
+                // the refusal the number position already names. OFFSET alone
+                // asks for no store bound — the unbounded ordered read.
+                let bound = match (limit, offset) {
+                    (Some(limit), Some(offset)) => {
+                        Some(limit.checked_add(offset).ok_or_else(|| {
+                            Refused::surface(code::SYNTAX, "the number does not fit")
+                        })?)
+                    }
+                    (limit, None) => limit,
+                    (None, Some(_)) => None,
+                };
+                if let Some(bound) = bound {
+                    script.push_str(&format!(" LIMIT {bound}"));
                 }
                 script.push(';');
                 (script, projection.columns)
@@ -298,6 +333,7 @@ impl Parser<'_> {
                     || having.is_some()
                     || order.is_some()
                     || limit.is_some()
+                    || offset.is_some()
                 {
                     return Err(Refused::surface(
                         code::SYNTAX,
@@ -310,7 +346,12 @@ impl Parser<'_> {
                 (script, Columns::Named(vec![UNNAMED.to_owned()]))
             }
         };
-        Ok((script, columns, record_names))
+        Ok(Assembled {
+            script,
+            columns,
+            record_names,
+            offset: offset.unwrap_or(0),
+        })
     }
 
     /// One table name, or a named refusal when what follows is the feature

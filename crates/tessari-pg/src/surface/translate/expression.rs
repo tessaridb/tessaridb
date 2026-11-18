@@ -623,6 +623,31 @@ impl Parser<'_> {
         if negated_in {
             return Err(Refused::surface(code::SYNTAX, "NOT wants IN here"));
         }
+        if self.operator("@>") {
+            // Document containment: the engine's CONTAINS, the JSON text
+            // parsed and bound as the object it spells. A parameter rides
+            // through with the value the client bound.
+            let at = self.at;
+            if let Some(held) = self.placeholder() {
+                return Ok(format!("{left} CONTAINS {held}"));
+            }
+            self.at = at;
+            let Some(tessaridb::Value::String(text)) = self.literal()? else {
+                return Err(Refused::surface(
+                    code::FEATURE,
+                    "a containment value wants JSON text or a parameter in this build",
+                ));
+            };
+            let parsed = tessari_types::json::read(text.as_bytes()).map_err(|malformed| {
+                Refused::with_detail(
+                    code::FEATURE,
+                    "the containment value does not parse as JSON",
+                    malformed.to_string(),
+                )
+            })?;
+            let bound = self.bind(parsed);
+            return Ok(format!("{left} CONTAINS {bound}"));
+        }
         for operator in ["!=", "<>", "<=", ">=", "=", "<", ">"] {
             if self.operator(operator) {
                 // `column = $n` tells Parse-time inference which table
@@ -794,8 +819,42 @@ impl Parser<'_> {
             };
             return self.cast_tail(Term::literal(text, literal));
         }
-        let path = self.ident_path()?;
+        let mut path = self.ident_path()?;
+        // The dialect's JSON navigation rides the engine's own path:
+        // `meta -> 'a' ->> 'b'` is `meta['a']['b']`. `->` and `->>` translate
+        // identically — the store holds one value system and the wire renders
+        // it as text/JSON either way, so the distinction the dialect keeps is
+        // one this surface cannot make and does not pretend to.
+        loop {
+            let at = self.snapshot();
+            if !self.operator("->") {
+                self.restore(at);
+                break;
+            }
+            let _ = self.operator(">");
+            path.push_str(&self.json_key()?);
+        }
         self.cast_tail(Term::plain(path.clone(), Some(path)))
+    }
+
+    /// One JSON navigation key, rendered the way the engine's path spells
+    /// it: `['name']` for an object key — any text the single quotes hold —
+    /// and `[n]` for an array position.
+    fn json_key(&mut self) -> Result<String, Refused> {
+        let Some(key) = self.literal()? else {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "a navigation key wants a name or a number",
+            ));
+        };
+        match key {
+            tessaridb::Value::String(text) => Ok(format!("['{}']", text.replace('\'', "''"))),
+            tessaridb::Value::Number(number) => Ok(format!("[{number}]")),
+            _ => Err(Refused::surface(
+                code::SYNTAX,
+                "a navigation key wants a name or a number",
+            )),
+        }
     }
 
     /// Any `:: <type path>` casts following the atom: kept verbatim in the

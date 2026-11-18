@@ -94,6 +94,12 @@ pub(crate) fn evaluate(
         });
     }
     let mut out: Vec<Vec<Option<Value>>> = keyed.into_iter().map(|(_, row)| row).collect();
+    // The head drops before the bound: OFFSET pages the ordered local answer,
+    // LIMIT binds what remains.
+    let skipped = usize::try_from(query.offset)
+        .unwrap_or(usize::MAX)
+        .min(out.len());
+    out.drain(..skipped);
     if let Some(limit) = query.limit {
         out.truncate(usize::try_from(limit).unwrap_or(usize::MAX));
     }

@@ -23,6 +23,38 @@ follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 one written by a final release, because the ordered version a node stores and
 compares carries no pre-release suffix.
 
+## 0.49.1 — 2026-11-18
+
+The relational wire, rounded out. Everything below answers on `--pg` /
+`TESSARIDB_PG` against the store's own tables; what the mapping cannot serve
+honestly refuses by name (`0A000`), as before.
+
+- `LIMIT n OFFSET m` pages the read: the store answers a wider bounded
+  window and the port drops the head, exact under `ORDER BY` — the skip's
+  cost rides on the port, never on the answer. `OFFSET` alone and
+  `LIMIT ALL` read unbounded; a parameter in either position refuses by
+  name.
+- `ALTER TABLE` speaks the verbs the engine serves: `ADD COLUMN` (with
+  `NOT NULL` and a `DEFAULT` the declaration backfills into stored
+  records), `DROP COLUMN`, `RENAME` (column and table), `ALTER COLUMN
+  TYPE`. Dropping a column keeps the values stored in existing records,
+  and the answer carries a warning saying so. Constraints and per-option
+  mutations refuse by name.
+- `json` and `jsonb` columns: JSON text written to them lands as the
+  object it spells — the declared kind's own reading of the value, with
+  malformed text refused naming the field — and answers render as JSON.
+  The navigation operators `->`, `->>` and the containment `@>` read
+  inside the document on the engine's own path and containment.
+- The reported session parameters accept `SET` and answer `SHOW`:
+  `client_encoding`, `DateStyle`, `TimeZone`, `application_name`,
+  `extra_float_digits`, the rest of the greeting's set. A changed value
+  rides `ParameterStatus`; values the port cannot honestly perform refuse
+  by name. `search_path` keeps the only effect — it still moves the
+  connection between namespaces.
+- Transaction verbs ride the extended protocol: `Parse("BEGIN")` binds
+  and executes like any statement, `Describe` answers no data, and the
+  block state carries the readiness.
+
 ## 0.49.0 — 2026-11-18
 
 - Nodes report their resources to the cluster: each machine's sampler

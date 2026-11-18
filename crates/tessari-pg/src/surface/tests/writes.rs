@@ -235,3 +235,129 @@ async fn extended_parse_binds_write_parameters() {
     );
     stop.cancel();
 }
+
+#[tokio::test]
+async fn alter_table_adds_a_column_and_the_default_backfills() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client
+        .query("ALTER TABLE orders ADD COLUMN qty int DEFAULT 7")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    // The stored rows read the backfilled default.
+    let seen = client.query("SELECT qty FROM orders").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("7".to_owned())]; 3],
+        "every stored row took the default: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn alter_table_drops_a_column_and_names_the_kept_values() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    client
+        .query("ALTER TABLE orders ADD COLUMN qty int DEFAULT 7")
+        .await;
+
+    let seen = client.query("ALTER TABLE orders DROP COLUMN qty").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Notice(code, message) if code == "00000" && message.contains("values"))),
+        "the kept-values warning rides the answer: {seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    // The store drops the declaration, not the data: the values still read by
+    // name — the notice above is what keeps that from being a silent surprise.
+    let seen = client.query("SELECT qty FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("7".to_owned())]],
+        "the kept values still read: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn alter_table_renames_a_column_and_the_read_moves() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    let seen = client
+        .query("ALTER TABLE orders RENAME COLUMN name TO title")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ALTER TABLE")),
+        "the DDL owes its tag: {seen:?}"
+    );
+    let seen = client
+        .query("SELECT title FROM orders WHERE band = 1")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "the read answers under the new name: {seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn json_columns_round_trip_and_navigate() {
+    let setup = "DEFINE TABLE docs SCHEMALESS; \
+                 DEFINE FIELD meta ON docs TYPE object;";
+    let (address, stop, _db) = serving_with(setup).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The dialect writes JSON text; the declared-kind parse lands it as an
+    // object, and the wire reads it back as JSON.
+    let seen = client
+        .query("INSERT INTO docs (meta) VALUES ('{\"a\": 1, \"tags\": [\"x\", \"y\"]}')")
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "INSERT 0 1")),
+        "the JSON text accepted the write: {seen:?}"
+    );
+    let seen = client.query("SELECT meta FROM docs").await;
+    let row = &rows(&seen)[0][0];
+    let text = row.as_deref().unwrap_or_default();
+    assert!(
+        text.contains("\"a\"") && text.contains("\"tags\""),
+        "the object answers as JSON text: {seen:?}"
+    );
+    // The navigation operators read inside the object.
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta -> 'a' = 1")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta -> 'tags' -> 1 = 'y'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    // Containment asks the engine's own document operator.
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta @> '{\"tags\": [\"x\"]}'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("docs:1".to_owned())]]);
+    let seen = client
+        .query("SELECT id FROM docs WHERE meta @> '{\"absent\": 1}'")
+        .await;
+    assert!(rows(&seen).is_empty(), "no row contains it: {seen:?}");
+    stop.cancel();
+}

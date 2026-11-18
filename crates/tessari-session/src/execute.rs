@@ -1146,7 +1146,7 @@ impl Session<'_> {
                     .await?;
                 let payload = self.evaluate(transaction, value).await?;
                 let payload = self
-                    .with_defaults(transaction, address.table, payload)
+                    .with_defaults(transaction, address.table, payload, target.table.span)
                     .await?;
                 // A repeat inside a deduplication window writes nothing and
                 // answers no record (ADR-0124 D8) — asked before the refusal

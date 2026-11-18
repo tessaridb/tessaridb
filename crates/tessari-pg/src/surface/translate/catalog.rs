@@ -84,6 +84,8 @@ pub(crate) struct Query {
     terms: Vec<Term>,
     order: Vec<Order>,
     limit: Option<u64>,
+    /// The local rows the answer drops from its head — the dialect's `OFFSET`.
+    offset: u64,
     /// A compound leg: `UNION ALL <query>` the publication listing folds two
     /// asks into one. Rows concatenate; `ALL` keeps duplicates, the only
     /// spelling this build speaks.
@@ -244,6 +246,13 @@ pub(crate) fn rest(
     } else {
         None
     };
+    // OFFSET rides the same local answer the limit truncates: the head drops
+    // first, the bound binds what remains.
+    let offset = if parser.keyword("OFFSET").is_ok() {
+        Some(parser.number()?)
+    } else {
+        None
+    };
     // A compound leg: `UNION ALL SELECT …`. The second ask is a catalog
     // query of its own; the projection's SELECT is consumed here.
     let union = if parser.keyword("UNION").is_ok() {
@@ -300,11 +309,14 @@ pub(crate) fn rest(
             terms,
             order,
             limit,
+            offset: offset.unwrap_or(0),
             union,
             param_types,
         }),
         inference: Vec::new(),
         record_names: Vec::new(),
+        offset: 0,
+        notice: None,
         tag: super::write::Tag::Select,
         returning: None,
     })
