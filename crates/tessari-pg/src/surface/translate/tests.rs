@@ -673,3 +673,33 @@ fn union_refuses_what_it_cannot_speak_honestly() {
         .expect_err("a branch tail after UNION");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
 }
+
+#[test]
+fn a_values_batch_rides_one_store_insert() {
+    // Two rows become ONE store INSERT — one transaction, atomic, the
+    // identity list the store answers naming the count.
+    let (script, parameters, _) = translated("INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y')");
+    assert_eq!(
+        script,
+        "INSERT INTO t (a, b) VALUES ($p1, $p2), ($p3, $p4);"
+    );
+    assert_eq!(parameters.len(), 4);
+    // One row stays the CREATE shape the wire has always answered.
+    let (script, _, _) = translated("INSERT INTO t (a, b) VALUES (1, 'x')");
+    assert_eq!(script, "CREATE t = { a: $p1, b: $p2 } RETURN AFTER;");
+    // A batch asking RETURNING refuses by name in this build.
+    let refused =
+        translate("INSERT INTO t (a) VALUES (1), (2) RETURNING a").expect_err("a batch returning");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // A row of the wrong arity names the row, counted from one.
+    let refused =
+        translate("INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y', 3)").expect_err("bad arity");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    assert!(
+        refused
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("row 2")),
+        "the refusal names the row: {refused:?}"
+    );
+}

@@ -85,7 +85,7 @@ async fn returning_answers_the_written_shape() {
 }
 
 #[tokio::test]
-async fn a_write_states_its_reach_and_one_row_per_insert() {
+async fn a_write_states_its_reach_and_a_batch_lands_whole() {
     let (address, stop, _db) = serving_with(SETUP).await;
     let mut client = Client::to(&address).await;
     client.start(None, "app.main", None).await;
@@ -103,11 +103,27 @@ async fn a_write_states_its_reach_and_one_row_per_insert() {
     let seen = client
         .query("INSERT INTO orders (band, name) VALUES (1, 'a'), (2, 'b')")
         .await;
-    let (code, message) = refused(&seen).expect("the refusal");
-    assert_eq!(code, "0A000");
     assert!(
-        message.contains("one VALUES row"),
-        "the batch shape is named: {message}"
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(tag) if tag == "INSERT 0 2")),
+        "one batch, one transaction, the tag naming both rows: {seen:?}"
+    );
+    // A batch with a bad row refuses whole — the store's INSERT is one
+    // transaction, so nothing of the batch lands.
+    let seen = client
+        .query("INSERT INTO orders (band, name) VALUES (3, 'c'), (4)")
+        .await;
+    let (code, message) = refused(&seen).expect("the refusal");
+    assert_eq!(code, "42601");
+    assert!(
+        message.contains("one value per column"),
+        "the arity is named: {message}"
+    );
+    let seen = client.query("SELECT count(*) AS n FROM orders").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("5".to_owned())]],
+        "three setup rows plus the two the batch landed: {seen:?}"
     );
 
     let seen = client.query("INSERT INTO orders VALUES (1, 'a')").await;

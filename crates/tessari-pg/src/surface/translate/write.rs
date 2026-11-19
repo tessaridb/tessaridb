@@ -116,9 +116,10 @@ pub(crate) fn statement(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     ))
 }
 
-/// `INSERT INTO t (cols…) VALUES (values…) [RETURNING …]`: one row per
-/// statement in this build — the store's CREATE owns the identity, the
-/// column list says the shape out loud.
+/// `INSERT INTO t (cols…) VALUES (values…) [, (…)] [RETURNING …]`: one row
+/// rides the store's CREATE, which owns the identity; a batch rides ONE
+/// store INSERT — several rows in one statement and one transaction, the
+/// whole batch landing or nothing (the COPY wave's atomicity).
 fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     if parser.keyword("INTO").is_err() {
         return Err(Refused::surface(code::SYNTAX, "INSERT wants INTO"));
@@ -138,6 +139,46 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
     if parser.keyword("VALUES").is_err() {
         return Err(Refused::surface(code::SYNTAX, "INSERT wants VALUES"));
     }
+    let mut rows = vec![row_values(parser, columns.len(), 1)?];
+    while parser.operator(",") {
+        let row = rows.len().saturating_add(1);
+        rows.push(row_values(parser, columns.len(), row)?);
+    }
+    let returning = returning(parser)?;
+    let script = if rows.len() == 1 {
+        let fields = columns
+            .iter()
+            .zip(rows.pop().expect("one row").iter())
+            .map(|(column, value)| format!("{column}: {value}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        // The store's CREATE owns the identity; RETURN rides so the count is
+        // honest, the wire answers the tag with or without the rows.
+        format!("CREATE {table} = {{ {fields} }} RETURN AFTER;")
+    } else {
+        if returning.is_some() {
+            return Err(Refused::surface(
+                code::FEATURE,
+                "RETURNING over a multi-row INSERT is not spoken in this build",
+            ));
+        }
+        let listed = rows
+            .iter()
+            .map(|row| format!("({})", row.join(", ")))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "INSERT INTO {table} ({}) VALUES {listed};",
+            columns.join(", ")
+        )
+    };
+    let shaped = shape(parser, Tag::Insert, script, returning)?;
+    Ok(shaped)
+}
+
+/// One parenthesised VALUES row, arity-checked against the column list with
+/// the row named from one — the author counts rows on the screen.
+fn row_values(parser: &mut Parser<'_>, columns: usize, row: usize) -> Result<Vec<String>, Refused> {
     if !parser.open_paren() {
         return Err(Refused::surface(code::SYNTAX, "VALUES wants parentheses"));
     }
@@ -146,31 +187,14 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
         values.push(value(parser)?);
     }
     parser.close_paren()?;
-    if parser.operator(",") {
-        return Err(Refused::surface(
-            code::FEATURE,
-            "one VALUES row per INSERT is spoken in this build; a batch is not",
-        ));
-    }
-    if values.len() != columns.len() {
+    if values.len() != columns {
         return Err(Refused::with_detail(
             code::SYNTAX,
             "INSERT wants one value per column",
-            format!("{} columns, {} values", columns.len(), values.len()),
+            format!("row {row}: {columns} columns, {} values", values.len()),
         ));
     }
-    let returning = returning(parser)?;
-    let fields = columns
-        .iter()
-        .zip(values.iter())
-        .map(|(column, value)| format!("{column}: {value}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-    // The store's CREATE owns the identity; RETURN rides so the count is
-    // honest, the wire answers the tag with or without the rows.
-    let script = format!("CREATE {table} = {{ {fields} }} RETURN AFTER;");
-    let shaped = shape(parser, Tag::Insert, script, returning)?;
-    Ok(shaped)
+    Ok(values)
 }
 
 /// `UPDATE t SET col = value, … WHERE cond [RETURNING …]` — the store's

@@ -346,6 +346,15 @@ pub(crate) async fn answer(
             conn.send(&codec::write::command_complete("SELECT 1"))
                 .await?;
         }
+        Outcome::Keys(keys) => {
+            // An INSERT's produced identities, in the order the rows were
+            // written: the tag names how many landed — a batch INSERT owes
+            // nothing else (its RETURNING refuses by name at the door).
+            conn.send(&codec::write::command_complete(
+                &shape.tag.completion(keys.len()),
+            ))
+            .await?;
+        }
         Outcome::Done => {
             conn.send(&codec::write::command_complete(&shape.tag.completion(0)))
                 .await?;
