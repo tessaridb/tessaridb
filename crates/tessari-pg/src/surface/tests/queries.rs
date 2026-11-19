@@ -339,3 +339,100 @@ async fn a_compound_tail_sorts_the_whole_answer() {
     );
     stop.cancel();
 }
+
+// ---------------------------------------------------------------------------
+// The row-claiming clause: FOR UPDATE rides the query, the shared strengths
+// refuse by name, and OF names the table the claim takes.
+// ---------------------------------------------------------------------------
+
+#[tokio::test(flavor = "multi_thread")]
+async fn for_update_rides_the_query_and_answers() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    // The clause claims each returned row; the answer is the read's own.
+    let seen = client
+        .query("SELECT name FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SELECT 1")),
+        "{seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn for_update_of_the_tables_own_name_is_accepted() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    let seen = client
+        .query("SELECT name FROM orders WHERE band = 1 FOR UPDATE OF orders")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn for_update_of_a_stranger_refuses_undefined_table() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    let seen = client
+        .query("SELECT name FROM orders FOR UPDATE OF missing")
+        .await;
+    let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert_eq!(code, "42P01", "{seen:?}");
+    assert!(
+        message.contains("missing"),
+        "the refusal names the relation: {message}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn the_shared_strengths_refuse_by_name() {
+    for clause in [
+        "SELECT name FROM orders FOR SHARE",
+        "SELECT name FROM orders FOR NO KEY UPDATE",
+        "SELECT name FROM orders FOR KEY SHARE",
+    ] {
+        let (address, stop, _) = serving_with(SETUP).await;
+        let mut client = Client::to(&address).await;
+        client.start(None, "app.main", None).await;
+        let seen = client.query(clause).await;
+        let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+        assert_eq!(code, "0A000", "{clause}: {seen:?}");
+        assert!(
+            message.contains("FOR"),
+            "the refusal names the strength: {message}"
+        );
+        stop.cancel();
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn for_update_beside_aggregation_refuses_naming_the_clause() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    let seen = client
+        .query("SELECT count(*) AS n FROM orders FOR UPDATE")
+        .await;
+    let (_, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert!(
+        message.contains("FOR UPDATE"),
+        "the refusal names the clause: {message}"
+    );
+    stop.cancel();
+}

@@ -113,6 +113,7 @@ mod key_value;
 mod kinds;
 mod latest;
 mod links;
+mod locking_reads;
 mod management;
 mod materialized_groups;
 mod materialized_views;

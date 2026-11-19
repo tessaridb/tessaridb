@@ -92,6 +92,18 @@ impl Session<'_> {
         // engine's fields, and carry forward the ones a whole-record write
         // simply left out.
         let mut payload = payload;
+        // A row claim another open transaction holds refuses the write before
+        // anything is staged: the engine never waits, so the contention is
+        // reported here, where the caller can retry — the same refusal a
+        // locking read's NOWAIT gives. This transaction's own claims pass
+        // (the register compares the claim token), so a row it claimed and
+        // then writes is not refused by its own hold.
+        if transaction.claimed_elsewhere(&address) {
+            return Err(Error::ClaimedByAnother {
+                id: address.id.to_string(),
+                span,
+            });
+        }
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span).await?;
         crate::series::hold_event_time(transaction, &address, &payload, span).await?;
         self.references_hold(transaction, &address, &payload, span)

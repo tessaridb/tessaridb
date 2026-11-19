@@ -127,6 +127,11 @@ pub struct Select {
     /// last branch of a statement-level combined read. The collected answer
     /// sorts as one set; a `LIMIT` alone stays the last read's own.
     pub compound_tail: Option<CompoundTail>,
+    /// `FOR UPDATE [OF …] [NOWAIT | SKIP LOCKED]`: the read takes a per-record
+    /// claim on each row it returns, held by the open transaction and refused
+    /// to another transaction's write (`ClaimedByAnother`). None is the
+    /// ordinary read — snapshot isolation answers it and claims nothing.
+    pub locking: Option<Locking>,
     /// The window functions the projection holds, each answering under its name
     /// beside the projected values (ADR-0134 D13). Empty is a read with none.
     pub windows: Vec<Windowed>,
@@ -613,6 +618,40 @@ pub struct CompoundTail {
     pub limit: Option<u64>,
     /// `LIMIT $n`, until binding writes the number into [`Self::limit`].
     pub limit_parameter: Option<ParameterSlot>,
+}
+
+/// `FOR UPDATE [OF …] [NOWAIT | SKIP LOCKED]` on a plain single-table read.
+///
+/// A claim is the engine's answer to the dialect's row locks on a store with
+/// no lock manager: taken on each row the read returns, held by the open
+/// transaction, and released by its end whichever way it ends. NOWAIT is the
+/// only honest default — the engine never waits, so a row another transaction
+/// claims refuses the read (or the read names `OF` and `SKIP LOCKED` filters
+/// claimed rows out). Only one strength exists: the shared-strength family the
+/// dialect spells `FOR SHARE` / `FOR NO KEY UPDATE` / `FOR KEY SHARE` needs a
+/// second claim kind, and is refused by name until then.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Locking {
+    /// The tables the clause named after `OF`, when it named any. A read of
+    /// one table claims its rows; every name must be the table the read is
+    /// over, and a stranger is refused naming it.
+    pub of: Vec<Name>,
+    /// How the read answers a row another transaction claims.
+    pub mode: LockMode,
+    /// Where the clause sits, for the refusals to point at.
+    pub span: Span,
+}
+
+/// What a locking read does when it meets a row another transaction claims.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LockMode {
+    /// Refuse with `ClaimedByAnother` — the engine never waits, so a row it
+    /// cannot claim is a refusal, and the retry (or `SKIP LOCKED`) is the
+    /// caller's. The spelling `NOWAIT` and the bare clause mean the same.
+    Nowait,
+    /// Omit the claimed rows and answer from what is free — the queue-worker
+    /// reading the dialect documents.
+    SkipLocked,
 }
 
 /// How a read's answer combines with the one before it.

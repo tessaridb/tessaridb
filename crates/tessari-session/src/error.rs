@@ -652,6 +652,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// A write, or a locking read in NOWAIT mode, met a record another open
+    /// transaction claims — and this engine never waits.
+    ///
+    /// The dialect's answer to the same moment is a blocking wait; on a
+    /// snapshot-isolated, compare-and-set engine the honest answer is the
+    /// refusal, and the retry (or `SKIP LOCKED`, or a bounded backoff) is the
+    /// caller's. Class `conflict`: the contender that loses is told, exactly
+    /// as `Conflict` tells a committer.
+    #[error(
+        "record `{id}` is claimed by another open transaction, and this engine never waits — \
+         retry the statement, or read with SKIP LOCKED (at {span})"
+    )]
+    ClaimedByAnother {
+        /// The record that is another transaction's.
+        id: String,
+        /// Where the statement met it.
+        span: Span,
+    },
+
     /// A `REFERENCES` clause the catalog cannot hold (ADR-0134 D10).
     #[error("expected {why} (at {span})")]
     ReferenceRefused {

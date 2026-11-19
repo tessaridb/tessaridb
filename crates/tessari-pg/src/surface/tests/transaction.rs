@@ -389,3 +389,122 @@ async fn savepoints_ride_the_extended_protocol() {
     );
     stop.cancel();
 }
+
+// ---------------------------------------------------------------------------
+// Row claims across connections: a FOR UPDATE read holds its rows to the
+// block's end; another connection's write is refused 55P03 (the dialect's
+// lock-not-available — the wait a NOWAIT read will not do), and SKIP LOCKED
+// passes the claimed row over.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_claimed_row_refuses_another_connections_write_until_the_commit() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    let held = first
+        .query("SELECT name FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    assert_eq!(
+        rows(&held),
+        vec![vec![Some("first".to_owned())]],
+        "{held:?}"
+    );
+
+    // The claim holds: the second connection's write is refused, with the
+    // dialect's lock-not-available code, and the words name the claim.
+    let seen = second
+        .query("UPDATE orders SET name = 'taken' WHERE band = 1")
+        .await;
+    let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert_eq!(code, "55P03", "{seen:?}");
+    assert!(
+        message.contains("claimed"),
+        "the refusal names the claim: {message}"
+    );
+
+    // The block ends and the claim with it; the write applies.
+    first.query("COMMIT").await;
+    let done = second
+        .query("UPDATE orders SET name = 'taken' WHERE band = 1")
+        .await;
+    assert!(
+        done.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "UPDATE 1")),
+        "{done:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn skip_locked_passes_the_claimed_row_over() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+
+    // The second connection sees neither the claim nor the claimed row: the
+    // row behind it answers instead.
+    let seen = second
+        .query("SELECT id FROM orders ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("orders:2".to_owned())]],
+        "{seen:?}"
+    );
+
+    first.query("ROLLBACK").await;
+    // The claim died with the block: the head answers again.
+    let after = second
+        .query("SELECT id FROM orders ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        .await;
+    assert_eq!(
+        rows(&after),
+        vec![vec![Some("orders:1".to_owned())]],
+        "{after:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn nowait_refuses_a_locking_read_over_a_claimed_row() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+
+    // NOWAIT is the default: the read refuses rather than waits.
+    let seen = second
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert_eq!(code, "55P03", "{seen:?}");
+    assert!(
+        message.contains("never waits"),
+        "the refusal names the wait it will not do: {message}"
+    );
+
+    first.query("ROLLBACK").await;
+    let free = second
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    assert_eq!(rows(&free).len(), 1, "{free:?}");
+    stop.cancel();
+}

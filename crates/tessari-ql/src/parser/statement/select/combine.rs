@@ -50,6 +50,34 @@ impl Parser<'_> {
             });
         }
         if top {
+            // A combined read holds values, not rows of one table, so a
+            // locking clause on any of its branches names nothing claimable —
+            // refused rather than silently locking less than promised. A read
+            // that combines with nothing keeps its clause for the shape
+            // checks in `select_single`.
+            if !first.combined.is_empty() {
+                let locked = first.locking.is_some()
+                    || first
+                        .combined
+                        .iter()
+                        .any(|next| next.read.locking.is_some());
+                if locked {
+                    let span = first
+                        .locking
+                        .as_ref()
+                        .map_or_else(
+                            || {
+                                first
+                                    .combined
+                                    .iter()
+                                    .find_map(|next| next.read.locking.as_ref())
+                            },
+                            Some,
+                        )
+                        .map_or(first.span, |locking| locking.span);
+                    return Err(Error::LockingNotPlainRead { span });
+                }
+            }
             self.lift_compound_tail(&mut first)?;
         }
         Ok(first)

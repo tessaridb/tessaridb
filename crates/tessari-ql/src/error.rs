@@ -251,6 +251,48 @@ pub enum Error {
         span: Span,
     },
 
+    /// `FOR UPDATE` written beside an aggregation.
+    ///
+    /// A claim names rows, and a grouped or folded answer holds groups — the
+    /// rows that produced them are gone by the time the answer exists. The
+    /// dialect refuses the same clause in the same place.
+    #[error(
+        "FOR UPDATE cannot name the rows of an aggregation — the answer is groups, not records (at {span})"
+    )]
+    LockingBesideAggregation {
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `FOR UPDATE` on a read that holds values rather than rows of one
+    /// table.
+    ///
+    /// A claim is per record address, so the read it qualifies must walk the
+    /// rows of one table. A combined, nested, traversed or joined read holds
+    /// the values the collection answers with, and rows to claim are not
+    /// nameable there — refused, rather than silently locking less than the
+    /// clause promised.
+    #[error(
+        "FOR UPDATE names rows of one plain table read — a combined, nested, traversed or joined read holds values, not rows (at {span})"
+    )]
+    LockingNotPlainRead {
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `FOR UPDATE OF <name>` naming a table the read is not over.
+    ///
+    /// `OF` narrows the claim to the tables it names; a name the read does
+    /// not read names nothing the clause could take, and the refusal says
+    /// which name has no table behind it.
+    #[error("FOR UPDATE OF names `{table}`, which this read is not over (at {span})")]
+    LockingUnknownTable {
+        /// The name with no table behind it.
+        table: String,
+        /// Where the name is.
+        span: Span,
+    },
+
     /// `DEFINE COLLECTION t;` — a table declaring no fields and saying no strictness.
     ///
     /// A declared table is strict about the fields it names, and this one names
@@ -970,6 +1012,9 @@ impl Error {
             | Self::InvalidDuration { span, .. }
             | Self::InsertRowArity { span, .. }
             | Self::CompoundOrderNotOutputName { span, .. }
+            | Self::LockingBesideAggregation { span }
+            | Self::LockingNotPlainRead { span }
+            | Self::LockingUnknownTable { span, .. }
             | Self::TableWithoutColumns { span, .. }
             | Self::UnknownIdentityKind { span, .. }
             | Self::SplitPointIsNotWritten { span, .. }

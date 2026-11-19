@@ -91,8 +91,8 @@ impl<'a> Session<'a> {
                             name: name.text.clone(),
                             what: match why {
                                 tessari_storage::Unreturnable::Claim => {
-                                    "took a queue claim, which the claim register holds until \
-                                     the transaction ends"
+                                    "took a claim — a queue claim or a locking read's row claim — \
+                                     which the claim register holds until the transaction ends"
                                 }
                                 tessari_storage::Unreturnable::Across => {
                                     "handed work to other leaders"

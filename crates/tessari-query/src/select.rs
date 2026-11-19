@@ -248,6 +248,7 @@ impl Select<Sourced> {
             having: None,
             combined: Vec::new(),
             compound_tail: None,
+            locking: None,
             windows: Vec::new(),
             fill: None,
             latest: None,

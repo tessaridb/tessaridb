@@ -135,6 +135,15 @@ fn is_keyword(word: &str) -> bool {
             | "end"
             | "collate"
             | "operator"
+            | "for"
+            | "update"
+            | "share"
+            | "no"
+            | "key"
+            | "of"
+            | "nowait"
+            | "skip"
+            | "locked"
     )
 }
 

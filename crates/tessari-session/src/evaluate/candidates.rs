@@ -187,6 +187,7 @@ impl Session<'_> {
         table: TableId,
         testing: Testing<'_>,
         consumer: &mut impl Consumer,
+        claiming: &mut Option<super::produce::Claiming<'_>>,
     ) -> Result<()> {
         let Testing {
             condition,
@@ -210,6 +211,13 @@ impl Session<'_> {
                     )
                     .await?;
                 if !boolean(&held, condition.span)? {
+                    continue;
+                }
+                // A locking read claims the row before handing it over, the
+                // way the unfiltered hand-over does.
+                if let Some(taking) = claiming.as_mut()
+                    && !super::produce::claim_row(transaction, taking, &id)?
+                {
                     continue;
                 }
                 if consumer.take(transaction, id, record).await?.is_break() {

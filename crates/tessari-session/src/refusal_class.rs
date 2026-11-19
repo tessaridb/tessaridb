@@ -73,7 +73,10 @@ impl Error {
             | Self::FeedExists { .. }
             | Self::ParamExists { .. }
             | Self::SearchExists { .. }
-            | Self::GroupExists { .. } => RefusalClass::Conflict,
+            | Self::GroupExists { .. }
+            // A row another open transaction claims: the contender is told,
+            // the way the committer beside it is (the claims design, §2).
+            | Self::ClaimedByAnother { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
             | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }

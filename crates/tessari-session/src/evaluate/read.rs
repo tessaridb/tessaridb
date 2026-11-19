@@ -272,7 +272,7 @@ impl Session<'_> {
             if let Some((id, record)) = resuming {
                 shaping.resume_after(transaction, id, record).await?;
             }
-            let plan = self
+            let (plan, claimed) = self
                 .produce_source(
                     transaction,
                     select,
@@ -287,6 +287,9 @@ impl Session<'_> {
                 .await?;
             asserted(select, &plan)?;
             notes.extend(noticed.drained());
+            if select.locking.is_some() {
+                notes.push(Note::Claimed { took: claimed });
+            }
             let records = crate::shape::bounded(shaping.finish(), select.start, select.limit);
             alone(select, &records)?;
             return Ok(Answered {
@@ -298,7 +301,7 @@ impl Session<'_> {
         }
 
         let mut collecting = crate::consume::Collecting::new(&mut budget, held_bound(select));
-        let plan = self
+        let (plan, claimed) = self
             .produce_source(
                 transaction,
                 select,
@@ -311,6 +314,9 @@ impl Session<'_> {
                 },
             )
             .await?;
+        if select.locking.is_some() {
+            notes.push(Note::Claimed { took: claimed });
+        }
         let mut records = collecting.finish();
         // Before anything groups, projects or sorts, so a projection and a sort
         // key both see the record rather than the reference that named it.

@@ -37,7 +37,8 @@ pub struct Savepoint {
 /// Why the work since a savepoint cannot be rolled back.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Unreturnable {
-    /// A queue claim was taken since, and the claim register holds it.
+    /// A claim was taken since — a queue claim or a row claim — and the
+    /// claim register holds it.
     Claim,
     /// Work was handed to other leaders since.
     Across,

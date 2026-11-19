@@ -212,9 +212,16 @@ impl Parser<'_> {
         } else {
             None
         };
-        self.branch_tail = order.is_some() || limit.is_some() || offset.is_some();
+        // Last, the way the dialect writes it: the row-claiming clause. It
+        // rides on the branch's engine script and the store claims each row
+        // the read returns; NOWAIT is the default, SKIP LOCKED passes claimed
+        // rows over.
+        let locking = self.locking_clause(from.as_deref(), alias.as_deref())?;
+        self.branch_tail =
+            order.is_some() || limit.is_some() || offset.is_some() || locking.is_some();
         let assembled = self.assemble(
             projection, &from, alias, condition, group, having, order, limit, offset, joins,
+            locking,
         )?;
         // A compound read: `… UNION ALL …`, the store's own set operation —
         // the branches ride as engine text and the column shape is the first
@@ -291,6 +298,7 @@ impl Parser<'_> {
         limit: Option<u64>,
         offset: Option<u64>,
         joins: String,
+        locking: Option<String>,
     ) -> Result<Assembled, Refused> {
         // Computed projections (CASE mappings, catalog function calls) are
         // the catalog's own: the store speaks neither, so they refuse by
@@ -367,6 +375,11 @@ impl Parser<'_> {
                 if let Some(bound) = bound {
                     script.push_str(&format!(" LIMIT {bound}"));
                 }
+                // The locking clause rides verbatim: the engine speaks it and
+                // validates its OF names against the table it reads.
+                if let Some(locking) = &locking {
+                    script.push_str(locking);
+                }
                 script.push(';');
                 (script, projection.columns)
             }
@@ -378,6 +391,7 @@ impl Parser<'_> {
                     || order.is_some()
                     || limit.is_some()
                     || offset.is_some()
+                    || locking.is_some()
                 {
                     return Err(Refused::surface(
                         code::SYNTAX,
@@ -396,6 +410,101 @@ impl Parser<'_> {
             record_names,
             offset: offset.unwrap_or(0),
         })
+    }
+
+    /// `FOR UPDATE [OF <table> [, …]] [NOWAIT | SKIP LOCKED]`, when it is
+    /// written.
+    ///
+    /// The exclusive strength the engine claims rows with: the clause rides
+    /// verbatim on the branch's engine script, and the store takes a claim on
+    /// each row the read returns. The shared strengths refuse by name — the
+    /// engine holds one claim kind, and pretending the shared matrix exists
+    /// would claim exclusively while promising not to.
+    ///
+    /// `OF` narrows the claim to the tables it names; a name the read is not
+    /// over refuses with the dialect's undefined_table, naming it.
+    fn locking_clause(
+        &mut self,
+        from: Option<&str>,
+        alias: Option<&str>,
+    ) -> Result<Option<String>, Refused> {
+        if self.keyword("FOR").is_err() {
+            return Ok(None);
+        }
+        if self.keyword("UPDATE").is_err() {
+            // The shared family: FOR SHARE, FOR NO KEY UPDATE, FOR KEY SHARE.
+            // One claim kind exists and it is the exclusive one, so a strength
+            // the claim kind cannot express refuses by name rather than
+            // claiming more than the words promised.
+            let written = if self.keyword("SHARE").is_ok() {
+                "FOR SHARE"
+            } else if self.keyword("NO").is_ok() {
+                if self.keyword("KEY").is_err() {
+                    return Err(Refused::surface(code::SYNTAX, "NO wants KEY UPDATE"));
+                }
+                if self.keyword("UPDATE").is_err() {
+                    return Err(Refused::surface(code::SYNTAX, "KEY wants UPDATE"));
+                }
+                "FOR NO KEY UPDATE"
+            } else if self.keyword("KEY").is_ok() {
+                if self.keyword("SHARE").is_err() {
+                    return Err(Refused::surface(code::SYNTAX, "KEY wants SHARE"));
+                }
+                "FOR KEY SHARE"
+            } else {
+                return Err(Refused::surface(
+                    code::SYNTAX,
+                    "FOR wants UPDATE, SHARE, NO KEY UPDATE or KEY SHARE",
+                ));
+            };
+            return Err(Refused::surface(
+                code::FEATURE,
+                format!(
+                    "{written} is not spoken in this build — the engine holds one claim kind, \
+                     the exclusive one; FOR UPDATE is the supported strength"
+                ),
+            ));
+        }
+        let mut of = Vec::new();
+        if self.keyword("OF").is_ok() {
+            loop {
+                of.push(self.ident()?);
+                if self.comma().is_err() {
+                    break;
+                }
+            }
+        }
+        // The read is over one table: its bare name, or the alias it was
+        // given. Every OF name must be one of those — a stranger names
+        // nothing the claim could take.
+        let bare = from
+            .map(|name| name.rsplit('.').next().unwrap_or(name).to_owned())
+            .unwrap_or_default();
+        for named in &of {
+            let known = bare.eq_ignore_ascii_case(named)
+                || alias.is_some_and(|given| given.eq_ignore_ascii_case(named));
+            if !known {
+                return Err(Refused::with_detail(
+                    code::UNDEFINED_TABLE,
+                    format!("relation \"{named}\" in FOR UPDATE clause not found in FROM clause"),
+                    named.clone(),
+                ));
+            }
+        }
+        let mut clause = String::from(" FOR UPDATE");
+        if !of.is_empty() {
+            clause.push_str(" OF ");
+            clause.push_str(&of.join(", "));
+        }
+        if self.keyword("NOWAIT").is_ok() {
+            clause.push_str(" NOWAIT");
+        } else if self.keyword("SKIP").is_ok() {
+            if self.keyword("LOCKED").is_err() {
+                return Err(Refused::surface(code::SYNTAX, "SKIP wants LOCKED"));
+            }
+            clause.push_str(" SKIP LOCKED");
+        }
+        Ok(Some(clause))
     }
 
     /// One table name, or a named refusal when what follows is the feature
