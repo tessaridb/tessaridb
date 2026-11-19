@@ -36,9 +36,10 @@ pub use expr::{
     TopicClauses, Written,
 };
 pub use select::{
-    Admitted, AnsweredBy, Approximation, Combination, Fill, FillMode, Fusion, Hop, JoinSide, Level,
-    LevelKind, Neighbour, Nulls, Ordering, Outer, ParameterSlot, PathTo, Projected, Projection,
-    Select, SetOperation, Source, Staleness, Timeout, Using, Version, WindowFunction, Windowed,
+    Admitted, AnsweredBy, Approximation, Combination, CompoundTail, Fill, FillMode, Fusion, Hop,
+    JoinSide, Level, LevelKind, Neighbour, Nulls, Ordering, Outer, ParameterSlot, PathTo,
+    Projected, Projection, Select, SetOperation, Source, Staleness, Timeout, Using, Version,
+    WindowFunction, Windowed,
 };
 pub use statement::{
     BackupForm, ConflictAction, ConflictUpdate, OnConflict, RollupCompute, SearchAsk, SearchCosts,

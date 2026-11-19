@@ -123,6 +123,10 @@ pub struct Select {
     /// that read's — and the combined answer is ordered by reading it as a
     /// source. Empty is a read that combines with nothing.
     pub combined: Vec<Combination>,
+    /// The compound-level tail — `ORDER BY … [LIMIT n [OFFSET m]]` after the
+    /// last branch of a statement-level combined read. The collected answer
+    /// sorts as one set; a `LIMIT` alone stays the last read's own.
+    pub compound_tail: Option<CompoundTail>,
     /// The window functions the projection holds, each answering under its name
     /// beside the projected values (ADR-0134 D13). Empty is a read with none.
     pub windows: Vec<Windowed>,
@@ -592,6 +596,23 @@ pub struct Combination {
     pub read: Box<Select>,
     /// Where the word is.
     pub span: Span,
+}
+
+/// The whole's tail on a statement-level combined read: `ORDER BY` names how
+/// the collected answer sorts as one set, and the bound binds after the sort.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CompoundTail {
+    /// The sort keys — output column names or ordinals alone, in order of
+    /// significance. An expression is refused where the tail lifts.
+    pub ordering: Vec<Ordering>,
+    /// How many rows to pass over before answering, applied after the sort.
+    pub start: Option<u64>,
+    /// `START $n`, until binding writes the number into [`Self::start`].
+    pub start_parameter: Option<ParameterSlot>,
+    /// How many rows to answer with at most, applied after the sort.
+    pub limit: Option<u64>,
+    /// `LIMIT $n`, until binding writes the number into [`Self::limit`].
+    pub limit_parameter: Option<ParameterSlot>,
 }
 
 /// How a read's answer combines with the one before it.

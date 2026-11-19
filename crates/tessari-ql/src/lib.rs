@@ -30,7 +30,7 @@ mod token;
 
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
-    BackupForm, COUNT_DISTINCT_MOST, ColumnDeclaration, Combination, ConflictAction,
+    BackupForm, COUNT_DISTINCT_MOST, ColumnDeclaration, Combination, CompoundTail, ConflictAction,
     ConflictUpdate, ConsumerSource, Container, CreateTarget, Credential, Direction, EdgeClause,
     EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FeedImage, Field, FieldExpiryCondition,
     FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupChange, GroupClauses, GroupMember, Hand,

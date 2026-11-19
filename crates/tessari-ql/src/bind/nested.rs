@@ -198,6 +198,13 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
     for next in &mut select.combined {
         bind_select(&mut next.read, binding)?;
     }
+    if let Some(tail) = &mut select.compound_tail {
+        for ordering in &mut tail.ordering {
+            bind_expr(&mut ordering.key, binding)?;
+        }
+        bind_count(&mut tail.start_parameter, &mut tail.start, false, binding)?;
+        bind_count(&mut tail.limit_parameter, &mut tail.limit, false, binding)?;
+    }
     Ok(())
 }
 

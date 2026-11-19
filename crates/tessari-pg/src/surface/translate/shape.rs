@@ -241,7 +241,12 @@ impl Parser<'_> {
                 return Err(Refused::surface(code::SYNTAX, "UNION wants SELECT"));
             }
             let branch = self.shape()?;
-            if self.branch_tail {
+            // A tail on the last branch is not the branch's own: unparenthesised
+            // the dialect binds it to the whole compound, and the engine lifts
+            // a trailing ORDER BY onto the collected answer — the script rides
+            // verbatim and the sort is the store's. A tail on a branch another
+            // UNION follows refuses, the way a middle branch always has.
+            if self.branch_tail && self.peek_word().as_deref() == Some("union") {
                 return Err(Refused::surface(
                     code::FEATURE,
                     "a tail clause on one branch of a UNION refuses in this build; \

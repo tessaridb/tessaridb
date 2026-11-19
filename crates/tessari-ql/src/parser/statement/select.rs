@@ -192,7 +192,7 @@ impl Parser<'_> {
         if self.peek_keyword() != Some(Keyword::Select) {
             return Err(self.error_here("`SELECT` — a source in parentheses is a read"));
         }
-        let read = self.select_statement()?;
+        let read = self.combined_select(false)?;
         let unbounded = |one: &Select| one.limit.is_none() && one.limit_parameter.is_none();
         if unbounded(&read) || read.combined.iter().any(|next| unbounded(&next.read)) {
             return Err(self.error_here(
@@ -417,6 +417,7 @@ impl Parser<'_> {
             group,
             having,
             combined: Vec::new(),
+            compound_tail: None,
             windows,
             fill,
             latest,

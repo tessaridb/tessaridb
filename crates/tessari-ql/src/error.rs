@@ -234,6 +234,23 @@ pub enum Error {
         span: Span,
     },
 
+    /// A compound-level `ORDER BY` term that is not an output name or an
+    /// ordinal.
+    ///
+    /// The whole's sort keys can only name the columns the combined answer
+    /// answers under — a name, or the column's position. An expression would
+    /// need a scope the collected rows do not have: each row is a value, and
+    /// there is no record left for a function to read.
+    #[error(
+        "a compound ORDER BY names an output column or an ordinal — {found} is an expression (at {span})"
+    )]
+    CompoundOrderNotOutputName {
+        /// What stood where a name or ordinal belongs.
+        found: String,
+        /// Where the term is.
+        span: Span,
+    },
+
     /// `DEFINE COLLECTION t;` — a table declaring no fields and saying no strictness.
     ///
     /// A declared table is strict about the fields it names, and this one names
@@ -952,6 +969,7 @@ impl Error {
             | Self::InvalidBytes { span, .. }
             | Self::InvalidDuration { span, .. }
             | Self::InsertRowArity { span, .. }
+            | Self::CompoundOrderNotOutputName { span, .. }
             | Self::TableWithoutColumns { span, .. }
             | Self::UnknownIdentityKind { span, .. }
             | Self::SplitPointIsNotWritten { span, .. }

@@ -663,15 +663,26 @@ fn union_refuses_what_it_cannot_speak_honestly() {
     let refused =
         translate("SELECT id FROM a UNION SELECT id FROM b").expect_err("UNION without ALL");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
-    // A tail clause without parentheses binds the whole compound in the
-    // dialect; the compound tail lands in the ordering wave, so a branch
-    // carrying one refuses rather than binding it to one branch silently.
+    // A tail on a branch another UNION follows refuses: without parentheses
+    // the dialect binds a trailing clause to the whole, and binding it to a
+    // middle branch would answer a different question.
     let refused = translate("SELECT id FROM a ORDER BY id UNION ALL SELECT id FROM b")
         .expect_err("a branch tail before UNION");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
-    let refused = translate("SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id")
-        .expect_err("a branch tail after UNION");
+    let refused = translate(
+        "SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id UNION ALL SELECT id FROM c",
+    )
+    .expect_err("a branch tail between UNIONs");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // A trailing tail on the LAST branch is not the branch's own: it rides
+    // verbatim and the engine lifts a trailing ORDER BY onto the collected
+    // answer — the compound sorts as one set.
+    let (script, _, _) =
+        translated("SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id LIMIT 3");
+    assert_eq!(
+        script,
+        "SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id LIMIT 3;"
+    );
 }
 
 #[test]

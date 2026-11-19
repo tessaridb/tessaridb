@@ -299,3 +299,43 @@ async fn like_ilike_casts_and_union_answer_over_the_wire() {
     );
     stop.cancel();
 }
+
+#[tokio::test]
+async fn a_compound_tail_sorts_the_whole_answer() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The trailing ORDER BY binds to the whole compound, not the last
+    // branch: the collected answer sorts as one set, the absent name
+    // riding lowest by the declared order.
+    let seen = client
+        .query(
+            "SELECT name FROM orders WHERE band = 3 \
+             UNION ALL SELECT name FROM orders WHERE band = 1 ORDER BY name",
+        )
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![
+            vec![None],
+            vec![Some("first".to_owned())],
+            vec![Some("third".to_owned())],
+        ],
+        "{seen:?}"
+    );
+
+    // The bound binds after the sort.
+    let seen = client
+        .query(
+            "SELECT name FROM orders WHERE band = 3 \
+             UNION ALL SELECT name FROM orders WHERE band = 1 ORDER BY name LIMIT 2",
+        )
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![None], vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}

@@ -248,3 +248,103 @@ fn insert_select_needs_one_value_per_column() {
             .contains("not `*`")
     );
 }
+
+#[test]
+fn a_compound_tail_sorts_the_whole_as_one_set() {
+    let store = store();
+    let mut session = ready(&store);
+
+    assert_eq!(
+        cities(
+            &mut session,
+            "SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY city;"
+        ),
+        ["london", "paris", "rome"]
+    );
+}
+
+#[test]
+fn a_compound_tail_sorts_by_ordinal_and_direction() {
+    let store = store();
+    let mut session = ready(&store);
+
+    assert_eq!(
+        cities(
+            &mut session,
+            "SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY 1 DESC;"
+        ),
+        ["rome", "paris", "london"]
+    );
+}
+
+#[test]
+fn a_compound_tail_moves_the_absences_either_end() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now("CREATE customers:4 = { tag: 'untagged' };")
+        .unwrap();
+
+    let mut answered = |statement: &str| -> Vec<Option<String>> {
+        match session.run_now(statement).unwrap().pop().unwrap() {
+            Outcome::Records { records, .. } => records
+                .into_iter()
+                .map(|(_, row)| match row {
+                    Value::Object(fields) => match fields.get("city") {
+                        Some(Value::String(city)) => Some(city.clone()),
+                        _ => None,
+                    },
+                    other => panic!("a row, got {other:?}"),
+                })
+                .collect(),
+            other => panic!("records, got {other:?}"),
+        }
+    };
+    assert_eq!(
+        answered(
+            "SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY city NULLS LAST LIMIT 3;"
+        ),
+        [
+            Some("london".to_owned()),
+            Some("paris".to_owned()),
+            Some("rome".to_owned())
+        ],
+        "the absence sorts after every present value"
+    );
+    assert_eq!(
+        answered(
+            "SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY city NULLS FIRST LIMIT 1;"
+        ),
+        [None],
+        "NULLS FIRST puts the absence at the head"
+    );
+}
+
+#[test]
+fn a_compound_tail_binds_after_the_sort() {
+    let store = store();
+    let mut session = ready(&store);
+
+    assert_eq!(
+        cities(
+            &mut session,
+            "SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY city LIMIT 2;"
+        ),
+        ["london", "paris"]
+    );
+}
+
+#[test]
+fn an_expression_term_is_not_a_compound_key() {
+    let store = store();
+    let mut session = ready(&store);
+
+    let refused = session
+        .run_now("SELECT city FROM customers UNION SELECT city FROM suppliers ORDER BY 1 + 1;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("output column or an ordinal"),
+        "the refusal names the rule: {refused}"
+    );
+}
