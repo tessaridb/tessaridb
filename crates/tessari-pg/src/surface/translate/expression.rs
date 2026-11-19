@@ -834,8 +834,10 @@ impl Parser<'_> {
     }
 
     /// One side of a comparison: arithmetic over placeholders, aggregates,
-    /// literals and field paths, parentheses riding through.
-    fn operand(&mut self) -> Result<String, Refused> {
+    /// literals and field paths, parentheses riding through. `pub(crate)` for
+    /// the ON CONFLICT SET clause, where a bare operand (`excluded.band`) is
+    /// the whole right-hand side.
+    pub(crate) fn operand(&mut self) -> Result<String, Refused> {
         Ok(self.sum()?.text)
     }
 

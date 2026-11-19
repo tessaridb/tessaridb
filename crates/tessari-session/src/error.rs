@@ -3469,6 +3469,31 @@ pub enum Error {
         span: Span,
     },
 
+    /// `ON CONFLICT` named columns no unique index holds exactly.
+    ///
+    /// The inference rule is the dialect's own: the arbiter is a unique index
+    /// holding exactly the named columns, in any order. No such index — or an
+    /// index that only covers them — is not a near miss the store can guess
+    /// past; it is the caller naming a constraint the table does not have.
+    #[error("no unique index holds exactly ({columns}) (at {span})")]
+    ConflictTargetNotUnique {
+        /// The columns the caller named.
+        columns: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `ON CONFLICT` on the query form.
+    ///
+    /// `INSERT … SELECT … ON CONFLICT` is its own future: the read's rows meet
+    /// the arbiter one at a time, and the statement this one would become is
+    /// not spoken in this build.
+    #[error("ON CONFLICT over a read (`INSERT … SELECT`) is not spoken in this build (at {span})")]
+    OnConflictOnQuery {
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `PUT` whose value is neither bytes nor text.
     #[error("a file is bytes, not {found} (at {span})")]
     FileIsNotBytes {

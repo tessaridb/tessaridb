@@ -1223,9 +1223,17 @@ impl Session<'_> {
                 expire,
                 answer,
                 partition,
+                on_conflict,
             } => {
                 if *answer == Answer::Position {
                     self.must_be_a_topic(transaction, table).await?;
+                }
+                if on_conflict.is_some()
+                    && let Some(read) = read
+                {
+                    // The read's rows meet the arbiter one at a time, and
+                    // the statement that would answer is its own future.
+                    return Err(Error::OnConflictOnQuery { span: read.span });
                 }
                 // `INSERT … SELECT`: the read is answered whole before the first
                 // row is written, so it never meets its own inserts (ADR-0134 D7).
@@ -1238,8 +1246,12 @@ impl Session<'_> {
                     (table, partition.as_ref()),
                     columns,
                     selected.as_deref().unwrap_or(rows),
-                    expire.as_ref(),
-                    span,
+                    writes::InsertTail {
+                        expire: expire.as_ref(),
+                        answer: *answer,
+                        on_conflict: on_conflict.as_ref(),
+                        span,
+                    },
                 )
                 .await
             }
@@ -1296,6 +1308,7 @@ impl Session<'_> {
                         transaction,
                         &address,
                         (edit, before.clone()),
+                        None,
                         settled,
                         (target.span, span),
                     )
@@ -1377,6 +1390,7 @@ impl Session<'_> {
                         transaction,
                         &address,
                         (edit, existing),
+                        None,
                         settled,
                         (target.span, span),
                     )

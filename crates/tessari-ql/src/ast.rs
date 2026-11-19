@@ -41,8 +41,8 @@ pub use select::{
     Select, SetOperation, Source, Staleness, Timeout, Using, Version, WindowFunction, Windowed,
 };
 pub use statement::{
-    BackupForm, RollupCompute, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator,
-    StatementKind, VaultKey,
+    BackupForm, ConflictAction, ConflictUpdate, OnConflict, RollupCompute, SearchAsk, SearchCosts,
+    SearchField, SearchMember, SearchOperator, StatementKind, VaultKey,
 };
 pub use structure::{
     Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,

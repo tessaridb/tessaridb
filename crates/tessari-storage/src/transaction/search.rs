@@ -115,6 +115,65 @@ impl RangeWalk {
 }
 
 impl Transaction<'_> {
+    /// The holder a unique index already has for one of `payload`'s values —
+    /// the eager probe an `ON CONFLICT` clause asks before it writes, because
+    /// the index's own refusal only surfaces at commit, after the statement
+    /// has answered.
+    ///
+    /// The horizon is this transaction's own, folded the way the commit-time
+    /// check will read it: a holder the transaction deleted released the
+    /// value; a holder it rewrote still claims the value the rewrite keeps,
+    /// and names itself. `None` is the honest "no conflict" — a record with
+    /// none of the index's values, an absent field among them, never
+    /// conflicts, which is the unique index's own NULL rule.
+    pub async fn unique_conflict(
+        &self,
+        definition: &IndexDefinition,
+        payload: &Value,
+    ) -> Result<Option<RecordId>> {
+        let address = IndexAddress::new(
+            definition.namespace,
+            definition.database,
+            definition.table,
+            definition.id,
+        );
+        let keyspace = UniqueIndexKey::keyspace();
+        for values in crate::index::project(definition, payload) {
+            let key = UniqueIndexKey::new(address, values).encode();
+            let Some(found) = self.store.backend().get(keyspace, &key).await? else {
+                continue;
+            };
+            let holder = IndexTarget::decode(found.as_slice())?.id;
+            let holder_address = RecordAddress::new(
+                definition.namespace,
+                definition.database,
+                definition.table,
+                holder.clone(),
+            );
+            match self.writes.get(&holder_address) {
+                // The transaction removed the holder: the value was released
+                // in this batch, exactly the release the commit-time check
+                // counts.
+                Some(tessari_encoding::RecordValue::Tombstone) => continue,
+                Some(tessari_encoding::RecordValue::Present(bytes)) => {
+                    // The rewrite keeps the value when the projection still
+                    // produces this key; then the holder still claims it, and
+                    // the probe answers with the holder the way the committed
+                    // entry would.
+                    let rewritten = decode_payload(bytes)?;
+                    let mut held = crate::index::project(definition, &rewritten)
+                        .into_iter()
+                        .map(|held| UniqueIndexKey::new(address, held).encode());
+                    if held.any(|held| held == key) {
+                        return Ok(Some(holder));
+                    }
+                }
+                None => return Ok(Some(holder)),
+            }
+        }
+        Ok(None)
+    }
+
     /// The records an index says hold `values`, as of this transaction's
     /// snapshot.
     ///

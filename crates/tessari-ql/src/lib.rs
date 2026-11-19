@@ -30,18 +30,19 @@ mod token;
 
 pub use ast::{
     Admitted, Aggregate, Answer, AnsweredBy, Approximation, ArithmeticOp, Assignment, AutoSplit,
-    BackupForm, COUNT_DISTINCT_MOST, ColumnDeclaration, Combination, ConsumerSource, Container,
-    CreateTarget, Credential, Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, Edit, Expr,
-    ExprKind, FeedImage, Field, FieldExpiryCondition, FieldMapping, FieldPath, Fill, FillMode,
-    Fusion, GroupChange, GroupClauses, GroupMember, Hand, Handing, Hop, Identity, InfoSubject,
-    JoinSide, Level, LevelKind, ListEnd, Name, NamespaceChange, Neighbour, Nulls, OnDelete,
-    OnFailure, Ordering, Outer, ParameterSlot, Password, PathTo, Presence, Projected, Projection,
-    RangeEnd, RangeExpr, ReachRef, RecordTarget, Reference, ReplicaChange, ReplicationChange,
-    Retention, RollupCompute, ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts,
-    SearchField, SearchMember, SearchOperator, Select, SetBound, SetCondition, SetOperation,
-    Source, SpaceBound, Statement, StatementKind, StoreKind, StructureOp, TableChange, TableExpiry,
-    TableRef, Timeout, TopicClauses, TopologyChange, TopologyRealm, TrimBound, UserChange,
-    UserGrant, Using, VaultKey, Version, WindowFunction, Windowed, WriteExpiry, Written,
+    BackupForm, COUNT_DISTINCT_MOST, ColumnDeclaration, Combination, ConflictAction,
+    ConflictUpdate, ConsumerSource, Container, CreateTarget, Credential, Direction, EdgeClause,
+    EdgeEndpoints, EdgeOrdering, Edit, Expr, ExprKind, FeedImage, Field, FieldExpiryCondition,
+    FieldMapping, FieldPath, Fill, FillMode, Fusion, GroupChange, GroupClauses, GroupMember, Hand,
+    Handing, Hop, Identity, InfoSubject, JoinSide, Level, LevelKind, ListEnd, Name,
+    NamespaceChange, Neighbour, Nulls, OnConflict, OnDelete, OnFailure, Ordering, Outer,
+    ParameterSlot, Password, PathTo, Presence, Projected, Projection, RangeEnd, RangeExpr,
+    ReachRef, RecordTarget, Reference, ReplicaChange, ReplicationChange, Retention, RollupCompute,
+    ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
+    SearchOperator, Select, SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement,
+    StatementKind, StoreKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout,
+    TopicClauses, TopologyChange, TopologyRealm, TrimBound, UserChange, UserGrant, Using, VaultKey,
+    Version, WindowFunction, Windowed, WriteExpiry, Written,
 };
 pub use bind::{Parameters, bind_expression, bind_read};
 pub use error::{Error, Result};

@@ -144,11 +144,12 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
         let row = rows.len().saturating_add(1);
         rows.push(row_values(parser, columns.len(), row)?);
     }
+    let conflict = on_conflict(parser)?;
     let returning = returning(parser)?;
-    let script = if let [row] = rows.as_slice() {
+    let script = if rows.len() == 1 && conflict.is_none() {
         let fields = columns
             .iter()
-            .zip(row.iter())
+            .zip(rows.first().into_iter().flatten())
             .map(|(column, value)| format!("{column}: {value}"))
             .collect::<Vec<_>>()
             .join(", ");
@@ -156,7 +157,7 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
         // honest, the wire answers the tag with or without the rows.
         format!("CREATE {table} = {{ {fields} }} RETURN AFTER;")
     } else {
-        if returning.is_some() {
+        if returning.is_some() && rows.len() > 1 {
             return Err(Refused::surface(
                 code::FEATURE,
                 "RETURNING over a multi-row INSERT is not spoken in this build",
@@ -167,13 +168,87 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
             .map(|row| format!("({})", row.join(", ")))
             .collect::<Vec<_>>()
             .join(", ");
+        let answer = if returning.is_some() {
+            " RETURN AFTER"
+        } else {
+            ""
+        };
         format!(
-            "INSERT INTO {table} ({}) VALUES {listed};",
-            columns.join(", ")
+            "INSERT INTO {table} ({}) VALUES {listed}{}{answer};",
+            columns.join(", "),
+            conflict.unwrap_or_default(),
         )
     };
     let shaped = shape(parser, Tag::Insert, script, returning)?;
     Ok(shaped)
+}
+
+/// `ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]` — the clause
+/// rides the engine's own spelling near-verbatim: the arbiter, `excluded` and
+/// the per-row WHERE are the engine's semantics, and the port's job is the
+/// translation of the expressions alone.
+fn on_conflict(parser: &mut Parser<'_>) -> Result<Option<String>, Refused> {
+    if parser.keyword("ON").is_err() {
+        return Ok(None);
+    }
+    if parser.keyword("CONFLICT").is_err() {
+        return Err(Refused::surface(code::SYNTAX, "ON wants CONFLICT"));
+    }
+    let mut target = Vec::new();
+    if parser.open_paren() {
+        target.push(parser.ident()?);
+        while parser.comma().is_ok() {
+            target.push(parser.ident()?);
+        }
+        parser.close_paren()?;
+    }
+    if parser.keyword("DO").is_err() {
+        return Err(Refused::surface(code::SYNTAX, "DO wants NOTHING or UPDATE"));
+    }
+    if parser.keyword("NOTHING").is_ok() {
+        return Ok(Some(match target.is_empty() {
+            true => " ON CONFLICT DO NOTHING".to_owned(),
+            false => format!(" ON CONFLICT ({}) DO NOTHING", target.join(", ")),
+        }));
+    }
+    if parser.keyword("UPDATE").is_err() {
+        return Err(Refused::surface(code::SYNTAX, "DO wants NOTHING or UPDATE"));
+    }
+    if target.is_empty() {
+        return Err(Refused::surface(
+            code::SYNTAX,
+            "DO UPDATE wants a conflict target naming its columns",
+        ));
+    }
+    if parser.keyword("SET").is_err() {
+        return Err(Refused::surface(code::SYNTAX, "DO UPDATE wants SET"));
+    }
+    let mut sets = Vec::new();
+    loop {
+        let column = parser.ident()?;
+        if !parser.operator("=") {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "SET wants = and what the column becomes",
+            ));
+        }
+        // The operand position: a bare name is a route (excluded.band is the
+        // whole point), a literal binds, a placeholder rides.
+        sets.push(format!("{column} = {}", parser.operand()?));
+        if parser.comma().is_err() {
+            break;
+        }
+    }
+    let condition = if parser.keyword("WHERE").is_ok() {
+        format!(" WHERE {}", parser.or()?)
+    } else {
+        String::new()
+    };
+    Ok(Some(format!(
+        " ON CONFLICT ({}) DO UPDATE SET {}{condition}",
+        target.join(", "),
+        sets.join(", "),
+    )))
 }
 
 /// One parenthesised VALUES row, arity-checked against the column list with

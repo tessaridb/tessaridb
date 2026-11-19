@@ -126,6 +126,7 @@ impl Session<'_> {
                     transaction,
                     &address,
                     (update.edit, before.clone()),
+                    None,
                     settled,
                     (update.table.span, update.span),
                 )
@@ -162,15 +163,22 @@ impl Session<'_> {
     /// `NONE` that has a default keeps one; the write goes through the sealing
     /// path, which carries the queue's engine fields and runs the table's
     /// events; the expiry the statement settled is applied last.
+    ///
+    /// `excluded` is the proposed row an `ON CONFLICT DO UPDATE` carries —
+    /// the assignments read the record beside it. Every other caller passes
+    /// `None`.
     pub(super) async fn edit_stored(
         &self,
         transaction: &mut Transaction<'_>,
         address: &RecordAddress,
         (edit, before): (&Edit, Value),
+        excluded: Option<&Value>,
         settled: Option<Settled>,
         (target, span): (Span, Span),
     ) -> Result<Value> {
-        let (payload, partial) = self.applied(transaction, edit, before, target).await?;
+        let (payload, partial) = self
+            .applied(transaction, edit, before, excluded, target)
+            .await?;
         // One rule rather than two: the result of either shape is a record
         // being written, so `REQUIRED` + `DEFAULT` keeps meaning "this field
         // always holds a value" even when a caller sets one to `none`.

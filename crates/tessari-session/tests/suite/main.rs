@@ -122,6 +122,7 @@ mod multikey;
 mod node;
 mod notes;
 mod null_order;
+mod on_conflict;
 mod one_plan;
 mod opened;
 mod ordered_gathers;

@@ -377,3 +377,47 @@ async fn json_columns_round_trip_and_navigate() {
     assert!(rows(&seen).is_empty(), "no row contains it: {seen:?}");
     stop.cancel();
 }
+
+#[tokio::test]
+async fn insert_on_conflict_rides_the_engine_clause() {
+    let setup = format!("{SETUP} DEFINE INDEX by_name ON orders FIELDS name UNIQUE;");
+    let (address, stop, _db) = serving_with(&setup).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // The conflicting row merges instead of refusing: `excluded` names the
+    // proposed values, the count names the one row the statement reached.
+    let seen = client
+        .query(
+            "INSERT INTO orders (band, name) VALUES (9, 'first') \
+             ON CONFLICT (name) DO UPDATE SET band = excluded.band",
+        )
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "INSERT 0 1")),
+        "{seen:?}"
+    );
+    let seen = client
+        .query("SELECT band FROM orders WHERE name = 'first'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("9".to_owned())]], "{seen:?}");
+
+    // DO NOTHING skips the conflict and lands the sibling, the tag honest.
+    let seen = client
+        .query(
+            "INSERT INTO orders (band, name) VALUES (8, 'eighth'), (1, 'first') \
+             ON CONFLICT (name) DO NOTHING",
+        )
+        .await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "INSERT 0 1")),
+        "{seen:?}"
+    );
+    let seen = client
+        .query("SELECT band FROM orders WHERE name = 'eighth'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("8".to_owned())]], "{seen:?}");
+    stop.cancel();
+}

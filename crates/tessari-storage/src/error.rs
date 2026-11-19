@@ -778,6 +778,11 @@ pub enum Error {
         index: String,
         /// The record that was being written.
         id: RecordId,
+        /// The record the index already held the value for, read from the
+        /// store at the refusal. `None` is the value this same write batch
+        /// claimed a second time — the cardinality refusal, which names no
+        /// holder: the row the statement already proposed is the conflict.
+        existing: Option<RecordId>,
     },
 
     /// A field holds a value of a type its table does not declare for it.
