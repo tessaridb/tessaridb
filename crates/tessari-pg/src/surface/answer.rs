@@ -154,6 +154,39 @@ pub(crate) async fn transaction(
                 .await?;
             }
         },
+        TxVerb::Savepoint { name } => {
+            savepoint_verb(
+                conn,
+                tx,
+                held,
+                shared,
+                &format!("SAVEPOINT {name}"),
+                "SAVEPOINT",
+            )
+            .await?;
+        }
+        TxVerb::RollbackTo { name } => {
+            savepoint_verb(
+                conn,
+                tx,
+                held,
+                shared,
+                &format!("ROLLBACK TO SAVEPOINT {name}"),
+                "ROLLBACK",
+            )
+            .await?;
+        }
+        TxVerb::Release { name } => {
+            savepoint_verb(
+                conn,
+                tx,
+                held,
+                shared,
+                &format!("RELEASE SAVEPOINT {name}"),
+                "RELEASE",
+            )
+            .await?;
+        }
     }
     // The simple query owes the readiness with the answer; the extended
     // protocol's Sync owns it there, and a verb's Execute answers the tag
@@ -175,6 +208,53 @@ async fn reply_tag(conn: &mut Conn, reply: std::result::Result<&str, Refused>) -
                 &refused.message,
                 refused.detail.as_deref(),
             ))
+            .await?;
+        }
+    }
+    Ok(())
+}
+
+/// A savepoint verb: the engine's own words run inside the open block, and
+/// the tag names what ran. Outside a block the refusal names the missing
+/// block; inside a failed one it names the aborted state. A store refusal
+/// ends the block, the way every refusal inside one does.
+async fn savepoint_verb(
+    conn: &mut Conn,
+    tx: &mut codec::write::Tx,
+    held: &mut super::running::Held,
+    shared: &Arc<Shared>,
+    statement: &str,
+    tag: &str,
+) -> Result<()> {
+    match tx {
+        codec::write::Tx::InTx => {
+            let reply = match held
+                .run(shared, statement, &tessaridb::Parameters::new())
+                .await
+            {
+                Ok(_) => Ok(tag),
+                Err(failed) => {
+                    *tx = codec::write::Tx::Idle;
+                    Err(super::running::run_refusal(failed))
+                }
+            };
+            reply_tag(conn, reply).await?;
+        }
+        codec::write::Tx::Failed => {
+            refuse_tag(
+                conn,
+                Refused::surface(
+                    code::ABORTED,
+                    "current transaction is aborted, commands ignored until end of transaction block",
+                ),
+            )
+            .await?;
+        }
+        codec::write::Tx::Idle => {
+            refuse_tag(
+                conn,
+                Refused::surface(code::NO_TRANSACTION, "there is no transaction in progress"),
+            )
             .await?;
         }
     }

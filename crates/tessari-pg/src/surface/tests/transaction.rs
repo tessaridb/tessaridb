@@ -262,3 +262,130 @@ async fn a_multi_statement_query_runs_as_one_block() {
         "no half-answered rows from a refused block: {seen:?}"
     );
 }
+
+#[tokio::test]
+async fn savepoints_ride_across_queries_in_a_block() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // Every query crosses the bridge; the savepoint must ride it.
+    client.query("BEGIN").await;
+    let seen = client.query("SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SAVEPOINT")),
+        "{seen:?}"
+    );
+    client
+        .query("UPDATE orders SET name = 'changed' WHERE name = 'first'")
+        .await;
+    let seen = client.query("ROLLBACK TO SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ROLLBACK")),
+        "{seen:?}"
+    );
+    client.query("COMMIT").await;
+
+    // The undo is the store's own: the block rolled back to the mark.
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn a_released_savepoint_refuses_the_rollback_by_name() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    client.query("BEGIN").await;
+    client.query("SAVEPOINT one").await;
+    let seen = client.query("RELEASE SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "RELEASE")),
+        "{seen:?}"
+    );
+    let seen = client.query("ROLLBACK TO one").await;
+    let (code, message) = refused(&seen).expect("the refusal");
+    assert_eq!(
+        code, "42601",
+        "the engine's name rides the class: {message}"
+    );
+    assert!(
+        message.to_lowercase().contains("savepoint") || message.contains("one"),
+        "the missing mark is named: {message}"
+    );
+    client.query("ROLLBACK").await;
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn savepoints_are_a_connections_own() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first.query("SAVEPOINT one").await;
+    // The other connection's block knows nothing of it: its own verb state
+    // is untouched, and the name is free for its own use.
+    second.query("BEGIN").await;
+    let seen = second.query("SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SAVEPOINT")),
+        "{seen:?}"
+    );
+    second.query("ROLLBACK").await;
+    first.query("ROLLBACK").await;
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn savepoints_ride_the_extended_protocol() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    for verb in [
+        "BEGIN",
+        "SAVEPOINT one",
+        "UPDATE orders SET name = 'changed' WHERE name = 'first'",
+        "ROLLBACK TO one",
+        "COMMIT",
+    ] {
+        client.parse("", verb, &[]).await;
+        client.bind("", "", &[], &[], &[]).await;
+        client.execute("", 0).await;
+        client.sync().await;
+        let mut seen = Vec::new();
+        loop {
+            let message = client.message().await;
+            let ready = matches!(message, Seen::Ready(_));
+            seen.push(message);
+            if ready {
+                break;
+            }
+        }
+        assert!(
+            !seen.iter().any(|m| matches!(m, Seen::Error(..))),
+            "{verb} refused: {seen:?}"
+        );
+    }
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}

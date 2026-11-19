@@ -328,7 +328,7 @@ impl Kitchen {
         }
         let (slot_count, verb) = match prepared {
             Prepared::Query { translated, .. } => (translated.slots.len(), None),
-            Prepared::Verb(verb) => (0, Some(*verb)),
+            Prepared::Verb(verb) => (0, Some(verb.clone())),
         };
         if values.len() != slot_count {
             return Err(Refused::with_detail(
@@ -608,7 +608,7 @@ impl Kitchen {
         if portal.done {
             return conn.send(&codec::write::command_complete("SELECT 0")).await;
         }
-        if let Some(verb) = portal.verb {
+        if let Some(verb) = portal.verb.clone() {
             // The verb the Parse named runs here, against the connection's
             // own block state — the same words the simple path answers.
             portal.done = true;

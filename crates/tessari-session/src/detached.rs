@@ -37,6 +37,10 @@ pub struct Detached {
     /// The transaction a `run_holding` parked, riding to the next attach —
     /// the block a connection opened stays open across the bridge call.
     held: Option<(tessari_storage::Transaction<'static>, tessari_ql::Span)>,
+    /// The savepoints the open block holds, oldest first — they belong to
+    /// the block, not to the request that named them, so they ride the
+    /// bridge with it (ADR-0134 D11).
+    savepoints: Vec<(String, tessari_storage::Savepoint)>,
 }
 
 impl Session<'_> {
@@ -56,6 +60,7 @@ impl Session<'_> {
             budget: self.budget,
             certificates: self.certificates,
             held: self.held,
+            savepoints: self.savepoints,
         }
     }
 }
@@ -78,6 +83,7 @@ impl Detached {
             budget: self.budget,
             certificates: self.certificates,
             held: self.held,
+            savepoints: self.savepoints,
             // A sink belongs to the request that streams, never to state
             // carried to a later one.
             sink: crate::backup_to::Sink::none(),
@@ -85,7 +91,6 @@ impl Detached {
             // For the sink's reason: it belongs to a transaction this request
             // opened, and none travels with a detached session.
             acknowledge_open: None,
-            savepoints: Vec::new(),
             across_open: false,
             event_depth: 0,
             now: std::time::SystemTime::now(),
