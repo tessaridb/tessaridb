@@ -88,6 +88,13 @@ pub enum Frontend {
         /// Its name.
         name: String,
     },
+    /// One chunk of COPY data: text rows, whole or cut across frames — the
+    /// server reassembles on row boundaries.
+    CopyData(Vec<u8>),
+    /// The COPY data is complete; what was buffered applies.
+    CopyDone,
+    /// The client aborts the COPY, naming why.
+    CopyFail(String),
     /// A message this version of the surface does not speak. The kind byte is
     /// kept so the refusal can name what arrived.
     Unspoken(u8),
@@ -205,6 +212,16 @@ pub(crate) fn message(kind: u8, payload: &[u8]) -> Result<Frontend> {
             let name = at.text()?;
             at.done()?;
             Frontend::Close { kind, name }
+        }
+        b'd' => Frontend::CopyData(payload.to_vec()),
+        b'c' => {
+            at.done()?;
+            Frontend::CopyDone
+        }
+        b'f' => {
+            let message = at.text()?;
+            at.done()?;
+            Frontend::CopyFail(message)
         }
         // An unspoken message's body is not parsed, so nothing of it is owed:
         // the refusal names the kind and the conversation moves on.

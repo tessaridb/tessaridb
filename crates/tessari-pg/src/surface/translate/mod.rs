@@ -14,6 +14,7 @@ mod shape;
 mod verbs;
 
 pub(crate) mod catalog;
+pub(crate) mod copy;
 pub(crate) mod write;
 
 use tessaridb::{Parameters, Value};
@@ -51,6 +52,16 @@ pub(crate) const UNNAMED: &str = "?column?";
 /// Translate one statement — the extended protocol's Parse, which speaks
 /// exactly one. A refusal carries the wire code and the words a client shows.
 pub(crate) fn translate(query: &str) -> Result<Translated, Refused> {
+    if let Some(first) = query.split_whitespace().next()
+        && first.eq_ignore_ascii_case("copy")
+    {
+        // COPY answers with the copy subprotocol, which the extended path
+        // does not speak yet — the simple query path owns it.
+        return Err(Refused::surface(
+            code::FEATURE,
+            "COPY over the extended protocol is not spoken in this build; send it as one simple query",
+        ));
+    }
     if let Some(first) = query.split_whitespace().next()
         && write::opens(first)
     {

@@ -145,10 +145,10 @@ fn insert(parser: &mut Parser<'_>) -> Result<Shaped, Refused> {
         rows.push(row_values(parser, columns.len(), row)?);
     }
     let returning = returning(parser)?;
-    let script = if rows.len() == 1 {
+    let script = if let [row] = rows.as_slice() {
         let fields = columns
             .iter()
-            .zip(rows.pop().expect("one row").iter())
+            .zip(row.iter())
             .map(|(column, value)| format!("{column}: {value}"))
             .collect::<Vec<_>>()
             .join(", ");

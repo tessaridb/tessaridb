@@ -24,6 +24,7 @@ pub(crate) const SETUP: &str = "DEFINE TABLE orders SCHEMALESS; \
 mod agreement;
 mod binary;
 mod catalog;
+mod copy;
 mod extended;
 mod matrix;
 mod queries;
@@ -82,6 +83,15 @@ pub(crate) enum Seen {
     /// A WARNING frame the answer carries beside the completion — the
     /// kept-values notice a dropped column owes.
     Notice(String, String),
+    /// COPY FROM's answer: the client may stream text rows, the count naming
+    /// the columns each row must hold.
+    CopyIn(usize),
+    /// COPY TO's answer: the rows that follow ride as CopyData.
+    CopyOut(usize),
+    /// One chunk of COPY data — one row's bytes on the TO side.
+    CopyData(String),
+    /// The COPY data is complete.
+    CopyDone,
     ParseComplete,
     BindComplete,
     CloseComplete,
@@ -187,6 +197,21 @@ impl Client {
 
     /// One query, read to its readiness.
     pub(crate) async fn query(&mut self, sql: &str) -> Vec<Seen> {
+        self.send_query(sql).await;
+        let mut seen = Vec::new();
+        loop {
+            let message = self.message().await;
+            let ready = matches!(message, Seen::Ready(_));
+            seen.push(message);
+            if ready {
+                return seen;
+            }
+        }
+    }
+
+    /// The Query frame alone, without reading — a COPY answers with
+    /// CopyInResponse and waits for the data frames a caller sends next.
+    pub(crate) async fn send_query(&mut self, sql: &str) {
         let mut frame = vec![b'Q'];
         let mut body = sql.as_bytes().to_vec();
         body.push(0);
@@ -197,15 +222,23 @@ impl Client {
         );
         frame.extend_from_slice(&body);
         self.write(&frame).await;
-        let mut seen = Vec::new();
-        loop {
-            let message = self.message().await;
-            let ready = matches!(message, Seen::Ready(_));
-            seen.push(message);
-            if ready {
-                return seen;
-            }
-        }
+    }
+
+    /// One CopyData chunk of text rows, whole or cut across frames.
+    pub(crate) async fn copy_data(&mut self, payload: &[u8]) {
+        self.write(&framed(b'd', payload.to_vec())).await;
+    }
+
+    /// The COPY data is complete.
+    pub(crate) async fn copy_done(&mut self) {
+        self.write(&framed(b'c', Vec::new())).await;
+    }
+
+    /// The client aborts the COPY, naming why.
+    pub(crate) async fn copy_fail(&mut self, message: &str) {
+        let mut body = message.as_bytes().to_vec();
+        body.push(0);
+        self.write(&framed(b'f', body)).await;
     }
 
     /// A Parse: a named statement and the parameter types it declares.
@@ -455,6 +488,14 @@ pub(crate) fn decode(kind: u8, body: &[u8]) -> Seen {
                 Seen::Notice(code, message)
             }
         }
+        b'G' => Seen::CopyIn(usize::from(u16::from_be_bytes(
+            body[1..3].try_into().expect("two bytes"),
+        ))),
+        b'H' => Seen::CopyOut(usize::from(u16::from_be_bytes(
+            body[1..3].try_into().expect("two bytes"),
+        ))),
+        b'd' => Seen::CopyData(String::from_utf8(body.to_vec()).expect("copy rows are utf-8")),
+        b'c' => Seen::CopyDone,
         other => Seen::Command(format!("unspoken {other}")),
     }
 }
