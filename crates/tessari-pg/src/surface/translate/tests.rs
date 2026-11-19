@@ -327,15 +327,17 @@ fn boolean_literals_bind_in_the_projection() {
 }
 
 #[test]
-fn casts_ride_verbatim_and_answer_under_the_ports_alias() {
+fn casts_map_onto_the_store_casts_and_answer_under_the_ports_alias() {
     let (script, _, columns) = translated("SELECT id::text FROM orders");
-    assert_eq!(script, "SELECT id::text AS e1 FROM orders;");
+    assert_eq!(script, "SELECT type::string(id) AS e1 FROM orders;");
     assert_eq!(columns, Columns::Named(vec![UNNAMED.to_owned()]));
-    // Chained casts over a qualified path, the deep describe's shape.
-    let (script, _, _) = translated("SELECT id::pg_catalog.regtype::pg_catalog.text FROM orders");
+    // Chained casts over a qualified path nest left to right (SG2: the cast
+    // wave — `::` now translates onto the store's cast functions instead of
+    // riding verbatim to a refusal).
+    let (script, _, _) = translated("SELECT id::pg_catalog.int4::pg_catalog.text FROM orders");
     assert_eq!(
         script,
-        "SELECT id::pg_catalog.regtype::pg_catalog.text AS e1 FROM orders;"
+        "SELECT type::string(type::int(id)) AS e1 FROM orders;"
     );
 }
 
@@ -560,4 +562,155 @@ fn containment_maps_onto_the_document_operator() {
     // Malformed JSON refuses by name.
     let refused = translate("SELECT id FROM docs WHERE meta @> '{unclosed'").expect_err("bad JSON");
     assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn like_and_ilike_translate_onto_the_store_operators() {
+    let (script, parameters, _) = translated("SELECT name FROM t WHERE name LIKE 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE name LIKE $p1;");
+    assert_eq!(parameters.len(), 1);
+    let (script, _, _) = translated("SELECT name FROM t WHERE name ILIKE 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE name ILIKE $p1;");
+    let (script, _, _) = translated("SELECT name FROM t WHERE name NOT LIKE 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE NOT (name LIKE $p1);");
+    let (script, _, _) = translated("SELECT name FROM t WHERE name NOT ILIKE 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE NOT (name ILIKE $p1);");
+    // A parameter rides as the pattern.
+    let (script, _, _) = translated("SELECT name FROM t WHERE name LIKE $1");
+    assert_eq!(script, "SELECT name FROM t WHERE name LIKE $e1;");
+}
+
+#[test]
+fn the_operator_spellings_map_onto_like_and_ilike() {
+    let (script, _, _) = translated("SELECT name FROM t WHERE name ~~ 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE name LIKE $p1;");
+    let (script, _, _) = translated("SELECT name FROM t WHERE name ~~* 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE name ILIKE $p1;");
+    let (script, _, _) = translated("SELECT name FROM t WHERE name !~~ 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE NOT (name LIKE $p1);");
+    let (script, _, _) = translated("SELECT name FROM t WHERE name !~~* 'a%'");
+    assert_eq!(script, "SELECT name FROM t WHERE NOT (name ILIKE $p1);");
+}
+
+#[test]
+fn escape_speaks_the_backslash_and_refuses_the_rest() {
+    let (script, _, _) = translated("SELECT name FROM t WHERE name LIKE 'a\\_%' ESCAPE '\\'");
+    assert_eq!(script, "SELECT name FROM t WHERE name LIKE $p1;");
+    let refused = translate("SELECT name FROM t WHERE name LIKE 'a%' ESCAPE '!'")
+        .expect_err("a non-backslash escape");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate("SELECT name FROM t WHERE name LIKE 'a%' ESCAPE ''")
+        .expect_err("an empty escape");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+}
+
+#[test]
+fn casts_map_onto_the_stores_cast_functions() {
+    let (script, _, _) = translated("SELECT id::text FROM orders");
+    assert_eq!(script, "SELECT type::string(id) AS e1 FROM orders;");
+    let (script, _, _) = translated("SELECT total::float8, active::bool, ref::uuid FROM t");
+    assert_eq!(
+        script,
+        "SELECT type::float(total) AS e1, type::bool(active) AS e2, type::uuid(ref) AS e3 FROM t;"
+    );
+    let (script, parameters, _) = translated("SELECT id FROM t WHERE amount = '5'::int");
+    assert_eq!(script, "SELECT id FROM t WHERE amount = type::int($p1);");
+    assert_eq!(parameters.len(), 1);
+    let (script, _, _) = translated("SELECT id FROM t WHERE meta = '{\"a\": 1}'::jsonb");
+    assert_eq!(script, "SELECT id FROM t WHERE meta = json::parse($p1);");
+    let (script, _, _) = translated("SELECT made::timestamptz FROM t");
+    assert_eq!(script, "SELECT type::datetime(made) AS e1 FROM t;");
+    // Chained casts nest left to right; a catalog-qualified name keeps its
+    // last segment.
+    let (script, _, _) = translated("SELECT id::int::text FROM t");
+    assert_eq!(script, "SELECT type::string(type::int(id)) AS e1 FROM t;");
+    let (script, _, _) = translated("SELECT id::pg_catalog.text FROM t");
+    assert_eq!(script, "SELECT type::string(id) AS e1 FROM t;");
+}
+
+#[test]
+fn unspoken_casts_refuse_by_name() {
+    for query in [
+        "SELECT id::numeric FROM t",
+        "SELECT id::decimal FROM t",
+        "SELECT id::interval FROM t",
+        "SELECT id::regclass FROM t",
+        "SELECT id::bytea FROM t",
+    ] {
+        let refused = translate(query).expect_err("an unspoken cast refuses by name");
+        assert_eq!(refused.code, super::super::errors::code::FEATURE, "{query}");
+        assert!(
+            refused
+                .detail
+                .as_ref()
+                .is_some_and(|detail| !detail.is_empty()),
+            "the refusal carries the type it would not speak: {refused:?}"
+        );
+    }
+}
+
+#[test]
+fn union_all_passes_the_branches_through() {
+    let (script, _, columns) = translated("SELECT id FROM a UNION ALL SELECT id FROM b");
+    assert_eq!(script, "SELECT id FROM a UNION ALL SELECT id FROM b;");
+    assert_eq!(columns, Columns::Named(vec!["id".to_owned()]));
+}
+
+#[test]
+fn union_refuses_what_it_cannot_speak_honestly() {
+    // DISTINCT is not spoken — the engine's set operations are exact, and a
+    // dedup the port cannot spell refuses rather than approximates.
+    let refused =
+        translate("SELECT id FROM a UNION SELECT id FROM b").expect_err("UNION without ALL");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // A tail on a branch another UNION follows refuses: without parentheses
+    // the dialect binds a trailing clause to the whole, and binding it to a
+    // middle branch would answer a different question.
+    let refused = translate("SELECT id FROM a ORDER BY id UNION ALL SELECT id FROM b")
+        .expect_err("a branch tail before UNION");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    let refused = translate(
+        "SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id UNION ALL SELECT id FROM c",
+    )
+    .expect_err("a branch tail between UNIONs");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // A trailing tail on the LAST branch is not the branch's own: it rides
+    // verbatim and the engine lifts a trailing ORDER BY onto the collected
+    // answer — the compound sorts as one set.
+    let (script, _, _) =
+        translated("SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id LIMIT 3");
+    assert_eq!(
+        script,
+        "SELECT id FROM a UNION ALL SELECT id FROM b ORDER BY id LIMIT 3;"
+    );
+}
+
+#[test]
+fn a_values_batch_rides_one_store_insert() {
+    // Two rows become ONE store INSERT — one transaction, atomic, the
+    // identity list the store answers naming the count.
+    let (script, parameters, _) = translated("INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y')");
+    assert_eq!(
+        script,
+        "INSERT INTO t (a, b) VALUES ($p1, $p2), ($p3, $p4);"
+    );
+    assert_eq!(parameters.len(), 4);
+    // One row stays the CREATE shape the wire has always answered.
+    let (script, _, _) = translated("INSERT INTO t (a, b) VALUES (1, 'x')");
+    assert_eq!(script, "CREATE t = { a: $p1, b: $p2 } RETURN AFTER;");
+    // A batch asking RETURNING refuses by name in this build.
+    let refused =
+        translate("INSERT INTO t (a) VALUES (1), (2) RETURNING a").expect_err("a batch returning");
+    assert_eq!(refused.code, super::super::errors::code::FEATURE);
+    // A row of the wrong arity names the row, counted from one.
+    let refused =
+        translate("INSERT INTO t (a, b) VALUES (1, 'x'), (2, 'y', 3)").expect_err("bad arity");
+    assert_eq!(refused.code, super::super::errors::code::SYNTAX);
+    assert!(
+        refused
+            .detail
+            .as_deref()
+            .is_some_and(|detail| detail.contains("row 2")),
+        "the refusal names the row: {refused:?}"
+    );
 }

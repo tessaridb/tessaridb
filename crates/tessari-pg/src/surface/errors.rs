@@ -40,6 +40,17 @@ pub(crate) mod code {
     pub(crate) const LIMIT: &str = "53400";
     /// A text value did not read as the type it was declared under.
     pub(crate) const INVALID_TEXT: &str = "22P02";
+    /// A COPY row was malformed: the arity disagreed, the final row missed
+    /// its newline, or the client abandoned the copy.
+    pub(crate) const BAD_COPY: &str = "22P04";
+    /// A null rode into a column that refuses one.
+    pub(crate) const NOT_NULL: &str = "23502";
+    /// A COPY named a column the table does not hold.
+    pub(crate) const UNDEFINED_COLUMN: &str = "42703";
+
+    /// A name (`FOR UPDATE OF`, a qualification) naming nothing the statement
+    /// reads — the dialect's undefined_table.
+    pub(crate) const UNDEFINED_TABLE: &str = "42P01";
     /// The transaction verb had no transaction: COMMIT or ROLLBACK outside
     /// one, or work sent into an aborted one.
     pub(crate) const NO_TRANSACTION: &str = "25P01";
@@ -72,7 +83,14 @@ impl Refused {
     /// The store's refusal, coded by its class, worded by the store.
     pub(crate) fn store(error: &Error) -> Self {
         Self {
-            code: class_code(error.class()),
+            // A claimed row is the dialect's lock-not-available moment: the
+            // wait a NOWAIT read will not do, retried by the caller — not a
+            // serialization failure, whatever the class shares with one.
+            code: if matches!(error, Error::ClaimedByAnother { .. }) {
+                code::THROTTLED
+            } else {
+                class_code(error.class())
+            },
             message: error.to_string(),
             detail: Some(name_of(error)),
         }

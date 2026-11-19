@@ -51,6 +51,11 @@ pub(super) fn erase_select(select: &mut Select) {
         next.span = CANONICAL;
         erase_select(&mut next.read);
     }
+    if let Some(tail) = &mut select.compound_tail {
+        for ordering in &mut tail.ordering {
+            erase_expr(&mut ordering.key);
+        }
+    }
 }
 
 /// What a `FROM` names.

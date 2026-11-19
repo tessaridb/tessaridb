@@ -248,6 +248,18 @@ async fn session(
                         ))
                         .await?;
                     }
+                    Frontend::CopyData(_) | Frontend::CopyDone | Frontend::CopyFail(_) => {
+                        // Outside a COPY these frames have no meaning: the
+                        // protocol names the mistake.
+                        conn.refuse(
+                            &Refused::surface(
+                                code::PROTOCOL,
+                                "COPY data outside a COPY is not spoken",
+                            ),
+                            kitchen.tx,
+                        )
+                        .await?;
+                    }
                 }
             }
         }
@@ -402,6 +414,32 @@ async fn query_once(
         conn.send(&codec::write::ready_for_query(*tx)).await?;
         return Ok(());
     }
+    // COPY answers with the copy subprotocol instead of the row flow, and it
+    // runs alone in its query string — an aborted block refuses it like any
+    // other statement.
+    match super::translate::copy::parse(query) {
+        Ok(Some(statement)) => {
+            if *tx == codec::write::Tx::Failed {
+                conn.refuse(
+                    &Refused::surface(
+                        code::ABORTED,
+                        "current transaction is aborted, commands ignored until end of transaction block",
+                    ),
+                    *tx,
+                )
+                .await?;
+                return Ok(());
+            }
+            super::copy::run(conn, statement, tx, held, shared).await?;
+            return Ok(());
+        }
+        Ok(None) => {}
+        Err(refused) => {
+            fail_block(tx, held, shared).await;
+            conn.refuse(&refused, *tx).await?;
+            return Ok(());
+        }
+    }
     let translated = match translate::translate_many(query) {
         Ok(translated) => translated,
         Err(refused) => {
@@ -449,6 +487,7 @@ async fn query_once(
                 held,
                 shared,
                 translate::catalog::dynamic::wants_attributes(&queries),
+                translate::catalog::dynamic::wants_viewdefs(&queries),
                 queries
                     .iter()
                     .find_map(|query| query.pinned_oid(&translated.slots, &translated.parameters)),
@@ -630,7 +669,7 @@ impl Conn {
     }
 
     /// One message of a running session.
-    async fn message(&mut self) -> Result<Frontend> {
+    pub(crate) async fn message(&mut self) -> Result<Frontend> {
         let (kind, payload) = match self {
             Self::Plain(read, _) => read_frame(read).await?,
             Self::Tls(read, _) => read_frame(read).await?,

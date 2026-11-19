@@ -438,6 +438,16 @@ impl Session<'_> {
         address: RecordAddress,
         span: Span,
     ) -> Result<()> {
+        // A row claim another open transaction holds refuses the delete the
+        // way it refuses a write: the engine never waits, and the contention
+        // is reported where the caller can retry. This transaction's own
+        // claims pass — the register compares the claim token.
+        if transaction.claimed_elsewhere(&address) {
+            return Err(crate::error::Error::ClaimedByAnother {
+                id: address.id.to_string(),
+                span,
+            });
+        }
         // Events see the record that was there, and run after it is gone
         // (ADR-0110).
         let events = self.events_before(transaction, &address, span).await?;

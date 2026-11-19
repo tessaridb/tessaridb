@@ -39,11 +39,16 @@ impl Session<'_> {
     /// Shared by `UPDATE` and `UPSERT` so the two cannot drift: the only thing
     /// that separates them is what they assert about the record beforehand, and
     /// a second copy of this match is how that stops being true.
+    ///
+    /// `excluded` is the proposed row an `ON CONFLICT DO UPDATE` carries: the
+    /// assignments read the record as it was, beside it as `excluded`. Every
+    /// other caller passes `None`, and the scope is the record alone.
     pub(super) async fn applied(
         &self,
         transaction: &mut Transaction<'_>,
         edit: &Edit,
         existing: Value,
+        excluded: Option<&Value>,
         span: Span,
     ) -> Result<(Value, Option<PartialSeal>)> {
         // An edit that computes from the record cannot compute from a vault's,
@@ -80,12 +85,12 @@ impl Session<'_> {
                     .map(|assignment| assignment.route.path.root().to_owned())
                     .collect();
                 let payload = self
-                    .edited(transaction, base, assignments, span, true)
+                    .edited(transaction, base, assignments, None, span, true)
                     .await?;
                 Ok((payload, Some(PartialSeal { keys, named })))
             }
             Edit::Fields(assignments) => Ok((
-                self.edited(transaction, existing, assignments, span, false)
+                self.edited(transaction, existing, assignments, excluded, span, false)
                     .await?,
                 None,
             )),
@@ -111,15 +116,22 @@ impl Session<'_> {
         }
     }
 
+    /// The record a field-level `UPDATE` produces.
+    ///
+    /// `excluded` is the proposed row an `ON CONFLICT DO UPDATE` answers the
+    /// assignments beside — one scope, built once, so a many-assignment edit
+    /// pays one injection and not one per right-hand side.
     pub(super) async fn edited(
         &self,
         transaction: &mut Transaction<'_>,
         existing: Value,
         assignments: &[Assignment],
+        excluded: Option<&Value>,
         span: Span,
         sealed: bool,
     ) -> Result<Value> {
         let mut record = existing;
+        let scoped = excluded.map(|proposed| with_excluded(&record, proposed));
         let mut wanted = Vec::with_capacity(assignments.len());
         for assignment in assignments {
             // On a vault, the assignment is evaluated against **no record**, and
@@ -131,7 +143,7 @@ impl Session<'_> {
             let scope = if sealed {
                 crate::evaluate::Scope::none()
             } else {
-                crate::evaluate::Scope::of(&record)
+                crate::evaluate::Scope::of(scoped.as_ref().unwrap_or(&record))
             };
             let held = self
                 .evaluate_in(transaction, &assignment.value, scope)
@@ -238,6 +250,22 @@ pub(super) fn answered(answer: Answer, before: Value, after: Value) -> Outcome {
         Answer::Before => Outcome::Value(before),
         Answer::After => Outcome::Value(after),
     }
+}
+
+/// The scope record an `ON CONFLICT DO UPDATE` evaluates against: the record
+/// as it stood, with the proposed row beside it as `excluded`.
+///
+/// One scope rather than two namespaces: the evaluator reads one record, and
+/// the injection is how the proposed row rides it. A record field actually
+/// named `excluded` is shadowed inside the action — the documented price of
+/// not carrying a second scope channel for one clause.
+fn with_excluded(record: &Value, proposed: &Value) -> Value {
+    let mut fields = match record {
+        Value::Object(fields) => fields.clone(),
+        _ => BTreeMap::new(),
+    };
+    fields.insert("excluded".to_owned(), proposed.clone());
+    Value::Object(fields)
 }
 
 /// What a partial vault edit hands the sealer.

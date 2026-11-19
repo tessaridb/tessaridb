@@ -652,6 +652,25 @@ pub enum Error {
         span: Span,
     },
 
+    /// A write, or a locking read in NOWAIT mode, met a record another open
+    /// transaction claims — and this engine never waits.
+    ///
+    /// The dialect's answer to the same moment is a blocking wait; on a
+    /// snapshot-isolated, compare-and-set engine the honest answer is the
+    /// refusal, and the retry (or `SKIP LOCKED`, or a bounded backoff) is the
+    /// caller's. Class `conflict`: the contender that loses is told, exactly
+    /// as `Conflict` tells a committer.
+    #[error(
+        "record `{id}` is claimed by another open transaction, and this engine never waits — \
+         retry the statement, or read with SKIP LOCKED (at {span})"
+    )]
+    ClaimedByAnother {
+        /// The record that is another transaction's.
+        id: String,
+        /// Where the statement met it.
+        span: Span,
+    },
+
     /// A `REFERENCES` clause the catalog cannot hold (ADR-0134 D10).
     #[error("expected {why} (at {span})")]
     ReferenceRefused {
@@ -3466,6 +3485,31 @@ pub enum Error {
         /// The bucket as written.
         table: String,
         /// Where it was written.
+        span: Span,
+    },
+
+    /// `ON CONFLICT` named columns no unique index holds exactly.
+    ///
+    /// The inference rule is the dialect's own: the arbiter is a unique index
+    /// holding exactly the named columns, in any order. No such index — or an
+    /// index that only covers them — is not a near miss the store can guess
+    /// past; it is the caller naming a constraint the table does not have.
+    #[error("no unique index holds exactly ({columns}) (at {span})")]
+    ConflictTargetNotUnique {
+        /// The columns the caller named.
+        columns: String,
+        /// Where the clause is.
+        span: Span,
+    },
+
+    /// `ON CONFLICT` on the query form.
+    ///
+    /// `INSERT … SELECT … ON CONFLICT` is its own future: the read's rows meet
+    /// the arbiter one at a time, and the statement this one would become is
+    /// not spoken in this build.
+    #[error("ON CONFLICT over a read (`INSERT … SELECT`) is not spoken in this build (at {span})")]
+    OnConflictOnQuery {
+        /// Where the clause is.
         span: Span,
     },
 

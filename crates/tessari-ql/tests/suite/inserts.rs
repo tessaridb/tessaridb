@@ -11,7 +11,7 @@
 
 #![allow(clippy::panic, clippy::unwrap_used, clippy::indexing_slicing)]
 
-use tessari_ql::{Error, ExprKind, Script, StatementKind, parse};
+use tessari_ql::{ConflictAction, Edit, Error, ExprKind, Script, StatementKind, parse};
 use tessari_types::Value;
 
 fn script(source: &str) -> Script {
@@ -182,4 +182,65 @@ fn values_and_into_are_still_usable_as_field_names() {
             .collect::<Vec<_>>(),
         ["values", "into"]
     );
+}
+
+#[test]
+fn on_conflict_names_its_target_and_action() {
+    let StatementKind::Insert { on_conflict, .. } =
+        one("INSERT INTO users (name, email) VALUES ('ada', 'ada@x') \
+         ON CONFLICT (email) DO NOTHING;")
+    else {
+        panic!("not an insert");
+    };
+    let held = on_conflict.expect("the clause");
+    assert_eq!(
+        held.target
+            .iter()
+            .map(|name| name.text.as_str())
+            .collect::<Vec<_>>(),
+        ["email"]
+    );
+    assert!(matches!(held.action, ConflictAction::Nothing));
+}
+
+#[test]
+fn on_conflict_do_update_carries_the_set_and_the_where() {
+    let StatementKind::Insert { on_conflict, .. } =
+        one("INSERT INTO users (name, email) VALUES ('ada', 'ada@x') \
+         ON CONFLICT (email) DO UPDATE SET name = excluded.name \
+         WHERE name = 'ada';")
+    else {
+        panic!("not an insert");
+    };
+    let held = on_conflict.expect("the clause");
+    let ConflictAction::Update(update) = held.action else {
+        panic!("not an update action");
+    };
+    let (edit, condition) = (update.edit, update.condition);
+    let Edit::Fields(assignments) = edit else {
+        panic!("SET rides the field edit");
+    };
+    assert_eq!(assignments.len(), 1);
+    assert_eq!(assignments[0].route.path.to_string(), "name");
+    assert!(condition.is_some(), "the WHERE rides the action");
+}
+
+#[test]
+fn on_conflict_do_update_wants_a_target() {
+    // The source requires a conflict target for DO UPDATE; matching refusal.
+    refused(
+        "INSERT INTO users (name, email) VALUES ('ada', 'ada@x') ON CONFLICT DO UPDATE SET name = 'x';",
+    );
+}
+
+#[test]
+fn on_conflict_do_nothing_needs_no_target() {
+    let StatementKind::Insert { on_conflict, .. } =
+        one("INSERT INTO users (name, email) VALUES ('ada', 'ada@x') ON CONFLICT DO NOTHING;")
+    else {
+        panic!("not an insert");
+    };
+    let held = on_conflict.expect("the clause");
+    assert!(held.target.is_empty(), "no target names every constraint");
+    assert!(matches!(held.action, ConflictAction::Nothing));
 }

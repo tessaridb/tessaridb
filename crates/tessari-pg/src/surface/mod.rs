@@ -17,6 +17,7 @@
 
 mod answer;
 mod connection;
+mod copy;
 mod errors;
 mod extended;
 mod running;

@@ -157,6 +157,38 @@ pub(crate) fn empty_query() -> Vec<u8> {
     frame(b'I', &[])
 }
 
+/// COPY FROM's answer: the client may stream text rows, `columns` naming how
+/// many each row must hold. Text format (0) both overall and per column.
+pub(crate) fn copy_in_response(columns: usize) -> Vec<u8> {
+    copy_response(b'G', columns)
+}
+
+/// COPY TO's answer: the rows that follow ride as CopyData, one row a frame.
+pub(crate) fn copy_out_response(columns: usize) -> Vec<u8> {
+    copy_response(b'H', columns)
+}
+
+/// One chunk of COPY data.
+pub(crate) fn copy_data(payload: &[u8]) -> Vec<u8> {
+    frame(b'd', payload)
+}
+
+/// The COPY data is complete.
+pub(crate) fn copy_done() -> Vec<u8> {
+    frame(b'c', &[])
+}
+
+/// The shared body of the two COPY responses: the overall format word, the
+/// column count, then one format word per column.
+fn copy_response(kind: u8, columns: usize) -> Vec<u8> {
+    let mut body = vec![0_u8];
+    put_u16(&mut body, columns);
+    for _ in 0..columns {
+        body.extend_from_slice(&0_u16.to_be_bytes());
+    }
+    frame(kind, &body)
+}
+
 /// A Parse landed; the statement is prepared under its name.
 pub(crate) fn parse_complete() -> Vec<u8> {
     frame(b'1', &[])

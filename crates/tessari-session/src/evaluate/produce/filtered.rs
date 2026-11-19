@@ -16,8 +16,14 @@ impl Session<'_> {
         searched: &Searched,
         consumer: &mut impl Consumer,
         reporting: Reporting<'_>,
-    ) -> Result<Plan> {
+    ) -> Result<(Plan, usize)> {
         let named = table_named(&select.from);
+        let mut took = 0_usize;
+        let mut taking = select.locking.as_ref().map(|locking| Claiming {
+            locking,
+            base: (context.namespace, context.database, id),
+            took: &mut took,
+        });
         let over = |access: AccessPath| Plan {
             table: named.map(ToOwned::to_owned),
             ..Plan::new(access)
@@ -95,11 +101,14 @@ impl Session<'_> {
                 {
                     Walked::Served { found, index } => {
                         reporting.collected.push(Note::Approximate);
-                        hand_over(found, transaction, consumer).await?;
-                        return Ok(Plan {
-                            index: Some(index),
-                            ..over(AccessPath::Approximate)
-                        });
+                        hand_over(found, transaction, consumer, &mut taking).await?;
+                        return Ok((
+                            Plan {
+                                index: Some(index),
+                                ..over(AccessPath::Approximate)
+                            },
+                            took,
+                        ));
                     }
                     Walked::Declined => gave_up = true,
                     Walked::NotServed => {}
@@ -124,12 +133,15 @@ impl Session<'_> {
                 .await?
             {
                 Walked::Served { found, index } => {
-                    hand_over(found, transaction, consumer).await?;
-                    return Ok(Plan {
-                        shape: Some("nearest"),
-                        index: Some(index),
-                        ..over(AccessPath::Ordered)
-                    });
+                    hand_over(found, transaction, consumer, &mut taking).await?;
+                    return Ok((
+                        Plan {
+                            shape: Some("nearest"),
+                            index: Some(index),
+                            ..over(AccessPath::Ordered)
+                        },
+                        took,
+                    ));
                 }
                 Walked::Declined => declined = true,
                 Walked::NotServed => {}
@@ -148,11 +160,14 @@ impl Session<'_> {
                 .await?
             {
                 Walked::Served { found, index } => {
-                    hand_over(found, transaction, consumer).await?;
-                    return Ok(Plan {
-                        index: Some(index),
-                        ..over(AccessPath::Ordered)
-                    });
+                    hand_over(found, transaction, consumer, &mut taking).await?;
+                    return Ok((
+                        Plan {
+                            index: Some(index),
+                            ..over(AccessPath::Ordered)
+                        },
+                        took,
+                    ));
                 }
                 Walked::Declined => declined = true,
                 Walked::NotServed => {}
@@ -233,10 +248,13 @@ impl Session<'_> {
                     rows_decoded: report.rows_decoded,
                     rows_returned: report.rows_returned,
                 });
-                return Ok(Plan {
-                    table: named.map(ToOwned::to_owned),
-                    ..Plan::new(access)
-                });
+                return Ok((
+                    Plan {
+                        table: named.map(ToOwned::to_owned),
+                        ..Plan::new(access)
+                    },
+                    took,
+                ));
             }
             let plan = Plan {
                 table: named.map(ToOwned::to_owned),
@@ -264,9 +282,10 @@ impl Session<'_> {
                     noticed: reporting.noticed,
                 },
                 consumer,
+                &mut taking,
             )
             .await?;
-            return Ok(plan);
+            return Ok((plan, took));
         };
         if declined {
             reporting.collected.push(Note::FellBack {
@@ -309,6 +328,13 @@ impl Session<'_> {
         match candidates {
             Candidates::Held(held) => {
                 for (id, record) in held {
+                    // A locking read claims the row before handing it
+                    // over, the way the unfiltered hand-over does.
+                    if let Some(taking) = taking.as_mut()
+                        && !claim_row(transaction, taking, &id)?
+                    {
+                        continue;
+                    }
                     if !answered {
                         let passed = self
                             .evaluate_in(
@@ -348,6 +374,13 @@ impl Session<'_> {
                 'walk: while let Some(round) = walk.next_round(transaction).await? {
                     for (id, payload) in round {
                         let record = self.record_of(&payload, &visible)?;
+                        // A locking read claims the row before handing it
+                        // over, the way the unfiltered hand-over does.
+                        if let Some(taking) = taking.as_mut()
+                            && !claim_row(transaction, taking, &id)?
+                        {
+                            continue;
+                        }
                         if !answered {
                             let passed = self
                                 .evaluate_in(
@@ -369,6 +402,6 @@ impl Session<'_> {
                 }
             }
         }
-        Ok(plan)
+        Ok((plan, took))
     }
 }

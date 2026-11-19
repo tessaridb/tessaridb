@@ -192,7 +192,13 @@ impl Parser<'_> {
         if self.peek_keyword() != Some(Keyword::Select) {
             return Err(self.error_here("`SELECT` — a source in parentheses is a read"));
         }
-        let read = self.select_statement()?;
+        let read = self.combined_select(false)?;
+        // A materialised source holds values, so a locking clause inside it
+        // would claim rows of a read the outer statement cannot see — the
+        // outer-restriction shape the dialect refuses too.
+        if let Some(locking) = &read.locking {
+            return Err(Error::LockingNotPlainRead { span: locking.span });
+        }
         let unbounded = |one: &Select| one.limit.is_none() && one.limit_parameter.is_none();
         if unbounded(&read) || read.combined.iter().any(|next| unbounded(&next.read)) {
             return Err(self.error_here(
@@ -287,6 +293,10 @@ impl Parser<'_> {
         // the axes they name here, at the statement, so the read itself meets
         // the same fields it always has.
         let level = self.level()?;
+        // After every clause of the tail, because the dialect writes it last
+        // and the engine reads it last: `FOR UPDATE` qualifies the whole read
+        // the way `LEVEL` does.
+        let locking = self.locking()?;
         let mut answered_by = answered_by;
         let mut staleness = staleness;
         if let Some(level) = &level {
@@ -322,6 +332,41 @@ impl Parser<'_> {
         }
         crate::parser::shape::check_grouping(&projection, &group)?;
         crate::parser::shape::check_fold_positions(&from, &group, &order)?;
+        // A claim names rows, so the read it qualifies must be one that has
+        // rows to name: a plain read of one table, ungrouped and unfolded.
+        // Beside an aggregation the refusal names what the answer holds
+        // instead; on any other source shape it names the shape's values.
+        if let Some(locking) = &locking {
+            if !group.is_empty()
+                || having.is_some()
+                || !windows.is_empty()
+                || fusion.is_some()
+                || fill.is_some()
+                || split.is_some()
+                || projection
+                    .written()
+                    .iter()
+                    .any(|value| crate::parser::shape::holds_a_fold(&value.value))
+            {
+                return Err(Error::LockingBesideAggregation { span: locking.span });
+            }
+            let over = match &from {
+                Source::Table(table) | Source::Where { table, .. } => Some(&table.name),
+                Source::Record(target) => Some(&target.table.name),
+                _ => None,
+            };
+            let Some(over) = over else {
+                return Err(Error::LockingNotPlainRead { span: locking.span });
+            };
+            for named in &locking.of {
+                if named.text != over.text {
+                    return Err(Error::LockingUnknownTable {
+                        table: named.text.clone(),
+                        span: named.span,
+                    });
+                }
+            }
+        }
         // A fused order ranks records, and a grouped read's rows are groups; a
         // cursor resumes a position in one total order, which a fused order is
         // not until every branch has been ranked. Both refused by name.
@@ -417,6 +462,8 @@ impl Parser<'_> {
             group,
             having,
             combined: Vec::new(),
+            compound_tail: None,
+            locking,
             windows,
             fill,
             latest,

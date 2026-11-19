@@ -476,6 +476,7 @@ fn erase_statement(statement: &mut Statement) {
             // An answer carries no span.
             answer: _,
             partition,
+            on_conflict,
         } => {
             if let Some(read) = read {
                 erase_select(read);
@@ -484,6 +485,25 @@ fn erase_statement(statement: &mut Statement) {
             erase_table(table);
             if let Some(partition) = partition {
                 erase_expr(partition);
+            }
+            if let Some(on_conflict) = on_conflict {
+                for name in on_conflict.target.iter_mut() {
+                    erase_name(name);
+                }
+                if let crate::ConflictAction::Update(update) = &mut on_conflict.action {
+                    match &mut update.edit {
+                        Edit::Whole(value) | Edit::Merge(value) => erase_expr(value),
+                        Edit::Fields(assignments) => {
+                            for assignment in assignments {
+                                erase_path(&mut assignment.route);
+                                erase_expr(&mut assignment.value);
+                            }
+                        }
+                    }
+                    if let Some(condition) = update.condition.as_mut() {
+                        erase_expr(condition);
+                    }
+                }
             }
             for column in columns.iter_mut() {
                 erase_name(column);

@@ -33,7 +33,7 @@ pub(crate) enum Session {
 }
 
 /// Which end of a transaction block a verb names.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum TxVerb {
     /// `BEGIN` / `START TRANSACTION`.
     Begin,
@@ -41,6 +41,21 @@ pub(crate) enum TxVerb {
     Commit,
     /// `ROLLBACK` / `ABORT`.
     Rollback,
+    /// `SAVEPOINT name` — a named mark inside the open block.
+    Savepoint {
+        /// The mark's name.
+        name: String,
+    },
+    /// `ROLLBACK TO [SAVEPOINT] name` — undo to the mark, keep the block.
+    RollbackTo {
+        /// The mark's name.
+        name: String,
+    },
+    /// `RELEASE [SAVEPOINT] name` — drop the mark, keep its work.
+    Release {
+        /// The mark's name.
+        name: String,
+    },
 }
 
 /// Parse one session command; `Ok(None)` hands the query to the translator,
@@ -92,10 +107,50 @@ pub(crate) fn parse(query: &str) -> Result<Option<Session>, Refused> {
             if words.len() == 1 {
                 return Ok(Some(Session::Transaction(TxVerb::Rollback)));
             }
+            // `ROLLBACK TO [SAVEPOINT] name`: the block stays open, the work
+            // rides back to the mark. Only the `TO` spelling is the verb's;
+            // a bare `ROLLBACK name` is a mistake the refusal names.
+            if words
+                .get(1)
+                .is_some_and(|word| word.eq_ignore_ascii_case("to"))
+            {
+                let name = match words.len() {
+                    3 => name_of(words[2]),
+                    4 if words[2].eq_ignore_ascii_case("savepoint") => name_of(words[3]),
+                    _ => {
+                        return Err(Refused::surface(
+                            code::SYNTAX,
+                            "ROLLBACK TO wants a savepoint name",
+                        ));
+                    }
+                }?;
+                return Ok(Some(Session::Transaction(TxVerb::RollbackTo { name })));
+            }
             Err(Refused::surface(
                 code::SYNTAX,
-                "ROLLBACK takes no words in this build",
+                "ROLLBACK takes no words, or TO and a savepoint name",
             ))
+        }
+        "release" => {
+            let name = match words.len() {
+                2 => name_of(words[1]),
+                3 if words[1].eq_ignore_ascii_case("savepoint") => name_of(words[2]),
+                _ => {
+                    return Err(Refused::surface(
+                        code::SYNTAX,
+                        "RELEASE wants a savepoint name",
+                    ));
+                }
+            }?;
+            Ok(Some(Session::Transaction(TxVerb::Release { name })))
+        }
+        "savepoint" => {
+            if words.len() == 2 {
+                return Ok(Some(Session::Transaction(TxVerb::Savepoint {
+                    name: name_of(words[1])?,
+                })));
+            }
+            Err(Refused::surface(code::SYNTAX, "SAVEPOINT wants one name"))
         }
         _ => Ok(None),
     }
@@ -392,10 +447,10 @@ fn value_after(query: &str, at: usize) -> Result<String, Refused> {
 /// letters digits and underscores, no quotes — the store's lexer has bare
 /// words alone.
 fn name_of(word: &str) -> Result<String, Refused> {
-    if word.starts_with('"') {
+    if word.starts_with('"') || word.starts_with('\'') {
         return Err(Refused::surface(
             code::FEATURE,
-            "a quoted setting name is not spoken in this build",
+            "a quoted savepoint name is not spoken in this build",
         ));
     }
     let mut chars = word.chars();

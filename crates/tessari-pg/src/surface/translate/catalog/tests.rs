@@ -50,12 +50,14 @@ fn dynamic() -> Dynamic {
                 name: "orders".to_owned(),
                 hasindex: true,
                 hastriggers: false,
+                viewdef: None,
             },
             ClassRow {
                 oid: 8_888,
                 name: "bands".to_owned(),
                 hasindex: false,
                 hastriggers: true,
+                viewdef: None,
             },
         ],
         attributes: vec![

@@ -5,7 +5,7 @@
 //! arithmetic refuses, a wrong-typed write fails the declaration it was checked
 //! against. An object field receiving JSON text is the one place the
 //! declaration itself asks for the parse: the wire's json/jsonb columns declare
-//! `object`, and every Postgres client speaks JSON text. So the parse is the
+//! `object`, and every client of the dialect speaks JSON text. So the parse is the
 //! declared kind's own reading of the value, taken deliberately, and a text
 //! that does not read refuses naming the field and the byte — never stored as
 //! a string the declaration did not accept, never silently dropped.

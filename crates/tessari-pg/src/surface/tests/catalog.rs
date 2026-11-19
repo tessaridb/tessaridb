@@ -275,3 +275,26 @@ async fn user_columns_read_through_the_pinned_identity() {
     );
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn pg_get_viewdef_answers_the_stored_read_for_a_view() {
+    let setup = format!(
+        "{} DEFINE VIEW order_names AS SELECT name FROM orders;",
+        SETUP
+    );
+    let (address, stop, _db) = serving_with(&setup).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    let seen = client
+        .query(
+            "SELECT pg_catalog.pg_get_viewdef(c.oid) FROM pg_catalog.pg_class c \
+             WHERE c.relname = 'order_names'",
+        )
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("SELECT name FROM orders".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}

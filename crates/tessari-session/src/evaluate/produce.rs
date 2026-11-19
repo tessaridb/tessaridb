@@ -3,7 +3,7 @@
 mod filtered;
 
 use tessari_ql::Select;
-use tessari_storage::Transaction;
+use tessari_storage::{RecordAddress, Transaction};
 use tessari_types::{RecordId, Value};
 
 use crate::condition::boolean;
@@ -34,8 +34,13 @@ impl Session<'_> {
         searched: &Searched,
         consumer: &mut impl Consumer,
         reporting: Reporting<'_>,
-    ) -> Result<Plan> {
+    ) -> Result<(Plan, usize)> {
         let named = table_named(&select.from);
+        // A locking read's claim-taking, built where the source's tenancy and
+        // table are known. None is the ordinary read; the Held arm keeps it
+        // None, because the parser only lets a locking clause through on a
+        // plain table read — a Held source holds values, never claimable rows.
+        let mut taking: Option<Claiming<'_>> = None;
         // The table every plan below reports, resolved once: which table a read
         // is over is a property of the statement and not of the walk that turned
         // out to serve it.
@@ -45,10 +50,16 @@ impl Session<'_> {
         };
         match prepared {
             Prepared::Held(found, plan) => {
-                hand_over(found, transaction, consumer).await?;
-                Ok(*plan)
+                hand_over(found, transaction, consumer, &mut taking).await?;
+                Ok((*plan, 0))
             }
             Prepared::Table(context, id) => {
+                let mut took = 0_usize;
+                taking = select.locking.as_ref().map(|locking| Claiming {
+                    locking,
+                    base: (context.namespace, context.database, id),
+                    took: &mut took,
+                });
                 // First: an index leading on the key answers one seek per value.
                 // The planner declines every other walk and the bound for such a
                 // read (`plan::bound`), so unserved it falls through to the scan.
@@ -56,12 +67,15 @@ impl Session<'_> {
                     && let Walked::Served { found, index } =
                         self.walk_latest(transaction, context, id, latest).await?
                 {
-                    hand_over(found, transaction, consumer).await?;
-                    return Ok(Plan {
-                        shape: Some("latest"),
-                        index: Some(index),
-                        ..over(AccessPath::Index)
-                    });
+                    hand_over(found, transaction, consumer, &mut taking).await?;
+                    return Ok((
+                        Plan {
+                            shape: Some("latest"),
+                            index: Some(index),
+                            ..over(AccessPath::Index)
+                        },
+                        took,
+                    ));
                 }
                 // A statement that asked for an approximate ordering, over a
                 // field carrying a graph built for the distance it named, is the
@@ -75,11 +89,14 @@ impl Session<'_> {
                     // answer: these records are the best the graph found, and
                     // nothing in their shape says so.
                     reporting.collected.push(Note::Approximate);
-                    hand_over(found, transaction, consumer).await?;
-                    return Ok(Plan {
-                        index: Some(index),
-                        ..over(AccessPath::Approximate)
-                    });
+                    hand_over(found, transaction, consumer, &mut taking).await?;
+                    return Ok((
+                        Plan {
+                            index: Some(index),
+                            ..over(AccessPath::Approximate)
+                        },
+                        took,
+                    ));
                 }
                 // A bounded order by distance from a place, over a field
                 // carrying a spatial index. Exact rather than approximate, and
@@ -99,12 +116,15 @@ impl Session<'_> {
                         .await?
                     {
                         Walked::Served { found, index } => {
-                            hand_over(found, transaction, consumer).await?;
-                            return Ok(Plan {
-                                shape: Some("nearest"),
-                                index: Some(index),
-                                ..over(AccessPath::Ordered)
-                            });
+                            hand_over(found, transaction, consumer, &mut taking).await?;
+                            return Ok((
+                                Plan {
+                                    shape: Some("nearest"),
+                                    index: Some(index),
+                                    ..over(AccessPath::Ordered)
+                                },
+                                took,
+                            ));
                         }
                         Walked::Declined => reporting.collected.push(Note::FellBack {
                             from: AccessPath::Ordered,
@@ -131,12 +151,15 @@ impl Session<'_> {
                                     .collected
                                     .retain(|note| *note != Note::CursorWalked);
                             }
-                            hand_over(found, transaction, consumer).await?;
-                            return Ok(Plan {
-                                shape: Some("scored"),
-                                index: Some(index),
-                                ..over(AccessPath::Ordered)
-                            });
+                            hand_over(found, transaction, consumer, &mut taking).await?;
+                            return Ok((
+                                Plan {
+                                    shape: Some("scored"),
+                                    index: Some(index),
+                                    ..over(AccessPath::Ordered)
+                                },
+                                took,
+                            ));
                         }
                         Walked::Declined => reporting.collected.push(Note::FellBack {
                             from: AccessPath::Ordered,
@@ -152,11 +175,14 @@ impl Session<'_> {
                 if let Some(bound) = plan::ordered(select) {
                     match self.walk_in_order(transaction, context, id, &bound).await? {
                         Walked::Served { found, index } => {
-                            hand_over(found, transaction, consumer).await?;
-                            return Ok(Plan {
-                                index: Some(index),
-                                ..over(AccessPath::Ordered)
-                            });
+                            hand_over(found, transaction, consumer, &mut taking).await?;
+                            return Ok((
+                                Plan {
+                                    index: Some(index),
+                                    ..over(AccessPath::Ordered)
+                                },
+                                took,
+                            ));
                         }
                         // The index holds the order and ran out of entries, so
                         // the records that would fill the rest of the answer are
@@ -216,6 +242,14 @@ impl Session<'_> {
                 // of it (ADR-0014, Q-72).
                 for (found_id, payload) in found {
                     let record = self.record_of(&payload, &visible)?;
+                    // A locking read claims the row before handing it over:
+                    // NOWAIT refuses on another transaction's claim, SKIP
+                    // LOCKED passes the row over and the bound keeps pulling.
+                    if let Some(taking) = taking.as_mut()
+                        && !claim_row(transaction, taking, &found_id)?
+                    {
+                        continue;
+                    }
                     if consumer
                         .take(transaction, found_id, record)
                         .await?
@@ -224,7 +258,7 @@ impl Session<'_> {
                         break;
                     }
                 }
-                Ok(over(AccessPath::Scan))
+                Ok((over(AccessPath::Scan), took))
             }
             Prepared::Filtered(context, id, condition) => {
                 self.produce_filtered(
@@ -250,9 +284,19 @@ async fn hand_over(
     found: Vec<(RecordId, Value)>,
     transaction: &mut Transaction<'_>,
     consumer: &mut impl Consumer,
+    claiming: &mut Option<Claiming<'_>>,
 ) -> Result<()> {
     consumer.expecting(found.len());
     for (id, record) in found {
+        // A locking read claims the row before handing it over: NOWAIT
+        // refuses on another transaction's claim, SKIP LOCKED passes over it
+        // — a passed-over row never reaches the consumer, so a bound behind
+        // it keeps pulling.
+        if let Some(taking) = claiming.as_mut()
+            && !claim_row(transaction, taking, &id)?
+        {
+            continue;
+        }
         if consumer.take(transaction, id, record).await?.is_break() {
             // Nothing follows in any arm that calls this, so stopping the loop
             // is the whole of honouring the break.
@@ -260,4 +304,51 @@ async fn hand_over(
         }
     }
     Ok(())
+}
+
+/// A locking read's claim-taking state: the clause, the table the rows belong
+/// to, and the count of rows claimed, reported to the caller as a note.
+pub(super) struct Claiming<'a> {
+    /// The clause the read carries.
+    locking: &'a tessari_ql::Locking,
+    /// The tenancy and table every produced row belongs to.
+    base: (
+        tessari_types::NamespaceId,
+        tessari_types::DatabaseId,
+        tessari_types::TableId,
+    ),
+    /// How many rows this read has claimed, counted into the caller's note.
+    took: &'a mut usize,
+}
+
+/// Claim one produced row for the read's transaction, answering whether the
+/// row is kept: `false` is a SKIP LOCKED row another transaction claims,
+/// passed over. NOWAIT refuses instead of passing over — the engine never
+/// waits, and the refusal names the wait.
+pub(super) fn claim_row(
+    transaction: &Transaction<'_>,
+    claiming: &mut Claiming<'_>,
+    id: &RecordId,
+) -> Result<bool> {
+    let address = RecordAddress::new(
+        claiming.base.0,
+        claiming.base.1,
+        claiming.base.2,
+        id.clone(),
+    );
+    if transaction.claimed_elsewhere(&address) {
+        return match claiming.locking.mode {
+            tessari_ql::LockMode::SkipLocked => Ok(false),
+            tessari_ql::LockMode::Nowait => Err(crate::error::Error::ClaimedByAnother {
+                id: id.to_string(),
+                span: claiming.locking.span,
+            }),
+        };
+    }
+    // `claimed_elsewhere` above established the row is free or already this
+    // transaction's, so the take's own answer — the register confirming it —
+    // cannot be `false`; it is not read.
+    let _ = transaction.take_for_claim(&address);
+    *claiming.took = claiming.took.saturating_add(1);
+    Ok(true)
 }

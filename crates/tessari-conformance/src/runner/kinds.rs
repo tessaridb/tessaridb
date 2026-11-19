@@ -32,6 +32,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::SavepointOutsideATransaction { .. } => "SavepointOutsideATransaction",
         Error::NoSuchSavepoint { .. } => "NoSuchSavepoint",
         Error::SavepointCrossesClaim { .. } => "SavepointCrossesClaim",
+        Error::ClaimedByAnother { .. } => "ClaimedByAnother",
         Error::VersionInsideTransaction { .. } => "VersionInsideTransaction",
         Error::UnclosedTransaction { .. } => "UnclosedTransaction",
         Error::RecordExists { .. } => "RecordExists",

@@ -509,6 +509,17 @@ fn call_value(
             _ => None,
         },
         Some("pg_get_expr") => arg_value(args.first()?, row, ctx),
+        // A view's stored read, character for character — the class rows
+        // the batch loaded carry it; a relation that is not a view answers
+        // nothing rather than inventing a definition.
+        Some("pg_get_viewdef") => match arg_value(args.first()?, row, ctx) {
+            Some(Value::Number(tessaridb::Number::Integer(oid))) => ctx
+                .dynamic
+                .and_then(|dynamic| dynamic.classes.iter().find(|class| class.oid == oid))
+                .and_then(|class| class.viewdef.clone())
+                .map(Value::String),
+            _ => None,
+        },
         // The definition texts (`pg_get_ruledef`, `pg_get_indexdef`,
         // `pg_get_constraintdef`) and the role-list fold (`array_to_string`)
         // are named by the dialect's listing queries over relations this
@@ -665,6 +676,7 @@ fn check_supported(query: &Query) -> Result<(), Refused> {
                         "pg_get_userbyid"
                             | "format_type"
                             | "pg_get_expr"
+                            | "pg_get_viewdef"
                             | "pg_get_ruledef"
                             | "pg_get_indexdef"
                             | "pg_get_constraintdef"

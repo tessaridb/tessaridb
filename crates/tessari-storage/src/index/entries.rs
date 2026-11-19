@@ -33,17 +33,17 @@ pub(crate) async fn insert(
 
     let keyspace = UniqueIndexKey::keyspace();
     let key = UniqueIndexKey::new(*address, values.clone()).encode();
-    let violation = || Error::UniqueViolation {
-        index: definition.name.clone(),
-        id: id.clone(),
-    };
     if claims
         .claimed
         .insert_async(key.as_slice().to_vec())
         .await
         .is_err()
     {
-        return Err(violation());
+        return Err(Error::UniqueViolation {
+            index: definition.name.clone(),
+            id: id.clone(),
+            existing: None,
+        });
     }
 
     // The precondition is what makes this safe against a concurrent writer: the
@@ -69,11 +69,16 @@ pub(crate) async fn insert(
     // first still wins and this batch still fails.
     let batch = match store.backend().get(keyspace, &key).await? {
         Some(existing) => {
+            let holder = IndexTarget::decode(existing.as_slice())?.id;
             if !(releases(&batch, keyspace, &key)
                 || claims.released.contains_async(key.as_slice()).await)
-                && IndexTarget::decode(existing.as_slice())?.id != *id
+                && holder != *id
             {
-                return Err(violation());
+                return Err(Error::UniqueViolation {
+                    index: definition.name.clone(),
+                    id: id.clone(),
+                    existing: Some(holder),
+                });
             }
             batch.expect_value(keyspace, key.clone(), existing)
         }

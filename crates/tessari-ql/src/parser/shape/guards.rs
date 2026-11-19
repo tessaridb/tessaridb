@@ -2,10 +2,11 @@
 
 use super::super::Parser;
 use crate::ast::{
-    Admitted, AnsweredBy, Hop, Level, LevelKind, SetBound, Staleness, Timeout, Using, Version,
+    Admitted, AnsweredBy, Hop, Level, LevelKind, LockMode, Locking, SetBound, Staleness, Timeout,
+    Using, Version,
 };
 use crate::error::{Error, Result};
-use crate::token::{Keyword, Token};
+use crate::token::{Keyword, Punct, Token};
 use tessari_types::Number;
 
 impl Parser<'_> {
@@ -176,6 +177,54 @@ impl Parser<'_> {
         let at = at.to(self.span_here());
         self.advance();
         Ok(Some(AnsweredBy { admits, span: at }))
+    }
+
+    /// `FOR UPDATE [OF <table> [, …]] [NOWAIT | SKIP LOCKED]`, when it is there.
+    ///
+    /// Two words at the head, the way `ANSWERED BY` is, and both are required
+    /// before the clause opens: a lone `for` is not this clause, and saying so
+    /// with a peek rather than a rollback is what keeps a name called `for`
+    /// readable everywhere else. The mode words are a closed set with an
+    /// unknown-word refusal, `answered_by`'s reason: the bare clause means
+    /// NOWAIT, and a guess in the unsafe direction would claim rows while
+    /// promising not to wait for them.
+    ///
+    /// What the clause promises is checked where the statement's shape is
+    /// known — a claim names rows, so the read must be one plain table read
+    /// with rows to name. The OF names are read here and resolved there.
+    pub(crate) fn locking(&mut self) -> Result<Option<Locking>> {
+        if !matches!(self.peek(), Some(Token::Ident(word)) if word.eq_ignore_ascii_case("for"))
+            || self.peek_ahead(1) != Some(&Token::Keyword(Keyword::Update))
+        {
+            return Ok(None);
+        }
+        let at = self.span_here();
+        self.advance();
+        self.advance();
+        let mut of = Vec::new();
+        if self.eat_word("of") {
+            loop {
+                of.push(self.name()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+        }
+        let mode = if self.eat_word("nowait") {
+            LockMode::Nowait
+        } else if self.eat_word("skip") {
+            if !self.eat_word("locked") {
+                return Err(self.error_here("`LOCKED` after `SKIP`"));
+            }
+            LockMode::SkipLocked
+        } else {
+            LockMode::Nowait
+        };
+        Ok(Some(Locking {
+            of,
+            mode,
+            span: at.to(self.span_behind()),
+        }))
     }
 
     /// `LEADER`, `SNAPSHOT` or `STALE WITHIN <span>`, when one is there.

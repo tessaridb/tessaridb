@@ -50,6 +50,28 @@ impl Term {
     }
 }
 
+/// The store's cast function one dialect type name maps onto — the engine's
+/// own casts, exact-or-refuse, `json::parse` for the JSON text the wire
+/// writes. A name with no honest target refuses by name, carrying the type
+/// the query asked for; a catalog-qualified spelling keeps its last
+/// segment, the one that names the type.
+fn cast_function(name: &str) -> Result<&'static str, Refused> {
+    match name.rsplit('.').next().unwrap_or(name) {
+        "int" | "int2" | "int4" | "int8" | "smallint" | "integer" | "bigint" => Ok("type::int"),
+        "float" | "real" | "float4" | "float8" => Ok("type::float"),
+        "bool" | "boolean" => Ok("type::bool"),
+        "text" | "varchar" | "char" | "bpchar" | "name" => Ok("type::string"),
+        "date" | "timestamp" | "timestamptz" => Ok("type::datetime"),
+        "uuid" => Ok("type::uuid"),
+        "json" | "jsonb" => Ok("json::parse"),
+        other => Err(Refused::with_detail(
+            code::FEATURE,
+            "this cast is not spoken in this build",
+            other.to_owned(),
+        )),
+    }
+}
+
 impl Parser<'_> {
     /// `*` or a comma list of fields, folds, arithmetic, placeholders,
     /// literals and CASE mappings, each with its alias.
@@ -616,12 +638,30 @@ impl Parser<'_> {
                 format!("({left} = NULL OR {left} = NONE)")
             });
         }
-        let negated_in = self.keyword("NOT").is_ok();
+        let negated = self.keyword("NOT").is_ok();
         if self.keyword("IN").is_ok() {
-            return self.in_list(&left, negated_in);
+            return self.in_list(&left, negated);
         }
-        if negated_in {
-            return Err(Refused::surface(code::SYNTAX, "NOT wants IN here"));
+        if let Some((op, op_negated)) = self.pattern_operator() {
+            if negated && op_negated {
+                return Err(Refused::surface(
+                    code::SYNTAX,
+                    "NOT wants a positive pattern operator here",
+                ));
+            }
+            let right = self.operand()?;
+            let right = self.escape_clause(right)?;
+            // The store speaks `NOT (a LIKE b)`, not the dialect's infix
+            // `a NOT LIKE b` — the negation wraps the comparison as one
+            // condition, binding inside any AND/OR the predicate rides in.
+            return Ok(if negated || op_negated {
+                format!("NOT ({left} {op} {right})")
+            } else {
+                format!("{left} {op} {right}")
+            });
+        }
+        if negated {
+            return Err(Refused::surface(code::SYNTAX, "NOT wants IN or LIKE here"));
         }
         if self.operator("@>") {
             // Document containment: the engine's CONTAINS, the JSON text
@@ -676,6 +716,55 @@ impl Parser<'_> {
             "a condition wants a comparison",
             format!("after {left:?}"),
         ))
+    }
+
+    /// The pattern comparison the predicate speaks: `[NOT] LIKE` /
+    /// `[NOT] ILIKE` and the operator spellings `~~`, `~~*`, `!~~`, `!~~*`
+    /// — one operator family, the store's own two words underneath. The
+    /// second flag says the operator itself negates (`!~~*`).
+    fn pattern_operator(&mut self) -> Option<(&'static str, bool)> {
+        if self.keyword("LIKE").is_ok() {
+            return Some(("LIKE", false));
+        }
+        if self.keyword("ILIKE").is_ok() {
+            return Some(("ILIKE", false));
+        }
+        for (mark, op, negated) in [
+            ("!~~*", "ILIKE", true),
+            ("!~~", "LIKE", true),
+            ("~~*", "ILIKE", false),
+            ("~~", "LIKE", false),
+        ] {
+            if self.operator(mark) {
+                return Some((op, negated));
+            }
+        }
+        None
+    }
+
+    /// The ESCAPE clause a pattern comparison may carry. The store's
+    /// pattern compiler speaks the backslash alone — the dialect's default —
+    /// so an explicit backslash is the same sentence and anything else
+    /// refuses by name rather than re-compiling the pattern.
+    fn escape_clause(&mut self, right: String) -> Result<String, Refused> {
+        if self.keyword("ESCAPE").is_err() {
+            return Ok(right);
+        }
+        let Some(tessaridb::Value::String(mark)) = self.literal()? else {
+            return Err(Refused::surface(
+                code::SYNTAX,
+                "ESCAPE wants a one-character literal",
+            ));
+        };
+        if mark.as_str() == "\\" {
+            Ok(right)
+        } else {
+            Err(Refused::with_detail(
+                code::FEATURE,
+                "ESCAPE speaks the backslash alone in this build",
+                mark.to_string(),
+            ))
+        }
     }
 
     /// `IN (v1, v2, …)` over a value list: exact as the OR-chain of
@@ -745,8 +834,10 @@ impl Parser<'_> {
     }
 
     /// One side of a comparison: arithmetic over placeholders, aggregates,
-    /// literals and field paths, parentheses riding through.
-    fn operand(&mut self) -> Result<String, Refused> {
+    /// literals and field paths, parentheses riding through. `pub(crate)` for
+    /// the ON CONFLICT SET clause, where a bare operand (`excluded.band`) is
+    /// the whole right-hand side.
+    pub(crate) fn operand(&mut self) -> Result<String, Refused> {
         Ok(self.sum()?.text)
     }
 
@@ -869,12 +960,13 @@ impl Parser<'_> {
             lit,
         } = term;
         let mut casted = text;
-        let plain = casted.len();
+        let mut applied = false;
         while self.operator("::") {
-            casted.push_str("::");
-            casted.push_str(&self.ident_path()?);
+            let name = self.ident_path()?;
+            casted = format!("{}({casted})", cast_function(&name)?);
+            applied = true;
         }
-        if casted.len() == plain {
+        if !applied {
             Ok(Term {
                 text: casted,
                 path,

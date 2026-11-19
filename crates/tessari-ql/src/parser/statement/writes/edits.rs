@@ -2,8 +2,8 @@
 
 use super::super::Parser;
 use crate::ast::{
-    Answer, Assignment, Edit, Expr, Projection, RecordTarget, Select, StatementKind, TableRef,
-    WriteExpiry,
+    Answer, Assignment, ConflictAction, ConflictUpdate, Edit, Expr, OnConflict, Projection,
+    RecordTarget, Select, StatementKind, TableRef, WriteExpiry,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct};
@@ -89,13 +89,19 @@ impl Parser<'_> {
         }
 
         let expire = self.write_expiry()?;
+        let on_conflict = self.on_conflict_clause()?;
         let answer = if self.eat_keyword(Keyword::Return) {
-            if !self.eat_word("position") {
+            if self.eat_word("position") {
+                Answer::Position
+            } else if self.eat_word("after") {
+                // The outcome rows: what each row became — the inserted
+                // records, and the merged records a collision updated.
+                Answer::After
+            } else {
                 return Err(self.error_here(
-                    "`POSITION` — an insert answers its identities, or with `RETURN POSITION` the positions its messages took",
+                    "`AFTER` or `POSITION` — an insert answers its identities, with `RETURN AFTER` the outcome rows, or into a topic the positions its messages took",
                 ));
             }
-            Answer::Position
         } else {
             Answer::Nothing
         };
@@ -107,7 +113,75 @@ impl Parser<'_> {
             expire,
             answer,
             partition,
+            on_conflict,
         })
+    }
+
+    /// `ON CONFLICT [(name, …)] DO NOTHING | DO UPDATE SET … [WHERE …]` — the
+    /// arbiter clause, read after the rows (the dossier of the dialect the
+    /// statement speaks on the relational wire).
+    ///
+    /// `DO UPDATE` wants a target, the way the source requires one: the action
+    /// merges into the record the named index holds, and only a target says
+    /// which index that is. The query form (`INSERT … SELECT`) parses and is
+    /// refused where it runs, so the refusal is the session's to name.
+    fn on_conflict_clause(&mut self) -> Result<Option<OnConflict>> {
+        if !self.eat_keyword(Keyword::On) {
+            return Ok(None);
+        }
+        if !self.eat_word("conflict") {
+            return Err(self.error_here("`CONFLICT` after `ON`"));
+        }
+        let mut target = Vec::new();
+        if self.eat_punct(Punct::ParenOpen) {
+            loop {
+                target.push(self.name()?);
+                if !self.eat_punct(Punct::Comma) {
+                    break;
+                }
+            }
+            self.expect_punct(Punct::ParenClose, "`)` after the conflict target")?;
+        }
+        if !self.eat_word("do") {
+            return Err(self.error_here("`DO` and the action a collision takes"));
+        }
+        if self.eat_word("nothing") {
+            return Ok(Some(OnConflict {
+                target,
+                action: ConflictAction::Nothing,
+            }));
+        }
+        if self.eat_keyword(Keyword::Update) {
+            if target.is_empty() {
+                return Err(self.error_here(
+                    "`(...)` naming the conflict target before `DO UPDATE` — the action reads the existing row, and only a target says which index holds it",
+                ));
+            }
+            if !self.eat_keyword(Keyword::Set) {
+                return Err(self.error_here("`SET` and what the merged row changes"));
+            }
+            let mut assignments = vec![self.assignment()?];
+            while self.eat_punct(Punct::Comma) {
+                assignments.push(self.assignment()?);
+            }
+            let condition = if self.peek_keyword() == Some(Keyword::Where) {
+                self.advance();
+                let condition = self.condition()?;
+                crate::parser::shape::no_fold(&condition)?;
+                crate::parser::shape::check_several(&condition)?;
+                Some(condition)
+            } else {
+                None
+            };
+            return Ok(Some(OnConflict {
+                target,
+                action: ConflictAction::Update(Box::new(ConflictUpdate {
+                    edit: Edit::Fields(assignments),
+                    condition,
+                })),
+            }));
+        }
+        Err(self.error_here("`NOTHING` or `UPDATE` after `DO`"))
     }
 
     /// `RETURN BEFORE` or `RETURN AFTER`, when the write carries one.

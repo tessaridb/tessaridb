@@ -2,17 +2,22 @@
 
 use super::super::Parser;
 
-use crate::ast::{Combination, Select, SetOperation};
+use crate::ast::{Combination, CompoundTail, Select, SetOperation};
 use crate::error::{Error, Result};
 use crate::token::Keyword;
 
 impl Parser<'_> {
-    /// A read and every read it combines with, left to right.
-    ///
-    /// Each operand is a whole read with its own clauses, so `a UNION b LIMIT 5`
-    /// bounds `b`; a bound on the combined answer is written by reading it as a
-    /// source.
+    /// A read and every read it combines with, left to right, at the top
+    /// level of a statement: a trailing `ORDER BY` after the last branch is
+    /// the compound's own tail.
     pub(in crate::parser) fn select_statement(&mut self) -> Result<Select> {
+        self.combined_select(true)
+    }
+
+    /// As [`Self::select_statement`], inside parentheses: the ceiling
+    /// discipline on a materialised source binds unchanged, so a trailing
+    /// `ORDER BY` there stays the last read's own.
+    pub(in crate::parser) fn combined_select(&mut self, top: bool) -> Result<Select> {
         let mut first = self.select_single()?;
         loop {
             let span = self.span_here();
@@ -23,7 +28,7 @@ impl Parser<'_> {
             } else if self.eat_word("except") {
                 SetOperation::Except
             } else {
-                return Ok(first);
+                break;
             };
             let all = self.eat_word("all");
             if all && operation != SetOperation::Union {
@@ -44,5 +49,75 @@ impl Parser<'_> {
                 span,
             });
         }
+        if top {
+            // A combined read holds values, not rows of one table, so a
+            // locking clause on any of its branches names nothing claimable —
+            // refused rather than silently locking less than promised. A read
+            // that combines with nothing keeps its clause for the shape
+            // checks in `select_single`.
+            if !first.combined.is_empty() {
+                let locked = first.locking.is_some()
+                    || first
+                        .combined
+                        .iter()
+                        .any(|next| next.read.locking.is_some());
+                if locked {
+                    let span = first
+                        .locking
+                        .as_ref()
+                        .map_or_else(
+                            || {
+                                first
+                                    .combined
+                                    .iter()
+                                    .find_map(|next| next.read.locking.as_ref())
+                            },
+                            Some,
+                        )
+                        .map_or(first.span, |locking| locking.span);
+                    return Err(Error::LockingNotPlainRead { span });
+                }
+            }
+            self.lift_compound_tail(&mut first)?;
+        }
+        Ok(first)
+    }
+
+    /// A trailing `ORDER BY` on the last branch of a statement-level compound
+    /// is the compound's own tail: the collected answer sorts as one set. A
+    /// `LIMIT` alone stays the last read's own, the rule the suite pins.
+    ///
+    /// The keys must name what the combined answer answers under — an output
+    /// column or an ordinal. An expression would need a record to read, and
+    /// the collection is values; the refusal names the rule.
+    fn lift_compound_tail(&mut self, first: &mut Select) -> Result<()> {
+        let Some(last) = first.combined.last_mut() else {
+            return Ok(());
+        };
+        if last.read.order.is_empty() {
+            return Ok(());
+        }
+        for ordering in &last.read.order {
+            match &ordering.key.kind {
+                crate::ast::ExprKind::Literal(tessari_types::Value::Number(
+                    tessari_types::Number::Integer(held),
+                )) if *held >= 1 => {}
+                crate::ast::ExprKind::Path(path) if path.path.steps().is_empty() => {}
+                _ => {
+                    return Err(Error::CompoundOrderNotOutputName {
+                        found: format!("{:?}", ordering.key.kind),
+                        span: ordering.key.span,
+                    });
+                }
+            }
+        }
+        first.compound_tail = Some(CompoundTail {
+            ordering: std::mem::take(&mut last.read.order),
+            start: last.read.start.take(),
+            start_parameter: last.read.start_parameter.take(),
+            limit: last.read.limit.take(),
+            limit_parameter: last.read.limit_parameter.take(),
+        });
+        Ok(())
     }
 }

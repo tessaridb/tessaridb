@@ -92,6 +92,18 @@ impl Session<'_> {
         // engine's fields, and carry forward the ones a whole-record write
         // simply left out.
         let mut payload = payload;
+        // A row claim another open transaction holds refuses the write before
+        // anything is staged: the engine never waits, so the contention is
+        // reported here, where the caller can retry — the same refusal a
+        // locking read's NOWAIT gives. This transaction's own claims pass
+        // (the register compares the claim token), so a row it claimed and
+        // then writes is not refused by its own hold.
+        if transaction.claimed_elsewhere(&address) {
+            return Err(Error::ClaimedByAnother {
+                id: address.id.to_string(),
+                span,
+            });
+        }
         crate::queue::hold_engine_fields(transaction, &address, &mut payload, span).await?;
         crate::series::hold_event_time(transaction, &address, &payload, span).await?;
         self.references_hold(transaction, &address, &payload, span)
@@ -473,9 +485,14 @@ impl Session<'_> {
         (table, partition): (&TableRef, Option<&tessari_ql::Expr>),
         columns: &[Name],
         rows: &[Vec<tessari_ql::Expr>],
-        expire: Option<&tessari_ql::WriteExpiry>,
-        span: Span,
+        tail: InsertTail<'_>,
     ) -> Result<Outcome> {
+        let InsertTail {
+            expire,
+            answer,
+            on_conflict,
+            span,
+        } = tail;
         let (context, id) = self.resolve_table(transaction, table).await?;
         let settled = self.resolve_write_expiry(transaction, id, expire).await?;
         // A bucket's records describe bytes the store holds, so one written by
@@ -490,6 +507,15 @@ impl Session<'_> {
             });
         }
 
+        // The arbiter: the unique indexes whose columns the target names
+        // exactly, in any order — the dialect's inference rule. A value one
+        // of these already holds takes the clause's action; a value any
+        // other unique index holds refuses at the commit, as it always has.
+        let arbiter = match on_conflict {
+            None => None,
+            Some(clause) => Some(self.arbiter(transaction, id, clause, span).await?),
+        };
+
         // A partition the writer named holds every row; otherwise each row's
         // key chooses (ADR-0131).
         let named = match partition {
@@ -500,6 +526,11 @@ impl Session<'_> {
             None => None,
         };
         let mut produced = Vec::with_capacity(rows.len());
+        let mut outcome_rows: Vec<(RecordId, Value)> = Vec::with_capacity(rows.len());
+        // Every identity this statement has written or updated: a conflict
+        // with one of them is the statement touching one row twice, which
+        // refuses even beside the clause — the way the source counts it.
+        let mut touched: std::collections::BTreeSet<RecordId> = std::collections::BTreeSet::new();
         for row in rows {
             let mut fields = BTreeMap::new();
             for (column, value) in columns.iter().zip(row) {
@@ -537,16 +568,197 @@ impl Session<'_> {
                     .partition_for(definition.as_deref(), &payload, table.span)?
                     .unwrap_or(id),
             };
+            // The arbiter probe runs before the write: the index's own
+            // refusal would only surface at commit, after the statement
+            // answered, and the clause exists to decide it here.
+            if let (Some(clause), Some(indexes)) = (on_conflict, &arbiter) {
+                let mut conflict = None;
+                for index in indexes {
+                    if let Some(holder) = transaction.unique_conflict(index, &payload).await? {
+                        conflict = Some((index.name.clone(), holder));
+                        break;
+                    }
+                }
+                if let Some((index, holder)) = conflict {
+                    if touched.contains(&holder) {
+                        // A value this same statement proposed twice: the
+                        // cardinality refusal stands even beside the clause.
+                        return Err(Error::Store(tessari_storage::Error::UniqueViolation {
+                            index,
+                            id: identity,
+                            existing: Some(holder),
+                        }));
+                    }
+                    match &clause.action {
+                        tessari_ql::ConflictAction::Nothing => {
+                            if let Some(marker) = marker {
+                                marker.leave(transaction);
+                            }
+                            continue;
+                        }
+                        tessari_ql::ConflictAction::Update(update) => {
+                            if let Some(after) = self
+                                .conflicted(
+                                    transaction,
+                                    (&context, home),
+                                    &holder,
+                                    &payload,
+                                    update,
+                                    (settled, span),
+                                )
+                                .await?
+                            {
+                                touched.insert(holder.clone());
+                                produced.push(holder.clone());
+                                outcome_rows.push((holder, after));
+                            }
+                            if let Some(marker) = marker {
+                                marker.leave(transaction);
+                            }
+                            continue;
+                        }
+                    }
+                }
+            }
             let address =
                 RecordAddress::new(context.namespace, context.database, home, identity.clone());
-            self.put_record(transaction, address.clone(), payload, span)
+            self.put_record(transaction, address.clone(), payload.clone(), span)
                 .await?;
             super::expiry::settle_write_expiry(transaction, &address, settled);
+            touched.insert(identity.clone());
+            produced.push(identity.clone());
+            outcome_rows.push((identity, payload));
             if let Some(marker) = marker {
                 marker.leave(transaction);
             }
-            produced.push(identity);
+        }
+        if answer == Answer::After {
+            // The outcome rows: what each answered row became — the inserted
+            // records, and the merged records a collision updated.
+            return Ok(Outcome::Records {
+                records: outcome_rows,
+                plan: Box::new(crate::plan::Plan::new(crate::outcome::AccessPath::Record)),
+                notes: Vec::new(),
+                suggestion: None,
+                only: false,
+            });
         }
         Ok(Outcome::Keys(produced))
     }
+
+    /// The unique indexes the clause's target names exactly — the arbiter set.
+    ///
+    /// No match is the caller naming a constraint the table does not have;
+    /// the refusal names the columns the way the declaration would have.
+    async fn arbiter(
+        &self,
+        transaction: &mut Transaction<'_>,
+        table: TableId,
+        clause: &tessari_ql::OnConflict,
+        span: Span,
+    ) -> Result<Vec<tessari_storage::IndexDefinition>> {
+        let target: std::collections::BTreeSet<String> =
+            clause.target.iter().map(|name| name.text.clone()).collect();
+        let indexes = Catalog::new(transaction).field_indexes_on(table).await?;
+        let covers = |index: &tessari_storage::IndexDefinition| {
+            index.unique
+                && index.fields.len() == target.len()
+                && index
+                    .fields
+                    .iter()
+                    .all(|field| target.contains(&field.to_string()))
+        };
+        // `DO NOTHING` without a target names every unique index the table
+        // has — one with none simply has nothing to catch.
+        let any_will_do = matches!(clause.action, tessari_ql::ConflictAction::Nothing)
+            && clause.target.is_empty();
+        if any_will_do {
+            return Ok(indexes.into_iter().filter(|index| index.unique).collect());
+        }
+        let matched: Vec<tessari_storage::IndexDefinition> =
+            indexes.into_iter().filter(|index| covers(index)).collect();
+        if matched.is_empty() {
+            return Err(Error::ConflictTargetNotUnique {
+                columns: clause
+                    .target
+                    .iter()
+                    .map(|name| name.text.clone())
+                    .collect::<Vec<_>>()
+                    .join(", "),
+                span: clause.target.first().map_or(span, |name| name.span),
+            });
+        }
+        Ok(matched)
+    }
+
+    /// What a row takes when the arbiter index already holds its value.
+    ///
+    /// `None` is a `DO UPDATE` whose WHERE read false — the row is skipped,
+    /// the statement refuses nothing. `Some` is the merged record, written
+    /// through the same tail every update takes.
+    async fn conflicted(
+        &self,
+        transaction: &mut Transaction<'_>,
+        (context, table): (&Context, TableId),
+        existing: &RecordId,
+        proposed: &Value,
+        update: &tessari_ql::ConflictUpdate,
+        (settled, span): (Option<super::expiry::Settled>, Span),
+    ) -> Result<Option<Value>> {
+        let address =
+            RecordAddress::new(context.namespace, context.database, table, existing.clone());
+        let Some(stored) = transaction.get(&address).await? else {
+            // The index named a record the store does not hold: entries are
+            // maintained with their records, so this is the invariant's own
+            // voice, and the clause has no honest answer for it.
+            return Err(Error::NoSuchRecord {
+                id: existing.to_string(),
+                span,
+            });
+        };
+        let before = tessari_encoding::decode_payload(&stored)?;
+        // The WHERE reads the record as it stood, beside the proposed row as
+        // `excluded` — one scope, the same injection the edit's assignments
+        // see inside `edit_stored`.
+        let scoped = {
+            let mut fields = match &before {
+                Value::Object(fields) => fields.clone(),
+                _ => BTreeMap::new(),
+            };
+            fields.insert("excluded".to_owned(), proposed.clone());
+            Value::Object(fields)
+        };
+        if let Some(condition) = update.condition.as_ref() {
+            let held = self
+                .evaluate_in(transaction, condition, crate::evaluate::Scope::of(&scoped))
+                .await?;
+            if !crate::condition::boolean(&held, condition.span)? {
+                return Ok(None);
+            }
+        }
+        let after = self
+            .edit_stored(
+                transaction,
+                &address,
+                (&update.edit, before),
+                Some(proposed),
+                settled,
+                (span, span),
+            )
+            .await?;
+        Ok(Some(after))
+    }
+}
+
+/// The insert statement's tail pieces, one bundle where a long parameter
+/// list would ride — the same shape `SetUpdate` gives the set update.
+pub(super) struct InsertTail<'a> {
+    /// `EXPIRE …` after the rows, when the insert carries one.
+    pub expire: Option<&'a tessari_ql::WriteExpiry>,
+    /// What the statement answers: identities, outcome rows, or positions.
+    pub answer: Answer,
+    /// The arbiter clause, when the insert carries one.
+    pub on_conflict: Option<&'a tessari_ql::OnConflict>,
+    /// Where the statement is.
+    pub span: Span,
 }

@@ -73,7 +73,10 @@ impl Error {
             | Self::FeedExists { .. }
             | Self::ParamExists { .. }
             | Self::SearchExists { .. }
-            | Self::GroupExists { .. } => RefusalClass::Conflict,
+            | Self::GroupExists { .. }
+            // A row another open transaction claims: the contender is told,
+            // the way the committer beside it is (the claims design, §2).
+            | Self::ClaimedByAnother { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
             | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }
@@ -262,6 +265,11 @@ impl Error {
             | Self::PartitionsAboveCeiling { .. }
             | Self::ClaimDeadlineUnreachable { .. }
             | Self::NotWrittenByHand { .. }
+            // A conflict target the table does not have, and a clause on a
+            // form the build does not speak: both are the statement saying
+            // what cannot run, like the hand-written refusal beside them.
+            | Self::ConflictTargetNotUnique { .. }
+            | Self::OnConflictOnQuery { .. }
             // A topic that only its feed's capture writes is told apart from
             // one the caller may append to at the statement, like the
             // hand-written refusal beside it.

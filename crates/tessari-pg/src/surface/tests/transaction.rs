@@ -262,3 +262,249 @@ async fn a_multi_statement_query_runs_as_one_block() {
         "no half-answered rows from a refused block: {seen:?}"
     );
 }
+
+#[tokio::test]
+async fn savepoints_ride_across_queries_in_a_block() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    // Every query crosses the bridge; the savepoint must ride it.
+    client.query("BEGIN").await;
+    let seen = client.query("SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SAVEPOINT")),
+        "{seen:?}"
+    );
+    client
+        .query("UPDATE orders SET name = 'changed' WHERE name = 'first'")
+        .await;
+    let seen = client.query("ROLLBACK TO SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "ROLLBACK")),
+        "{seen:?}"
+    );
+    client.query("COMMIT").await;
+
+    // The undo is the store's own: the block rolled back to the mark.
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn a_released_savepoint_refuses_the_rollback_by_name() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    client.query("BEGIN").await;
+    client.query("SAVEPOINT one").await;
+    let seen = client.query("RELEASE SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "RELEASE")),
+        "{seen:?}"
+    );
+    let seen = client.query("ROLLBACK TO one").await;
+    let (code, message) = refused(&seen).expect("the refusal");
+    assert_eq!(
+        code, "42601",
+        "the engine's name rides the class: {message}"
+    );
+    assert!(
+        message.to_lowercase().contains("savepoint") || message.contains("one"),
+        "the missing mark is named: {message}"
+    );
+    client.query("ROLLBACK").await;
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn savepoints_are_a_connections_own() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first.query("SAVEPOINT one").await;
+    // The other connection's block knows nothing of it: its own verb state
+    // is untouched, and the name is free for its own use.
+    second.query("BEGIN").await;
+    let seen = second.query("SAVEPOINT one").await;
+    assert!(
+        seen.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "SAVEPOINT")),
+        "{seen:?}"
+    );
+    second.query("ROLLBACK").await;
+    first.query("ROLLBACK").await;
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn savepoints_ride_the_extended_protocol() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+
+    for verb in [
+        "BEGIN",
+        "SAVEPOINT one",
+        "UPDATE orders SET name = 'changed' WHERE name = 'first'",
+        "ROLLBACK TO one",
+        "COMMIT",
+    ] {
+        client.parse("", verb, &[]).await;
+        client.bind("", "", &[], &[], &[]).await;
+        client.execute("", 0).await;
+        client.sync().await;
+        let mut seen = Vec::new();
+        loop {
+            let message = client.message().await;
+            let ready = matches!(message, Seen::Ready(_));
+            seen.push(message);
+            if ready {
+                break;
+            }
+        }
+        assert!(
+            !seen.iter().any(|m| matches!(m, Seen::Error(..))),
+            "{verb} refused: {seen:?}"
+        );
+    }
+    let seen = client.query("SELECT name FROM orders LIMIT 1").await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    stop.cancel();
+}
+
+// ---------------------------------------------------------------------------
+// Row claims across connections: a FOR UPDATE read holds its rows to the
+// block's end; another connection's write is refused 55P03 (the dialect's
+// lock-not-available — the wait a NOWAIT read will not do), and SKIP LOCKED
+// passes the claimed row over.
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn a_claimed_row_refuses_another_connections_write_until_the_commit() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    let held = first
+        .query("SELECT name FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    assert_eq!(
+        rows(&held),
+        vec![vec![Some("first".to_owned())]],
+        "{held:?}"
+    );
+
+    // The claim holds: the second connection's write is refused, with the
+    // dialect's lock-not-available code, and the words name the claim.
+    let seen = second
+        .query("UPDATE orders SET name = 'taken' WHERE band = 1")
+        .await;
+    let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert_eq!(code, "55P03", "{seen:?}");
+    assert!(
+        message.contains("claimed"),
+        "the refusal names the claim: {message}"
+    );
+
+    // The block ends and the claim with it; the write applies.
+    first.query("COMMIT").await;
+    let done = second
+        .query("UPDATE orders SET name = 'taken' WHERE band = 1")
+        .await;
+    assert!(
+        done.iter()
+            .any(|m| matches!(m, Seen::Command(t) if t == "UPDATE 1")),
+        "{done:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn skip_locked_passes_the_claimed_row_over() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+
+    // The second connection sees neither the claim nor the claimed row: the
+    // row behind it answers instead.
+    let seen = second
+        .query("SELECT id FROM orders ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("orders:2".to_owned())]],
+        "{seen:?}"
+    );
+
+    first.query("ROLLBACK").await;
+    // The claim died with the block: the head answers again.
+    let after = second
+        .query("SELECT id FROM orders ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED")
+        .await;
+    assert_eq!(
+        rows(&after),
+        vec![vec![Some("orders:1".to_owned())]],
+        "{after:?}"
+    );
+    stop.cancel();
+}
+
+#[tokio::test]
+async fn nowait_refuses_a_locking_read_over_a_claimed_row() {
+    let (address, stop, _db) = serving_with(SETUP).await;
+    let mut first = Client::to(&address).await;
+    first.start(None, "app.main", None).await;
+    let mut second = Client::to(&address).await;
+    second.start(None, "app.main", None).await;
+
+    first.query("BEGIN").await;
+    first
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+
+    // NOWAIT is the default: the read refuses rather than waits.
+    let seen = second
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    let (code, message) = refused(&seen).expect("a refusal: {seen:?}");
+    assert_eq!(code, "55P03", "{seen:?}");
+    assert!(
+        message.contains("never waits"),
+        "the refusal names the wait it will not do: {message}"
+    );
+
+    first.query("ROLLBACK").await;
+    let free = second
+        .query("SELECT * FROM orders WHERE band = 1 FOR UPDATE")
+        .await;
+    assert_eq!(rows(&free).len(), 1, "{free:?}");
+    stop.cancel();
+}

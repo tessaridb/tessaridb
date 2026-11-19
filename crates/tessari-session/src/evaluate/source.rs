@@ -1,7 +1,7 @@
 //! Deciding how a read reaches its records, and refusing the reads a caller may not make.
 
 use tessari_ql::{Expr, Select, Source, TableRef};
-use tessari_storage::{Catalog, TableDefinition, Transaction};
+use tessari_storage::{Catalog, RecordAddress, TableDefinition, Transaction};
 use tessari_types::TableId;
 
 use crate::budget::{Ceiling, Deadline};
@@ -182,6 +182,47 @@ impl Session<'_> {
                 let (_, address) = self.address(transaction, target).await?;
                 self.refuse_reading_a_vault(transaction, address.table, &target.table)
                     .await?;
+                // A locking read of one record claims that record here, where
+                // the address is in hand — the Held production below carries
+                // no tenancy to claim with. SKIP LOCKED answers an empty
+                // record set when another transaction holds it.
+                let claim = |transaction: &Transaction<'_>,
+                             found: Vec<(tessari_types::RecordId, tessari_types::Value)>,
+                             reporting: Reporting<'_>|
+                 -> Result<Vec<(tessari_types::RecordId, tessari_types::Value)>> {
+                    let Some(locking) = &select.locking else {
+                        return Ok(found);
+                    };
+                    let mut kept = Vec::with_capacity(found.len());
+                    let mut took = 0_usize;
+                    for (id, record) in found {
+                        let at = RecordAddress::new(
+                            address.namespace,
+                            address.database,
+                            address.table,
+                            id.clone(),
+                        );
+                        if transaction.claimed_elsewhere(&at) {
+                            match locking.mode {
+                                tessari_ql::LockMode::SkipLocked => continue,
+                                tessari_ql::LockMode::Nowait => {
+                                    return Err(crate::error::Error::ClaimedByAnother {
+                                        id: id.to_string(),
+                                        span: locking.span,
+                                    });
+                                }
+                            }
+                        }
+                        // The check above established the row is free or
+                        // this transaction's own, so the take cannot fail;
+                        // its confirmation answer is not read.
+                        let _ = transaction.take_for_claim(&at);
+                        took = took.saturating_add(1);
+                        kept.push((id, record));
+                    }
+                    reporting.collected.push(crate::outcome::Note::Claimed { took });
+                    Ok(kept)
+                };
                 if let Some((found, note)) = self
                     .gather_a_part(
                         transaction,
@@ -195,9 +236,10 @@ impl Session<'_> {
                 {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table).await?;
+                    let found = self.records_of(found, &visible)?;
                     return Ok((
                         Prepared::Held(
-                            self.records_of(found, &visible)?,
+                            claim(transaction, found, reporting)?,
                             Box::new(
                                 Plan::new(AccessPath::Record).on(target.table.name.text.as_str()),
                             ),
@@ -220,7 +262,7 @@ impl Session<'_> {
                 };
                 Ok((
                     Prepared::Held(
-                        found,
+                        claim(transaction, found, reporting)?,
                         Box::new(Plan::new(AccessPath::Record).on(target.table.name.text.as_str())),
                     ),
                     searched,

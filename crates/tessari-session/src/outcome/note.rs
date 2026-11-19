@@ -99,6 +99,17 @@ pub enum Note {
         /// The ceiling it is approaching, past which the read is refused.
         most: u64,
     },
+    /// A locking read took a claim on each row it returned.
+    ///
+    /// The claim is register state held by the open transaction — another
+    /// transaction's write to one of these rows is refused `ClaimedByAnother`
+    /// until this transaction ends — and nothing in the answer's shape shows
+    /// it happened. The note says how many rows the read holds, so a caller
+    /// who asked `FOR UPDATE` can see the claim it was promised.
+    Claimed {
+        /// How many rows the read claimed.
+        took: usize,
+    },
     /// Part of the answer was fetched from other nodes .
     ///
     /// This node holds some of a split table's shards, and the others were read
@@ -237,6 +248,7 @@ impl Note {
             Self::CursorWalked => "cursor-walked",
             Self::SubqueryCeiling { .. } => "subquery-ceiling",
             Self::NearingCeiling { .. } => "nearing-ceiling",
+            Self::Claimed { .. } => "claimed",
             Self::Gathered { .. } => "gathered",
             Self::Lapsed { .. } => "lapsed",
             Self::Filled { .. } => "filled",
@@ -380,6 +392,10 @@ impl Note {
                 if *chunks_examined == 1 { "" } else { "s" },
                 if *rows_decoded == 1 { "" } else { "s" },
                 if *rows_returned == 1 { "" } else { "s" },
+            ),
+            Self::Claimed { took } => format!(
+                "this read holds a claim on {took} row{} — another transaction's write to one of                  them refuses until the claim's transaction ends",
+                if *took == 1 { "" } else { "s" },
             ),
             Self::Gathered { table, shards } => format!(
                 "shard{} {} of `{table}` {} read from {} leader{} on other nodes, each when \
