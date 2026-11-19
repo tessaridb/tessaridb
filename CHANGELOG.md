@@ -17,6 +17,33 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
+## 0.49.2 — 2026-11-20
+
+The relational wire, round four: everything possible, and a refusal — never
+an approximation — for the rest. Everything below answers on `--pg` /
+`TESSARIDB_PG` against the store's own tables.
+
+- The expression wave: `LIKE` / `ILIKE` and the `~~` operator family with
+  verbatim dialect semantics; the `::` cast matrix on the engine's own cast
+  path (numeric kinds, bool, string, datetime, uuid, bytes — the refused
+  names refuse by name); `UNION ALL` passes through to the store's set
+  operation; `pg_get_viewdef` answers from the store's own definition.
+- `COPY` both directions: `COPY table [(cols)] FROM STDIN` streams into one
+  atomic insert with line-named refusals; `COPY table TO STDOUT` and `COPY
+  (query) TO STDOUT` stream the answer in the text format. Multi-row
+  `VALUES` rides one engine insert per batch — a bad row refuses the batch.
+- `INSERT … ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET … [WHERE …]`
+  with unique-index inference, the `excluded` row, and outcome rows under
+  `RETURNING`.
+- Transaction verbs inside a block grow savepoints: `SAVEPOINT`, `ROLLBACK
+  TO [SAVEPOINT]`, `RELEASE [SAVEPOINT]` — and a trailing `ORDER BY` after
+  the last branch of a `UNION [ALL]` sorts the combined answer as one set.
+- Locking reads: `SELECT … FOR UPDATE [OF table] [NOWAIT | SKIP LOCKED]`
+  takes a row claim the block holds to its end; another transaction's write
+  to a claimed row is refused `55P03` — the engine never waits. `SKIP
+  LOCKED` passes claimed rows over; `FOR SHARE` and the other strengths
+  refuse by name.
+
 The three numbers a pre-release carries are never reused by the release that
 follows it: `0.0.1-alpha` is followed by `0.0.2` or higher, never by a bare
 `0.0.1`. That is what lets a backup written by a pre-release be told apart from
