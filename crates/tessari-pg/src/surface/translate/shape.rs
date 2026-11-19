@@ -212,11 +212,50 @@ impl Parser<'_> {
         } else {
             None
         };
+        self.branch_tail = order.is_some() || limit.is_some() || offset.is_some();
         let assembled = self.assemble(
             projection, &from, alias, condition, group, having, order, limit, offset, joins,
         )?;
+        // A compound read: `… UNION ALL …`, the store's own set operation —
+        // the branches ride as engine text and the column shape is the first
+        // branch's, the dialect's own rule. A branch carrying its own tail
+        // refuses: without parentheses the dialect binds a trailing clause
+        // to the whole compound, and silently binding it to one branch would
+        // answer a different question — the compound tail is its own wave.
+        let mut script = assembled.script;
+        while self.keyword("UNION").is_ok() {
+            if self.branch_tail {
+                return Err(Refused::surface(
+                    code::FEATURE,
+                    "a tail clause on one branch of a UNION refuses in this build; \
+                     the whole-compound ORDER BY is its own wave",
+                ));
+            }
+            if self.keyword("ALL").is_err() {
+                return Err(Refused::surface(
+                    code::FEATURE,
+                    "UNION wants ALL in this build; DISTINCT is not spoken",
+                ));
+            }
+            if self.keyword("SELECT").is_err() {
+                return Err(Refused::surface(code::SYNTAX, "UNION wants SELECT"));
+            }
+            let branch = self.shape()?;
+            if self.branch_tail {
+                return Err(Refused::surface(
+                    code::FEATURE,
+                    "a tail clause on one branch of a UNION refuses in this build; \
+                     the whole-compound ORDER BY is its own wave",
+                ));
+            }
+            script = format!(
+                "{} UNION ALL {};",
+                script.trim_end_matches(';'),
+                branch.script.trim_end_matches(';')
+            );
+        }
         Ok(Shaped {
-            script: assembled.script,
+            script,
             columns: assembled.columns,
             table: from,
             catalog: None,

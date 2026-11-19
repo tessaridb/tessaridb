@@ -961,6 +961,7 @@ async fn catalog_dynamic(
         held,
         shared,
         translate::catalog::dynamic::wants_attributes(std::slice::from_ref(&query)),
+        translate::catalog::dynamic::wants_viewdefs(std::slice::from_ref(&query)),
         query.pinned_oid(slots, parameters),
     )
     .await

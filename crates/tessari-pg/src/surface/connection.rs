@@ -449,6 +449,7 @@ async fn query_once(
                 held,
                 shared,
                 translate::catalog::dynamic::wants_attributes(&queries),
+                translate::catalog::dynamic::wants_viewdefs(&queries),
                 queries
                     .iter()
                     .find_map(|query| query.pinned_oid(&translated.slots, &translated.parameters)),

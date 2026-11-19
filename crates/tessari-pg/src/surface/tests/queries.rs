@@ -253,3 +253,49 @@ async fn offset_without_order_by_is_the_walk_order_of_that_read() {
     );
     stop.cancel();
 }
+
+#[tokio::test(flavor = "multi_thread")]
+async fn like_ilike_casts_and_union_answer_over_the_wire() {
+    let (address, stop, _) = serving_with(SETUP).await;
+    let mut client = Client::to(&address).await;
+    client.start(None, "app.main", None).await;
+    let seen = client
+        .query("SELECT name FROM orders WHERE name LIKE 'f%'")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    let seen = client
+        .query("SELECT name FROM orders WHERE name ILIKE 'F%'")
+        .await;
+    assert_eq!(
+        rows(&seen),
+        vec![vec![Some("first".to_owned())]],
+        "{seen:?}"
+    );
+    let seen = client
+        .query("SELECT name FROM orders WHERE name NOT LIKE 'f%'")
+        .await;
+    assert_eq!(rows(&seen).len(), 2, "{seen:?}");
+    let seen = client
+        .query("SELECT band::text FROM orders WHERE name = 'first'")
+        .await;
+    assert_eq!(rows(&seen), vec![vec![Some("1".to_owned())]], "{seen:?}");
+    let seen = client
+        .query("SELECT name FROM orders WHERE band = 1 UNION ALL SELECT name FROM orders WHERE band = 3")
+        .await;
+    // The third record holds no name — the compound answers the absent
+    // field the same way one read does.
+    assert_eq!(
+        rows(&seen),
+        vec![
+            vec![Some("first".to_owned())],
+            vec![Some("third".to_owned())],
+            vec![None]
+        ],
+        "{seen:?}"
+    );
+    stop.cancel();
+}

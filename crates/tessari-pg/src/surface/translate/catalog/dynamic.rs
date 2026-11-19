@@ -29,13 +29,15 @@ pub(crate) struct Dynamic {
 
 /// One user table: its synthesized identity and name, with the deep
 /// describe's derived flags — whether the table holds indexes or events,
-/// read from its own report.
+/// read from its own report. A view carries its stored read, the text
+/// `pg_get_viewdef` hands back character for character.
 #[derive(Debug)]
 pub(crate) struct ClassRow {
     pub(crate) oid: i64,
     pub(crate) name: String,
     pub(crate) hasindex: bool,
     pub(crate) hastriggers: bool,
+    pub(crate) viewdef: Option<String>,
 }
 
 /// One column of a user table, as the dialect's clients read
@@ -68,6 +70,20 @@ pub(crate) fn wants_attributes(queries: &[&Query]) -> bool {
     })
 }
 
+/// Whether any query in the batch asks `pg_get_viewdef` — the one function
+/// that needs the stored read, so the per-table report is read for it.
+pub(crate) fn wants_viewdefs(queries: &[&Query]) -> bool {
+    queries.iter().any(|query| {
+        query.projection.iter().any(|item| {
+            matches!(
+                &item.computed,
+                Some(super::super::Computed::Call { path, .. })
+                    if path.rsplit('.').next() == Some("pg_get_viewdef")
+            )
+        })
+    })
+}
+
 /// Build the user-table rows the batch's queries name, or `None` when no
 /// query names them. `pinned` names one table's identity a query pinned —
 /// only that table's shape is read; otherwise every visible table's.
@@ -75,6 +91,7 @@ pub(crate) async fn load(
     held: &mut Held,
     shared: &Arc<crate::surface::Shared>,
     want_attributes: bool,
+    want_viewdefs: bool,
     pinned: Option<i64>,
 ) -> Result<Option<Dynamic>, crate::surface::errors::Refused> {
     let namespace = held.namespace().to_owned();
@@ -92,7 +109,7 @@ pub(crate) async fn load(
     let names = name_list(report, "tables");
     let topics: Vec<String> = name_list(report, "topics");
     let vaults: Vec<String> = name_list(report, "vaults");
-    let classes = names
+    let mut classes = names
         .into_iter()
         .filter(|name| !topics.contains(name) && !vaults.contains(name))
         .map(|name| ClassRow {
@@ -102,6 +119,7 @@ pub(crate) async fn load(
             // built first, each row's flags after.
             hasindex: false,
             hastriggers: false,
+            viewdef: None,
         })
         .collect::<Vec<_>>();
     let mut attributes = Vec::new();
@@ -149,6 +167,26 @@ pub(crate) async fn load(
                     hasdef: default.is_some(),
                     default,
                 });
+            }
+        }
+    }
+    if want_viewdefs {
+        // The stored read, character for character, is what `INFO FOR TABLE`
+        // reports under `view` for a view and nothing else for any other
+        // kind — the report's own words, no invention.
+        for class in &mut classes {
+            let outcomes = held
+                .run(
+                    shared,
+                    &format!("INFO FOR TABLE {};", class.name),
+                    &Parameters::new(),
+                )
+                .await
+                .map_err(failed_refusal)?;
+            if let Some(Outcome::Value(Value::Object(report))) = outcomes.first()
+                && let Some(Value::String(read)) = report.get("view")
+            {
+                class.viewdef = Some(read.to_string());
             }
         }
     }

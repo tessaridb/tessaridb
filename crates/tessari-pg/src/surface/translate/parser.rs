@@ -28,6 +28,12 @@ pub(crate) struct Parser<'a> {
     /// a bound parameter reads to that check as neither — the birth site is
     /// the store's checker, and this surface does not reach it.
     pub(crate) inline_literals: bool,
+    /// Whether the `shape()` that returned last carried a tail clause of its
+    /// own (ORDER BY / LIMIT / OFFSET). A compound read refuses a branch
+    /// tail rather than binding it to one branch — without parentheses the
+    /// dialect binds a trailing clause to the whole compound, which is its
+    /// own wave.
+    pub(crate) branch_tail: bool,
 }
 
 /// The deepest subquery nesting this parser reads before refusing by name.
@@ -56,6 +62,7 @@ impl<'a> Parser<'a> {
             inference: Vec::new(),
             depth: 0,
             inline_literals: false,
+            branch_tail: false,
         }
     }
 
