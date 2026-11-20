@@ -11754,9 +11754,11 @@ cluster is the neighbouring statement, and its unit is one database:
 
 ```
 DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';
+DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 4812;
 INFO FOR REPLICATION east;
 ALTER REPLICATION east PAUSED;
 ALTER REPLICATION east AT 'cluster-c:9080';
+ALTER REPLICATION west ACTIVE;
 CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;
 DROP REPLICATION east;
 ```
@@ -11808,6 +11810,28 @@ statement, not a process to hunt down. The serving loop re-reads the catalog
 every pass, so pausing holds the stream at the next tick rather than at the
 next restart, and a link declared after the node came up starts serving without
 anything being told.
+
+**`SEED AT <position>` names where the receiving copy's snapshot ends, and
+opens the seeding lifecycle.** Stand the copy up from a snapshot, declare the
+link with the snapshot's end position, and the source serves the log tail from
+one past it — the history the snapshot already holds does not cross again (in
+the log the position counts in; the parent logs the reach reads re-read from
+their origins, and the copy's already-held positions answer them as no-ops).
+The position is declared on each side: on the `TO` row it is the floor the
+serve starts from, on the `FROM` row it is the floor the copy's catch-up is
+measured against. A seeded link is `seeding` until the copy holds everything
+through the position, then `standby` — the automatic transition, checked at the
+declaration, at every apply and at every serve. `ALTER REPLICATION … ACTIVE`
+promotes a standby link to `active`, the ordinary running state, and refuses
+while the copy is short of the seed position or the source's tail runs ahead
+of what the far side has confirmed — naming the floor or the lag, one serve or
+one catch-up later the spelling takes. `INFO FOR REPLICATION` reports the
+lifecycle in `progress`: `state`, `seed_at`, `applied` (how far the copy
+stands), `source_latest` (how far the source has written, as known on this
+side) and `lag`, each answered from the facts the answering side holds and
+absent where it holds none — after a restart, before the first serve. A link
+declared without `SEED AT` is `active` from birth; the lifecycle is a seeded
+link's story, not a tax on every link.
 
 `REPLICATION` is read as a contextual word like `REPLICA`, so a table called
 `replication` keeps its name everywhere but directly after `DEFINE`.

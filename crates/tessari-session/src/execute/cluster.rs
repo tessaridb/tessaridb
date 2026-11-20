@@ -42,6 +42,9 @@ pub(super) struct DeclaredReplication<'s> {
     pub(super) remote: Option<&'s str>,
     /// The direction: `TO` outbound, `FROM` inbound.
     pub(super) inbound: bool,
+    /// The position the receiving copy's snapshot ends at (`SEED AT
+    /// <position>`), when the statement named one.
+    pub(super) seed_at: Option<u64>,
     /// Whether re-defining an existing name is accepted.
     pub(super) if_not_exists: bool,
 }
@@ -618,6 +621,30 @@ impl Session<'_> {
             tessari_encoding::FormatVersion::REPLICATION_LINK,
         )
         .await?;
+        // The lifecycle the seed position opens: a seeded link is `seeding`
+        // until the copy it names holds everything through it. The
+        // receiving side checks the copy it already has at declaration
+        // time — the ordinary procedure restores the snapshot first, and
+        // the declaration that finds the floor already held lands in
+        // `standby`, the state that serves reads. The shipping side starts
+        // `seeding`: what the far side has confirmed is learned by
+        // serving, and before the first pass nothing is.
+        let seed_at = declared.seed_at.map(tessari_types::Sequence::new);
+        let state = match (seed_at, declared.inbound) {
+            (Some(floor), true) => {
+                match self
+                    .link_log_tail(tessari_storage::Reach::Database(namespace, database_id))
+                    .await
+                {
+                    Ok(Some(applied)) if applied >= floor => {
+                        tessari_storage::ReplicationState::Standby
+                    }
+                    _ => tessari_storage::ReplicationState::Seeding,
+                }
+            }
+            (Some(_), false) => tessari_storage::ReplicationState::Seeding,
+            (None, _) => tessari_storage::ReplicationState::Active,
+        };
         Catalog::new(transaction)
             .create_replication_with(tessari_storage::ReplicationDefinition {
                 name: declared.name.text.clone(),
@@ -628,9 +655,29 @@ impl Session<'_> {
                 paused: false,
                 join: None,
                 position: None,
+                state,
+                seed_at,
             })
             .await?;
         Ok(Outcome::Done)
+    }
+
+    /// The committed tail of the log whose home is `reach` — how far the
+    /// copy this cluster holds has caught up. `None` answers when the
+    /// reach names no log here yet, read as *nothing caught up*.
+    async fn link_log_tail(
+        &self,
+        reach: tessari_storage::Reach,
+    ) -> Result<Option<tessari_types::Sequence>> {
+        let mut best = None;
+        for log in self.store.logs().await? {
+            if log.home != reach {
+                continue;
+            }
+            let tail = self.store.committed_tail(log).await?;
+            best = Some(best.map_or(tail, |held: tessari_types::Sequence| held.max(tail)));
+        }
+        Ok(best)
     }
 
     /// `ALTER REPLICATION east AT '…'` · `… AS '…'` · `… PAUSED` · `… RESUMED`
@@ -665,6 +712,9 @@ impl Session<'_> {
                     .amend_replication(&name.text, |row| row.paused = false)
                     .await?
             }
+            ReplicationChange::Active => {
+                return self.promote_replication(transaction, name, span).await;
+            }
         };
         if !amended {
             return Err(Error::Unknown {
@@ -674,6 +724,94 @@ impl Session<'_> {
             });
         }
         Ok(Outcome::Done)
+    }
+
+    /// `ALTER REPLICATION east ACTIVE` — the early-promote spelling of the
+    /// seeding lifecycle.
+    ///
+    /// The gate refuses on what this cluster can see, and names it. A
+    /// seeding link is short of the seed position — the refusal says where
+    /// the copy stands and where the floor is. A standby outbound link
+    /// whose source tail runs ahead of what the far side has confirmed is
+    /// behind by a measurable lag — the refusal says by how much, and one
+    /// serve closes it. A standby inbound link promotes: its copy's tail
+    /// is the last thing shipped against it, so its lag reads zero by
+    /// construction. An active link answers ok and changes nothing.
+    async fn promote_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let row = Catalog::new(transaction)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(row) = row else {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        use tessari_storage::ReplicationState;
+        match row.state {
+            ReplicationState::Active => return Ok(Outcome::Done),
+            ReplicationState::Seeding => {
+                let seed_at = row.seed_at.unwrap_or(tessari_types::Sequence::new(0));
+                let applied = if row.inbound {
+                    self.link_log_tail(row.database)
+                        .await?
+                        .unwrap_or(tessari_types::Sequence::new(0))
+                } else {
+                    self.confirmed_floor(&row).await
+                };
+                return Err(Error::Seeding {
+                    name: name.text.clone(),
+                    applied: applied.get(),
+                    seed_at: seed_at.get(),
+                    span,
+                });
+            }
+            ReplicationState::Standby => {
+                if !row.inbound {
+                    let tail = self
+                        .link_log_tail(row.database)
+                        .await?
+                        .unwrap_or(tessari_types::Sequence::new(0));
+                    let confirmed = self.confirmed_floor(&row).await;
+                    if tail > confirmed {
+                        return Err(Error::LinkBehind {
+                            name: name.text.clone(),
+                            lag: tail.get().saturating_sub(confirmed.get()),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+        Catalog::new(transaction)
+            .amend_replication(&name.text, |held| held.state = ReplicationState::Active)
+            .await?;
+        Ok(Outcome::Done)
+    }
+
+    /// How far the far side has confirmed, on an outbound row: the seed
+    /// floor the far side's snapshot declares it holds, the cursor the row
+    /// persisted, and the live registry floor this process holds — whichever
+    /// stands furthest along.
+    async fn confirmed_floor(
+        &self,
+        row: &tessari_storage::ReplicationDefinition,
+    ) -> tessari_types::Sequence {
+        let mut best = row.position.max(row.seed_at);
+        for (log, at) in self.store.links().floors(&row.name) {
+            if log.home == row.database {
+                best = Some(best.map_or(at, |held| held.max(at)));
+            }
+        }
+        best.unwrap_or(tessari_types::Sequence::new(0))
     }
 
     /// `DROP REPLICATION east` — stops shipping a database to another cluster.

@@ -611,6 +611,7 @@ impl Session<'_> {
                 database,
                 remote,
                 inbound,
+                seed_at,
                 if_not_exists,
             } => {
                 self.define_replication(
@@ -621,6 +622,7 @@ impl Session<'_> {
                         database,
                         remote: remote.as_deref(),
                         inbound: *inbound,
+                        seed_at: *seed_at,
                         if_not_exists: *if_not_exists,
                     },
                 )

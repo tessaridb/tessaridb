@@ -106,13 +106,14 @@ pub use catalog::{
     IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
     MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
     PoolDefinition, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
-    QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role,
-    RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
-    SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StorageKind, StoredKind,
-    TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, TopologyDefinition,
-    UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
-    VectorDistance, Verb, ViewDeclaration, WordSet, WordSetKind, another_node_may_write,
-    check_topology, governing, names_a_peer, the_row_a_greeting_binds,
+    QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition,
+    ReplicationState, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,
+    SYSTEM_NAMESPACE, SearchCosts, SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration,
+    SpaceLimit, StorageKind, StoredKind, TableDefinition, TableExpiry, TableKind, TableShape,
+    TopicDeclaration, TopologyDefinition, UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody,
+    VaultDeclaration, VectorDeclaration, VectorDistance, Verb, ViewDeclaration, WordSet,
+    WordSetKind, another_node_may_write, check_topology, governing, names_a_peer,
+    the_row_a_greeting_binds,
 };
 // Exported because a refinement figure is only readable beside the relation it
 // was measured under, and that relation is a decision this crate takes.

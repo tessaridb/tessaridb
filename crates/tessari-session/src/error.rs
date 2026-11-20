@@ -119,6 +119,45 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// An `ALTER REPLICATION … ACTIVE` arrived while the link is still
+    /// seeding.
+    ///
+    /// The refusal names the position the copy stands at and the seed
+    /// position it has not reached — the operator's next act is written in
+    /// the error: let the link catch up, then promote it.
+    #[error(
+        "replication '{name}' is still seeding — the copy stands at {applied} \
+         of seed position {seed_at} (at {span})"
+    )]
+    Seeding {
+        /// The link, as declared.
+        name: String,
+        /// The position the copy holds, as far as this cluster knows.
+        applied: u64,
+        /// The seed position the copy has not reached.
+        seed_at: u64,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
+    /// An `ALTER REPLICATION … ACTIVE` on an outbound row while the
+    /// source's tail runs ahead of what the far side has confirmed.
+    ///
+    /// The refusal names the lag in positions: one serve closes it, and the
+    /// spelling then takes.
+    #[error(
+        "replication '{name}' is {lag} positions behind the source's tail — \
+         let the link serve the tail, then promote it (at {span})"
+    )]
+    LinkBehind {
+        /// The link, as declared.
+        name: String,
+        /// How far the tail runs ahead of the confirmed floor.
+        lag: u64,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `DEFINE BALANCER` names margins that do not hold together with the
     /// failover policy the pass runs beside.
     ///

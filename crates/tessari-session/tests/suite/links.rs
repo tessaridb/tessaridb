@@ -479,6 +479,486 @@ fn a_link_end_to_end_records_land_and_the_copy_is_read_only() {
 }
 
 #[test]
+fn a_seeded_declaration_names_its_position_and_reports_seeding() {
+    // The seeding lifecycle opens with the declaration: `SEED AT` names the
+    // position the receiving copy's snapshot ends at, and the row reports
+    // `seeding` until the copy has caught up to that floor. The unseeded
+    // link beside it reads as `active` — the lifecycle's absence is today's
+    // behavior, not a state of its own.
+    let store = store_with_a_link();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT 7;",
+        )
+        .unwrap();
+    let mut read = |statement: &str| {
+        let outcomes = session.run_now(statement).unwrap();
+        let Some(tessari_session::Outcome::Value(Value::Object(report))) =
+            outcomes.into_iter().next()
+        else {
+            panic!("{statement} did not answer with an object");
+        };
+        report
+    };
+    let west = read("INFO FOR REPLICATION west;");
+    let Some(Value::Object(progress)) = west.get("progress") else {
+        panic!("no progress group: {west:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("seeding")),
+        "a fresh seeded link reports the state it starts in"
+    );
+    assert_eq!(
+        progress.get("seed_at"),
+        Some(&Value::from(7)),
+        "the declared position reads back"
+    );
+    // The fixture's `east` was declared without a seed position: it is active
+    // by default and carries no seed floor.
+    let east = read("INFO FOR REPLICATION east;");
+    let Some(Value::Object(progress)) = east.get("progress") else {
+        panic!("no progress group: {east:?}");
+    };
+    assert_eq!(progress.get("state"), Some(&Value::from("active")));
+    assert!(
+        !progress.contains_key("seed_at"),
+        "an unseeded link names no seed position: {progress:?}"
+    );
+}
+
+#[test]
+fn a_seeded_source_serves_the_tail_from_the_seed_position() {
+    // The reason the seed position exists on the outbound row: the far side
+    // holds everything through the snapshot's end, so the source serves the
+    // tail from one past it — the history below the floor does not re-cross.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let held = definition(&source, "east");
+    let log = source
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == held.database)
+        .expect("the link's own log");
+    let floor = source.committed_tail(log).now().unwrap();
+    writing
+        .run_now(&format!(
+            "DROP REPLICATION east; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    // A pass with nothing beyond the floor ships nothing from the link's
+    // own log: the confirmed history the snapshot already holds does not
+    // re-cross. The parent logs the reach reads re-read from their origins
+    // (the copy's already-held positions answer them as no-ops on intake) —
+    // the floor is the own log's, the log the seed position counts in.
+    let mut quiet = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut quiet,
+    )
+    .now()
+    .unwrap();
+    assert!(
+        quiet
+            .drain()
+            .iter()
+            .all(|(_, envelope)| envelope.log.home != held.database),
+        "nothing below the floor crosses the link's own log"
+    );
+    // A write beyond the floor ships alone, from one past it.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    let shipped = sink.drain();
+    let own = shipped
+        .iter()
+        .filter(|(_, envelope)| envelope.log.home == held.database)
+        .collect::<Vec<_>>();
+    assert_eq!(own.len(), 1, "one own-log envelope ships: {shipped:?}");
+    let (_, envelope) = own[0];
+    assert_eq!(
+        envelope.from,
+        floor
+            .get()
+            .checked_add(1)
+            .map(Sequence::new)
+            .expect("the tail fits"),
+        "the tail is served from one past the seed position"
+    );
+    assert_eq!(
+        envelope.records.len(),
+        1,
+        "only the record beyond the floor crosses: {envelope:?}"
+    );
+}
+
+#[test]
+fn a_seeded_copy_promotes_itself_to_standby_when_it_catches_up() {
+    // The automatic half of the machine, on the receiving side: the operator
+    // restores the snapshot, declares the link with the position the snapshot
+    // ended at, and the declaration itself finds the copy already holding that
+    // floor — the link reports `standby`, the state that serves reads.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let shipped = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &shipped, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let envelopes = sink.drain();
+
+    let target = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &envelopes {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    // The restored copy: the schema and the record the source wrote, landed
+    // through the intake — the snapshot's end is the tail the copy holds.
+    let log = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == shipped.database)
+        .expect("the copy's own log");
+    let floor = target.committed_tail(log).now().unwrap();
+    let mut reading = Session::new(&target);
+    reading
+        .run_now(&format!(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let outcomes = reading.run_now("INFO FOR REPLICATION west;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("standby")),
+        "the declaration found the copy holding the seed floor: {progress:?}"
+    );
+}
+
+#[test]
+fn a_seeded_copy_promotes_at_the_intake_that_catches_it_up() {
+    // The automatic transition, measured at the apply: the declaration
+    // landed while the copy was still short of the seed position (an
+    // operator declared the floor one past what the snapshot held), and the
+    // envelope that closes the gap is the one whose intake promotes the
+    // link.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let shipped = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &shipped, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let envelopes = sink.drain();
+
+    let target = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &envelopes {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    let log = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == shipped.database)
+        .expect("the copy's own log");
+    let held = target.committed_tail(log).now().unwrap();
+    // One past what the copy holds: the declaration finds it still seeding.
+    let floor = held
+        .get()
+        .checked_add(1)
+        .map(Sequence::new)
+        .expect("the floor fits");
+    let mut reading = Session::new(&target);
+    reading
+        .run_now(&format!(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let seeding = reading.run_now("INFO FOR REPLICATION west;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = seeding.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("seeding")),
+        "the copy is short of the floor at declaration: {progress:?}"
+    );
+    // The source writes the position the floor names; the envelope that
+    // carries it promotes the link at the apply.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    for (_, envelope) in &sink.drain() {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    let outcomes = reading.run_now("INFO FOR REPLICATION west;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("standby")),
+        "the intake that caught the copy up promoted the link: {progress:?}"
+    );
+}
+
+#[test]
+fn alter_replication_active_promotes_a_caught_up_standby_link() {
+    // The operator's promotion: a standby link whose copy has caught up takes
+    // `ALTER REPLICATION … ACTIVE` and reports `active` — the ordinary
+    // running state, today's RESUMED behavior named.
+    let target = Store::open(backend()).now().unwrap();
+    let mut reading = Session::new(&target);
+    reading
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+             CREATE orders:1 = { item: 'book' };",
+        )
+        .unwrap();
+    // The copy's tail after its own writes is the floor the snapshot names.
+    let tenancy = Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1));
+    let log = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == tenancy)
+        .expect("the copy's own log");
+    let floor = target.committed_tail(log).now().unwrap();
+    reading
+        .run_now(&format!(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    reading.run_now("ALTER REPLICATION west ACTIVE;").unwrap();
+    let outcomes = reading.run_now("INFO FOR REPLICATION west;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("active")),
+        "the early-promote spelling moves a caught-up link to active"
+    );
+}
+
+#[test]
+fn alter_replication_active_refuses_while_the_copy_is_still_seeding_and_names_the_floor() {
+    // The gate's first refusal arm: a copy that has not reached the seed
+    // position cannot be promoted, and the refusal names the floor it stands
+    // at — the operator's next act is written in the error.
+    let target = Store::open(backend()).now().unwrap();
+    let mut reading = Session::new(&target);
+    reading
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+             CREATE orders:1 = { item: 'book' };",
+        )
+        .unwrap();
+    let tenancy = Reach::Database(NamespaceId::new(1), tessari_types::DatabaseId::new(1));
+    let log = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == tenancy)
+        .expect("the copy's own log");
+    let tail = target.committed_tail(log).now().unwrap();
+    // A seed position five past what the copy holds: still seeding.
+    let floor = tail
+        .get()
+        .checked_add(5)
+        .map(Sequence::new)
+        .expect("the floor fits");
+    reading
+        .run_now(&format!(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let refused = reading
+        .run_now("ALTER REPLICATION west ACTIVE;")
+        .unwrap_err()
+        .to_string();
+    assert!(
+        refused.contains("seeding") && refused.contains(&floor.get().to_string()),
+        "the refusal names the state and the floor: {refused}"
+    );
+}
+
+#[test]
+fn alter_replication_active_on_the_source_refuses_while_the_tail_runs_ahead() {
+    // The gate's second refusal arm, on the outbound row: the source knows
+    // both numbers — what the far side has confirmed and how far its own tail
+    // has run — and the early-promote refuses while the tail runs ahead,
+    // naming the lag. One more serve closes it, and the spelling then takes.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let held = definition(&source, "east");
+    let log = source
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == held.database)
+        .expect("the link's own log");
+    let floor = source.committed_tail(log).now().unwrap();
+    writing
+        .run_now(&format!(
+            "DROP REPLICATION east; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    sink.drain();
+    // The first serve confirmed through the seed position: the source-side
+    // transition fires, and the row reports standby before the operator
+    // asks anything.
+    let outcomes = writing.run_now("INFO FOR REPLICATION east;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("standby")),
+        "the serve that confirmed the seed floor promoted the link: {progress:?}"
+    );
+    // The source writes once more: the tail runs one ahead of the confirmed
+    // floor until the next pass ships it.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let refused = writing
+        .run_now("ALTER REPLICATION east ACTIVE;")
+        .unwrap_err()
+        .to_string();
+    let lag = 1;
+    assert!(
+        refused.contains(&lag.to_string()),
+        "the refusal names the lag: {refused}"
+    );
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    sink.drain();
+    writing.run_now("ALTER REPLICATION east ACTIVE;").unwrap();
+    let outcomes = writing.run_now("INFO FOR REPLICATION east;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&Value::from("active")),
+        "at zero lag the spelling promotes the link: {progress:?}"
+    );
+}
+
+#[test]
+fn an_unseeded_link_reads_active_and_the_promote_spelling_is_a_no_op() {
+    // The default the lifecycle preserves: a link declared without a seed
+    // position is active from birth, and promoting what is already active
+    // answers ok and changes nothing.
+    let store = store_with_a_link();
+    let mut session = Session::new(&store);
+    session.run_now("ALTER REPLICATION east ACTIVE;").unwrap();
+    let outcomes = session.run_now("INFO FOR REPLICATION east;").unwrap();
+    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(progress.get("state"), Some(&Value::from("active")));
+}
+
+#[test]
 fn the_loop_honors_pause_between_passes_and_ships_again_on_resume() {
     // The operability contract, live: the catalog is re-read every pass, so
     // PAUSED holds the stream at the next tick rather than at the next

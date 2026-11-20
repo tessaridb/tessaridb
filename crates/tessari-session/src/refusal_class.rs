@@ -80,7 +80,12 @@ impl Error {
             // A pool's gate turned a matching script away: named, transient,
             // and retryable the way CommitContention is — the spec section's
             // conflict class, with the remedy the sentence beside it states.
-            | Self::PoolAtCapacity { .. } => RefusalClass::Conflict,
+            | Self::PoolAtCapacity { .. }
+            // The seeding lifecycle's gates: the copy is short of the floor
+            // or the tail runs ahead — both are named, transient, and the
+            // refusal itself says what closes them (a serve, a catch-up).
+            | Self::Seeding { .. }
+            | Self::LinkBehind { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
             | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }

@@ -504,6 +504,59 @@ impl Session<'_> {
             }
             rows
         };
+        // The seeding lifecycle's progress, from the facts this side of the
+        // relationship holds. `applied` is how far the copy stands — the
+        // far side's confirmed floor from the source's view, the copy's own
+        // tail from the receiver's. `source_latest` is how far the source
+        // has written, as known here: the source reads its own tail; the
+        // receiver has not heard the source's live tail beyond the last
+        // shipment it applied, and answers what it knows. `lag` is the
+        // difference, where both numbers exist.
+        let progress = {
+            let own_tail = {
+                let mut found: Option<tessari_types::Sequence> = None;
+                for log in self.store.logs().await? {
+                    if log.home == replication.database {
+                        let tail = self.store.committed_tail(log).await?;
+                        found = Some(found.map_or(tail, |held| held.max(tail)));
+                    }
+                }
+                found
+            };
+            let as_number =
+                |at: tessari_types::Sequence| i64::try_from(at.get()).unwrap_or(i64::MAX);
+            let mut row =
+                BTreeMap::from([("state".to_owned(), Value::from(replication.state.as_str()))]);
+            if let Some(seed_at) = replication.seed_at {
+                row.insert("seed_at".to_owned(), Value::from(as_number(seed_at)));
+            }
+            if replication.inbound {
+                if let Some(tail) = own_tail {
+                    row.insert("applied".to_owned(), Value::from(as_number(tail)));
+                }
+            } else {
+                if let Some(tail) = own_tail {
+                    row.insert("source_latest".to_owned(), Value::from(as_number(tail)));
+                }
+                let mut applied = replication.position;
+                for (log, at) in self.store.links().floors(&name.text) {
+                    if log.home == replication.database {
+                        applied = Some(applied.map_or(at, |held| held.max(at)));
+                    }
+                }
+                if let Some(at) = applied {
+                    row.insert("applied".to_owned(), Value::from(as_number(at)));
+                    if let Some(tail) = own_tail {
+                        let lag = tail.get().saturating_sub(at.get());
+                        row.insert(
+                            "lag".to_owned(),
+                            Value::from(i64::try_from(lag).unwrap_or(i64::MAX)),
+                        );
+                    }
+                }
+            }
+            Value::Object(row)
+        };
         Ok(BTreeMap::from([
             (
                 "declared".to_owned(),
@@ -516,6 +569,7 @@ impl Session<'_> {
                     Value::Array(confirmed),
                 )])),
             ),
+            ("progress".to_owned(), progress),
         ]))
     }
 

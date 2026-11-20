@@ -2150,6 +2150,7 @@ fn a_replication_names_a_fully_qualified_database() {
         database,
         remote,
         inbound,
+        seed_at,
         if_not_exists,
     } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'shop';")
     else {
@@ -2166,6 +2167,7 @@ fn a_replication_names_a_fully_qualified_database() {
     assert_eq!(remote.as_deref(), Some("shop"));
     assert!(!inbound, "`TO` is the outbound half — this cluster ships");
     assert!(!if_not_exists);
+    assert_eq!(seed_at, None, "no seed position was named");
     // Absent clauses: no remote name, no IF NOT EXISTS — declared, not amended.
     let StatementKind::DefineReplication {
         remote,
@@ -2191,6 +2193,41 @@ fn a_replication_names_a_fully_qualified_database() {
     // One direction per declaration: neither is a default, and `AT` is not a
     // spelling for either.
     assert!(parse("DEFINE REPLICATION east AT 'cluster-b:9080' FOR DATABASE prod.shop;").is_err());
+    // `SEED AT` names where the receiving copy's snapshot ends — the position
+    // the seeding lifecycle measures catch-up against. Optional, after the
+    // remote name, in either direction.
+    let StatementKind::DefineReplication {
+        seed_at, inbound, ..
+    } = one("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 42;")
+    else {
+        panic!("DEFINE REPLICATION SEED AT did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, Some(42));
+    assert!(inbound);
+    let StatementKind::DefineReplication {
+        seed_at, inbound, ..
+    } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop SEED AT 42;")
+    else {
+        panic!("DEFINE REPLICATION TO SEED AT did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, Some(42));
+    assert!(!inbound, "the serve floor rides the outbound row too");
+    let StatementKind::DefineReplication { seed_at, .. } =
+        one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;")
+    else {
+        panic!("DEFINE REPLICATION did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, None, "absent is the link without a seeding story");
+    // The position is a positive whole number; a name, text or nothing where
+    // the number stands is refused where the span is.
+    assert!(
+        parse("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 'forty-two';")
+            .is_err()
+    );
+    assert!(
+        parse("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED;")
+            .is_err()
+    );
 }
 
 #[test]
@@ -2233,6 +2270,11 @@ fn one_clause_of_a_replication_changes_per_statement() {
         panic!("ALTER REPLICATION RESUMED did not parse as ALTER REPLICATION");
     };
     assert!(matches!(change, tessari_ql::ReplicationChange::Resumed));
+    let StatementKind::AlterReplication { change, .. } = one("ALTER REPLICATION east ACTIVE;")
+    else {
+        panic!("ALTER REPLICATION ACTIVE did not parse as ALTER REPLICATION");
+    };
+    assert!(matches!(change, tessari_ql::ReplicationChange::Active));
     assert!(parse("ALTER REPLICATION east ROLES serving;").is_err());
 }
 

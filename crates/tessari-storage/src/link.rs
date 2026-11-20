@@ -167,8 +167,17 @@ pub async fn serve_once(
     let mut shipped = 0_usize;
     for (log, _) in logs_of(store, definition.database).await? {
         let start = store.log_start(log).await?;
+        // A seeded link serves the tail from one past the seed position — in
+        // the log the position counts in, the link's own. The parent logs
+        // the reach reads re-read from their origins: the copy's already-
+        // held positions answer them as no-ops, the at-least-once price the
+        // intake's identity check already pays.
+        let start = match definition.seed_at {
+            Some(floor) if log.home == definition.database => start.max(floor),
+            _ => start,
+        };
         let confirmed = registry.confirmed(&definition.name, log, start);
-        let from = Sequence::new(confirmed.get().saturating_add(1));
+        let from = Sequence::new(confirmed.get().max(start.get()).saturating_add(1));
         let records = store
             .log_records_within(definition.database, log, from, BATCH)
             .await?;
@@ -183,9 +192,54 @@ pub async fn serve_once(
         };
         let confirmed = sink.ship(&definition.name, envelope).await?;
         registry.advance(&definition.name, log, confirmed);
+        // The lifecycle's automatic half, on the serving side: once the far
+        // side has confirmed through the seed position, the link is caught
+        // up and reports standby.
+        promote_when_caught_up(store, &definition.name, confirmed).await?;
         shipped = shipped.saturating_add(1);
     }
     Ok(shipped)
+}
+
+/// The automatic `seeding → standby` transition: a seeded link whose side of
+/// the relationship holds `applied` through the seed position is caught up,
+/// and the row says so. Amends the row in its own transaction when the
+/// transition fires; a no-op for the unseeded, the already-promoted, and the
+/// still-catching-up. `applied` is the local fact each caller already holds —
+/// the confirmed position a serve just advanced, or the tail an intake just
+/// landed.
+///
+/// # Errors
+///
+/// Returns an error when the row cannot be read or written; a transition
+/// failure never turns the serve or the intake that noticed it into a
+/// failure of its own.
+async fn promote_when_caught_up(store: &Store, link: &str, applied: Sequence) -> Result<()> {
+    let definition = {
+        let mut reading = store.begin().await?;
+        Catalog::new(&mut reading)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == link)
+    };
+    let Some(definition) = definition else {
+        return Ok(());
+    };
+    let Some(seed_at) = definition.seed_at else {
+        return Ok(());
+    };
+    if definition.state != crate::ReplicationState::Seeding || applied < seed_at {
+        return Ok(());
+    }
+    let mut transaction = store.begin().await?;
+    let amended = Catalog::new(&mut transaction)
+        .amend_replication(link, |row| row.state = crate::ReplicationState::Standby)
+        .await?;
+    if amended {
+        transaction.commit().await?;
+    }
+    Ok(())
 }
 
 /// The logs a link's reach reads: those whose home is inside the reach, or
@@ -365,6 +419,15 @@ pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
         store.apply_shipped(envelope.log, at, &record).await?;
         applied = at;
     }
+    // The automatic half of the lifecycle, on the receiving side: the copy
+    // this envelope extends belongs to the inbound link the envelope's log
+    // names; once the copy's tail reaches the seed position, the link is
+    // caught up and reports standby.
+    if let Reach::Database(namespace, database) = envelope.log.home
+        && let Some(link) = store.replicated().link_over((namespace, database))
+    {
+        promote_when_caught_up(store, &link, store.committed_tail(envelope.log).await?).await?;
+    }
     Ok(applied)
 }
 
@@ -454,11 +517,16 @@ async fn seed_from_rows(store: &Store) -> Result<()> {
         Catalog::new(&mut reading).replications().await?
     };
     for definition in links.iter().filter(|held| !held.inbound) {
-        let Some(position) = definition.position else {
+        // The cursor and the seed floor, whichever stands further along: a
+        // seeded link resumes from the snapshot's end even when no serve has
+        // confirmed past it yet. A row with neither stays unserved — nothing
+        // ships, and the row's `None` cursor keeps meaning the driver never
+        // shipped from it.
+        let Some(floor) = definition.position.max(definition.seed_at) else {
             continue;
         };
         if let Some(log) = own_log(store, definition.database).await? {
-            store.links().advance(&definition.name, log, position);
+            store.links().advance(&definition.name, log, floor);
         }
     }
     Ok(())

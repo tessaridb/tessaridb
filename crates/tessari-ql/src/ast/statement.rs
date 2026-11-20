@@ -1065,6 +1065,15 @@ pub enum StatementKind {
         /// and this cluster's copy is read-only by declaration until the link
         /// is dropped.
         inbound: bool,
+        /// The position the receiving copy's snapshot ends at (`SEED AT
+        /// <position>`), when the statement names one: the link is `seeding`
+        /// until the copy holds everything through it, then `standby`, and
+        /// `active` once the operator promotes it. On an outbound row the
+        /// position is the floor the source serves the tail from; on an
+        /// inbound row it is the floor the copy's catch-up is measured
+        /// against. Absent is the link without a seeding story, active from
+        /// birth.
+        seed_at: Option<u64>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

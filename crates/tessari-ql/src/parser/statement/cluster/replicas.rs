@@ -362,12 +362,24 @@ impl Parser<'_> {
         } else {
             None
         };
+        // `SEED AT <position>` names where the receiving copy's snapshot
+        // ends — the position the seeding lifecycle measures catch-up
+        // against. Contextual words, the shape `PARTITIONS n BY` sets.
+        let seed_at = if self.eat_word("seed") {
+            if !self.eat_word("at") {
+                return Err(self.error_here("`AT` and the position the snapshot ended at"));
+            }
+            Some(self.position("the seed position, as a positive whole number")?)
+        } else {
+            None
+        };
         Ok(StatementKind::DefineReplication {
             name,
             endpoint,
             database,
             remote,
             inbound,
+            seed_at,
             if_not_exists,
         })
     }
@@ -393,6 +405,11 @@ impl Parser<'_> {
         if self.eat_word("resumed") {
             return Ok(ReplicationChange::Resumed);
         }
-        Err(self.error_here("`AT`, `AS`, `PAUSED` or `RESUMED` — the one clause that changes"))
+        if self.eat_word("active") {
+            return Ok(ReplicationChange::Active);
+        }
+        Err(self.error_here(
+            "`AT`, `AS`, `PAUSED`, `RESUMED` or `ACTIVE` — the one clause that changes",
+        ))
     }
 }

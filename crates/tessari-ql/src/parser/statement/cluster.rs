@@ -621,6 +621,24 @@ impl Parser<'_> {
         Ok(held)
     }
 
+    /// A log position standing where one is required.
+    ///
+    /// Refused rather than clamped or truncated when it does not fit or is
+    /// not positive, for [`Self::whole_number`]'s reason, and read as `u64`
+    /// because a stored position is a `u64` sequence: truncating it would
+    /// serve a history the copy holds from a point it does not.
+    pub(super) fn position(&mut self, expected: &'static str) -> Result<u64> {
+        let Some(Token::Number(tessari_types::Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u64::try_from(*held).map_err(|_| self.error_here(expected))?;
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(held)
+    }
+
     /// `RETAIN 100000 RECORDS` or `RETAIN NONE` after `DEFINE NODE`, when it is
     /// there.
     ///

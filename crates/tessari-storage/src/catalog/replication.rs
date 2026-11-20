@@ -35,10 +35,60 @@ const FIELD_INBOUND: &str = "inbound";
 const FIELD_PAUSED: &str = "paused";
 const FIELD_JOIN: &str = "join";
 const FIELD_POSITION: &str = "position";
+const FIELD_STATE: &str = "state";
+const FIELD_SEED_AT: &str = "seed_at";
 const FIELD_DIGEST: &str = "digest";
 const FIELD_EXPIRES: &str = "expires";
 
 const ENTITY: &str = "replication";
+
+/// Where a seeded link stands in its catch-up lifecycle.
+///
+/// The lifecycle opens with `DEFINE REPLICATION … SEED AT <position>`: the
+/// position names where the receiving copy's snapshot ends, and the link is
+/// `Seeding` until the copy holds everything through it. `Standby` is the
+/// caught-up state — the copy serves reads — and `Active` is the ordinary
+/// running state, reached with `ALTER REPLICATION … ACTIVE` once the source's
+/// tail no longer runs ahead of what the far side has confirmed. A link
+/// declared without a seed position is `Active` from birth: the state field
+/// is written only when it says something other than that default, so a row
+/// declared before the lifecycle existed keeps its bytes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReplicationState {
+    /// The copy has not yet caught up to the seed position.
+    Seeding,
+    /// The copy holds everything through the seed position; reads serve.
+    Standby,
+    /// The ordinary running state — today's RESUMED behavior, named.
+    Active,
+}
+
+impl ReplicationState {
+    /// The stored spelling.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Seeding => "seeding",
+            Self::Standby => "standby",
+            Self::Active => "active",
+        }
+    }
+
+    /// Read a stored spelling; anything else is a row that was edited, refused
+    /// rather than read as a default, for [`ReplicationDefinition`]'s reason.
+    fn from_str(found: &str) -> Result<Self> {
+        match found {
+            "seeding" => Ok(Self::Seeding),
+            "standby" => Ok(Self::Standby),
+            "active" => Ok(Self::Active),
+            _ => Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_STATE,
+                found: "text",
+            }),
+        }
+    }
+}
 
 /// One database, outbound to another cluster.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +140,18 @@ pub struct ReplicationDefinition {
     /// bytes. At-least-once means a restart re-ships from here rather than
     /// from the origin, and the apply is idempotent by identity.
     pub position: Option<Sequence>,
+    /// Where the link stands in its seeding lifecycle. `Active` — the
+    /// ordinary running state — is the default a row without the field
+    /// reads as, so a row declared before the lifecycle existed keeps its
+    /// bytes and its meaning.
+    pub state: ReplicationState,
+    /// The position the receiving copy's snapshot ends at (`DEFINE
+    /// REPLICATION … SEED AT <position>`), when the statement named one. On
+    /// an OUTBOUND row it is the floor the source serves the tail from; on
+    /// an INBOUND row it is the floor the copy's catch-up is measured
+    /// against. `None` is the link without a seeding story, which is active
+    /// from birth.
+    pub seed_at: Option<Sequence>,
 }
 
 impl ReplicationDefinition {
@@ -143,6 +205,20 @@ impl ReplicationDefinition {
                 Value::Number(Number::Integer(held)),
             );
         }
+        if self.state != ReplicationState::Active {
+            fields.insert(FIELD_STATE.to_owned(), Value::from(self.state.as_str()));
+        }
+        if let Some(seed_at) = self.seed_at {
+            let held = i64::try_from(seed_at.get()).map_err(|_| Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_SEED_AT,
+                found: "number",
+            })?;
+            fields.insert(
+                FIELD_SEED_AT.to_owned(),
+                Value::Number(Number::Integer(held)),
+            );
+        }
         Ok(Value::Object(fields))
     }
 
@@ -184,6 +260,36 @@ impl ReplicationDefinition {
                     return Err(Error::CatalogMalformed {
                         entity: ENTITY,
                         field: FIELD_POSITION,
+                        found: "not a number",
+                    });
+                }
+            },
+            state: match fields.get(FIELD_STATE) {
+                None => ReplicationState::Active,
+                Some(Value::String(held)) => ReplicationState::from_str(held)?,
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_STATE,
+                        found: "not text",
+                    });
+                }
+            },
+            seed_at: match fields.get(FIELD_SEED_AT) {
+                None => None,
+                Some(Value::Number(Number::Integer(held))) => {
+                    Some(Sequence::new(u64::try_from(*held).map_err(|_| {
+                        Error::CatalogMalformed {
+                            entity: ENTITY,
+                            field: FIELD_SEED_AT,
+                            found: "number",
+                        }
+                    })?))
+                }
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: ENTITY,
+                        field: FIELD_SEED_AT,
                         found: "not a number",
                     });
                 }
@@ -395,6 +501,8 @@ mod tests {
             paused: false,
             join: None,
             position: None,
+            state: ReplicationState::Active,
+            seed_at: None,
         }
     }
 
@@ -409,6 +517,79 @@ mod tests {
 
         assert_eq!(read, definition);
         assert_eq!(read.position, None);
+    }
+
+    #[test]
+    fn a_seeded_row_round_trips_its_lifecycle_through_the_stored_value() {
+        // The state machine rides the row: the seed position and a state
+        // other than the default survive the stored value, and the active
+        // default stays absent from the bytes entirely.
+        let mut definition = outbound();
+        definition.seed_at = Some(Sequence::new(8128));
+        definition.state = ReplicationState::Seeding;
+        let read = ReplicationDefinition::from_value(&definition.to_value().expect("encodable"))
+            .expect("a seeded row reads back");
+
+        assert_eq!(read, definition);
+        assert_eq!(read.state, ReplicationState::Seeding);
+        assert_eq!(read.seed_at, Some(Sequence::new(8128)));
+    }
+
+    #[test]
+    fn a_seeded_row_carries_no_state_field_for_the_active_default() {
+        // Written only when it says something: an active row — the default a
+        // row without the field reads as — keeps the bytes a declaration
+        // written before the lifecycle existed would have written.
+        let mut definition = outbound();
+        definition.seed_at = Some(Sequence::new(64));
+        let encoded = definition.to_value().expect("encodable");
+        let Value::Object(fields) = &encoded else {
+            panic!("a definition encodes as an object, got {encoded:?}");
+        };
+        assert!(
+            !fields.contains_key(FIELD_STATE),
+            "the active default is written only when it says something: {fields:?}"
+        );
+        let read = ReplicationDefinition::from_value(&encoded).expect("a row reads back");
+        assert_eq!(read.state, ReplicationState::Active);
+    }
+
+    #[test]
+    fn a_state_that_is_not_a_lifecycle_is_refused_not_read_as_active() {
+        // Anything present that is not one of the three spellings is a row
+        // that was edited, and reading it as *active* would promote a link
+        // the operator never promoted.
+        let mut value = match outbound().to_value().expect("encodable") {
+            Value::Object(fields) => fields,
+            other => panic!("a definition encodes as an object, got {other:?}"),
+        };
+        value.insert(FIELD_STATE.to_owned(), Value::from("promoted"));
+        let refused = ReplicationDefinition::from_value(&Value::Object(value))
+            .expect_err("an unknown state read back");
+
+        assert!(
+            matches!(refused, Error::CatalogMalformed { .. }),
+            "expected the malformed refusal, got {refused}"
+        );
+    }
+
+    #[test]
+    fn a_seed_position_that_is_not_a_number_is_refused_not_read_as_absent() {
+        // Anything present that is not a number is a row that was edited, and
+        // reading it as *no seed* would serve the whole history the copy
+        // holds.
+        let mut value = match outbound().to_value().expect("encodable") {
+            Value::Object(fields) => fields,
+            other => panic!("a definition encodes as an object, got {other:?}"),
+        };
+        value.insert(FIELD_SEED_AT.to_owned(), Value::from("8128"));
+        let refused = ReplicationDefinition::from_value(&Value::Object(value))
+            .expect_err("a text seed position read back");
+
+        assert!(
+            matches!(refused, Error::CatalogMalformed { .. }),
+            "expected the malformed refusal, got {refused}"
+        );
     }
 
     #[test]

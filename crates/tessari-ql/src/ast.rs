@@ -366,6 +366,11 @@ pub enum ReplicationChange {
     Paused,
     /// `RESUMED` — the driver takes it up again.
     Resumed,
+    /// `ACTIVE` — the early-promote spelling: moves a caught-up seeded link
+    /// from `standby` to `active`, refusing while the copy is short of the
+    /// seed position or the source's tail runs ahead of what the far side
+    /// has confirmed.
+    Active,
 }
 
 /// A table, optionally qualified by its database.
