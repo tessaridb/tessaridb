@@ -5848,6 +5848,185 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     );
 }
 
+/// The RESP-on-a-split-space scenario's addresses, its own band (G093 SG4 W3).
+const RESP_CLUSTER: Band = [
+    ("127.0.0.1:48090", "127.0.0.1:48091"),
+    ("127.0.0.1:48092", "127.0.0.1:48093"),
+    ("127.0.0.1:48094", "127.0.0.1:48095"),
+];
+/// The RESP door each node serves for this exercise, node order.
+const RESP_DOORS: [&str; 3] = ["127.0.0.1:48096", "127.0.0.1:48097", "127.0.0.1:48098"];
+
+/// A split space, born at the declare (the W2 clause) so each node leads the
+/// shard its letter falls in.
+const SPLIT_SPACE: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                           DEFINE DATABASE shop; USE DATABASE shop; \
+                           DEFINE SPACE sessions SPLIT AT 'g';";
+
+/// A write into `sessions` at `key`, which names its shard by its first letter.
+fn into_sessions(key: &str) -> String {
+    format!("USE NAMESPACE prod; USE DATABASE shop; SET sessions:'{key}' = 'value:{key}';")
+}
+
+/// Keep writing into `sessions` through `surface` until one commits there, or
+/// the last answer after `patience` — [`until_taken`] for the space's spelling.
+fn space_taken(surface: &str, prefix: &str, patience: Duration) -> Result<String, String> {
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    let mut attempt = 0_u32;
+    while began.elapsed() < patience {
+        attempt = attempt.saturating_add(1);
+        if let Ok(mut client) = Client::connect(surface) {
+            let answered = client.run(&into_sessions(&format!("{prefix}{attempt}")), None);
+            if landed(&answered) {
+                return Ok(format!("{prefix}{attempt}"));
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+/// One RESP command over one connection, answered with the reply's text: the
+/// line for a status or error reply, the payload for a bulk one. The surface's
+/// own codec is deliberately NOT reused: this probe speaks what any RESP
+/// client speaks, which is the thing under test.
+fn resp_command(door: &str, parts: &[&str]) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect(door).expect("the RESP door accepts");
+    let mut sent = format!("*{}\r\n", parts.len());
+    for part in parts {
+        sent.push_str(&format!("${}\r\n{}\r\n", part.len(), part));
+    }
+    stream
+        .write_all(sent.as_bytes())
+        .expect("the command is written");
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("the reply's first line is read");
+    let line = line.trim_end().to_owned();
+    match line.strip_prefix('$') {
+        // A bulk reply: its length line, then the payload and its terminator.
+        Some(len) if len != "-1" => {
+            let len: usize = len.parse().expect("a bulk length is a number");
+            let mut payload = vec![0_u8; len.saturating_add(2)];
+            use std::io::Read;
+            reader
+                .read_exact(&mut payload)
+                .expect("the bulk payload is read");
+            String::from_utf8_lossy(&payload[..len]).into_owned()
+        }
+        // $-1 is a missing key; a status or error reply answers with its line.
+        _ => line,
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines have to be
+            elected before a wrong-node key can be carried to its leader. SG4
+            W3's validation, run explicitly: cargo test -p tessari-cli --test
+            serving resp_hides_the_redirect_a_wrong_node_key_is_carried
+            -- --ignored"]
+fn resp_hides_the_redirect_a_wrong_node_key_is_carried() {
+    let mut cluster = a_cluster_declared(
+        &RESP_CLUSTER,
+        SPLIT_SPACE,
+        [
+            " LEADS SHARD prod.shop.sessions 1",
+            " LEADS SHARD prod.shop.sessions 2",
+            "",
+        ],
+    );
+    // Every node serves RESP for this exercise, each pinned to the space: a
+    // probe is an ordinary client, and an ordinary client names no USE.
+    for (index, door) in RESP_DOORS.iter().enumerate() {
+        cluster.restart_with(
+            index,
+            &["--resp", door, "--resp-space", "prod.shop.sessions"],
+        );
+        assert!(
+            listening(RESP_CLUSTER[index].0, Duration::from_secs(30)),
+            "node {index} never re-served its wire door{}",
+            what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+        );
+        assert!(
+            listening(door, Duration::from_secs(30)),
+            "node {index} never served RESP at {door}{}",
+            what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+        );
+    }
+    // n0 leads shard 1 and n1 leads shard 2: warmed by writing into each
+    // leader's own shard, and n0 has learned n1 leads shard 2 (its row had to
+    // replicate first, or n0 would take shard 2 for a range nobody leads).
+    let mut warmed = Vec::new();
+    for (index, prefix) in ["a", "h"].iter().enumerate() {
+        match space_taken(RESP_CLUSTER[index].0, prefix, Duration::from_secs(120)) {
+            Ok(key) => warmed.push(key),
+            Err(last) => panic!(
+                "node {index} never took a write into its own shard; last: {last}{}",
+                what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+            ),
+        }
+    }
+    // Every node holds every warmed key before the probe: replication caught
+    // up across the restarts, so a later miss is the carry's, not the log's.
+    for (index, _) in RESP_CLUSTER.iter().enumerate() {
+        for key in &warmed {
+            assert!(
+                until(Duration::from_secs(60), || {
+                    read_at(RESP_CLUSTER[index].0, "SELECT id FROM sessions;")
+                        .is_ok_and(|ids| ids.iter().any(|id| id == key))
+                }),
+                "node {index} never caught up to {key}{}",
+                what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+            );
+        }
+    }
+
+    // The measurement: a client on n0's RESP door writes a key n0 does not
+    // lead. The answer is the value protocol (+OK), never the redirect: the
+    // surface carries the statement to shard 2's leader per command, the way
+    // the wire protocol's redirect is hidden from an HTTP caller.
+    let answered = resp_command(RESP_DOORS[0], &["SET", "h9", "value:h9"]);
+    assert_eq!(
+        answered, "+OK",
+        "a wrong-node SET refused instead of carrying"
+    );
+    assert_eq!(resp_command(RESP_DOORS[0], &["GET", "h9"]), "value:h9");
+    // The local-leader row: a key n0 leads is answered beside it.
+    assert_eq!(
+        resp_command(RESP_DOORS[0], &["SET", "a9", "value:a9"]),
+        "+OK"
+    );
+    assert_eq!(resp_command(RESP_DOORS[0], &["GET", "a9"]), "value:a9");
+    // And the carried write really landed on n1, not on n0: the shard's
+    // leader holds it, readable from every node that replicates the range.
+    assert!(
+        until(Duration::from_secs(30), || {
+            read_at(RESP_CLUSTER[1].0, "SELECT id FROM sessions;")
+                .is_ok_and(|ids| ids.contains(&"h9".to_owned()))
+        }),
+        "node 1 never held the carried key; it reads {:?}{}",
+        read_at(RESP_CLUSTER[1].0, "SELECT id FROM sessions;"),
+        what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+    );
+    assert!(
+        until(Duration::from_secs(30), || {
+            read_at(RESP_CLUSTER[2].0, "SELECT id FROM sessions;")
+                .is_ok_and(|ids| ids.contains(&"h9".to_owned()) && ids.contains(&"a9".to_owned()))
+        }),
+        "the follower never held both keys; it reads {:?}{}",
+        read_at(RESP_CLUSTER[2].0, "SELECT id FROM sessions;"),
+        what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+    );
+}
+
 /// The automatic-split scenario's addresses, its own band (G053 SG4b).
 const BALANCED: Band = [
     ("127.0.0.1:48010", "127.0.0.1:48011"),
