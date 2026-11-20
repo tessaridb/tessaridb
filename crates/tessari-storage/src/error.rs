@@ -229,6 +229,64 @@ pub enum Error {
         floor: std::time::Duration,
     },
 
+    /// A stated load-balancing margin is at or below one.
+    ///
+    /// A margin of one is not a margin: it moves a placement on any noise, and
+    /// the anti-flapping bound exists precisely so that does not happen.
+    #[error(
+        "a balancer's `ABOVE` is {stated} hundredths, and the margin a move \
+         waits for must be above 1 — 150 hundredths is 1.5. What was stated \
+         is not above 1"
+    )]
+    BalancerMarginNotAboveOne {
+        /// The margin that was stated, as hundredths of one.
+        stated: u64,
+    },
+
+    /// A stated balancer spacing is shorter than one lease period of the
+    /// failover policy the pass runs beside.
+    ///
+    /// The **too small** direction. A move re-examined while the election it
+    /// provoked may still be settling is how a range flaps, so the spacing is
+    /// never shorter than the lease the election settles inside.
+    #[error(
+        "a balancer's `SPACING` is {spacing:?}, and it must be at least one \
+         `LEASE` period of the failover policy it runs beside — here {lease:?}. \
+         A move re-examined while its election settles is how a range flaps"
+    )]
+    BalancerSpacingBelowLease {
+        /// The spacing that was stated.
+        spacing: std::time::Duration,
+        /// The lease period it must not be below.
+        lease: std::time::Duration,
+    },
+
+    /// A stated pool limit is zero.
+    ///
+    /// Zero is not a bound: it would refuse every statement the classifier
+    /// matches, a deny-list wearing a pool's clothes.
+    #[error(
+        "a pool's `MAX CONCURRENT` is 0, and a limit must be positive — what was stated refuses everything the classifier names"
+    )]
+    PoolLimitNotPositive,
+
+    /// A stated measurement window is shorter than the round's cadence.
+    ///
+    /// The **too small** direction. The pass fills the window from the log
+    /// once per cadence; a window briefer than that holds one pass's records
+    /// at most and measures nothing the next pass could act on.
+    #[error(
+        "a balancer's `WITHIN` is {within:?}, and the window the rates are \
+         measured over must be at least the round's cadence — here {cadence:?}. \
+         A briefer window holds one pass's records at most and measures nothing"
+    )]
+    BalancerWithinBelowCadence {
+        /// The window that was stated.
+        within: std::time::Duration,
+        /// The cadence it must not be below.
+        cadence: std::time::Duration,
+    },
+
     /// A stated collection period is at or above the staleness floor the same
     /// policy publishes.
     ///
@@ -1269,6 +1327,34 @@ pub enum Error {
         start: u64,
     },
 
+    /// A cross-cluster shipment starts at or below the seed position the
+    /// receiving copy declares it holds through.
+    ///
+    /// The seed's tail-half honesty, from the backup's `CutShort` pattern:
+    /// the seed declares the copy already holds everything through
+    /// `seed_at`, so a shipment whose own log starts at or below that floor
+    /// is not a tail — it overlaps the claimed snapshot, which means the
+    /// seed and the source disagree about what the copy holds. Applying it
+    /// would converge silently over a base one of the two sides is wrong
+    /// about, so it is refused naming both numbers: the shipment's start
+    /// and the seed floor. The repair is the seed's procedure again — a
+    /// fresh snapshot at a position both sides name, and a re-declared
+    /// link.
+    #[error(
+        "a shipment for link '{link}' starts at {from}, below the seed \
+         position {seed_at} the copy declares it holds through — the seed \
+         and the source disagree; take a fresh snapshot of the source and \
+         declare the link again"
+    )]
+    TailBelowSeed {
+        /// The link the shipment belongs to.
+        link: String,
+        /// The position the shipment's own log starts at.
+        from: u64,
+        /// The seed position the receiving copy declares it holds through.
+        seed_at: u64,
+    },
+
     /// A read was asked for a point the store has not reached.
     ///
     /// Serving the present instead would let the same query return one answer
@@ -1465,7 +1551,11 @@ impl Error {
             | Self::LogDivergence { .. }
             | Self::ConcurrentVersions { .. }
             | Self::AcrossDecided { .. }
-            | Self::AcrossReadTooOld { .. } => ErrorCategory::Conflict,
+            | Self::AcrossReadTooOld { .. }
+            // A seed and a shipment disagreeing about what the copy holds is
+            // a conflict between two declarations, not a broken store: the
+            // repair is the seed's procedure again, named in the refusal.
+            | Self::TailBelowSeed { .. } => ErrorCategory::Conflict,
             // The request is fine and this node is the wrong place to run it,
             // which is what a client sent to a whole holder fixes.
             Self::AcrossNotHeldHere { .. } => ErrorCategory::Validation,
@@ -1583,6 +1673,10 @@ impl Error {
             | Self::FailoverCampaignOutpaced { .. }
             | Self::FailoverLeaseTooShort { .. }
             | Self::FailoverCollectionAboveFloor { .. }
+            | Self::BalancerMarginNotAboveOne { .. }
+            | Self::PoolLimitNotPositive
+            | Self::BalancerSpacingBelowLease { .. }
+            | Self::BalancerWithinBelowCadence { .. }
             | Self::TopologyNeedsARealm
             | Self::TopologyRealmNamedTwice { .. }
             | Self::TopologyDomainNamedTwice { .. }

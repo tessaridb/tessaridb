@@ -71,12 +71,40 @@ impl Store {
             across_pending,
             across_with_intents,
             balancer_moves: self.tally.balancer_moves(),
+            balancer_load_moves: self.tally.balancer_load_moves(),
         })
     }
 
     /// Record one placement the leadership balancer moved (ADR-0113 D3).
     pub fn leadership_moved(&self) {
         self.tally.moved();
+    }
+
+    /// Record one placement the load balancer moved — beside
+    /// [`Self::leadership_moved`], on its own counter.
+    pub fn leadership_moved_by_load(&self) {
+        self.tally.moved_by_load();
+    }
+
+    /// Take one slot of a named pool at the admission gate; `None` at
+    /// capacity, with the refusal counted. The session gate and the suite
+    /// both call here — the suite to stand a concurrent in-flight script on
+    /// the guard's own seam rather than generating the load the guard exists
+    /// to refuse.
+    pub fn pool_take(
+        &self,
+        namespace: &str,
+        pool: &str,
+        max_concurrent: u64,
+    ) -> Option<crate::PoolSlot> {
+        self.pool_tally.take(namespace, pool, max_concurrent)
+    }
+
+    /// Every pool's counts this process holds, sorted by (namespace, pool) —
+    /// what `INFO FOR POOL[S]` reports and the `/metrics` series render.
+    #[must_use]
+    pub fn pool_counters(&self) -> Vec<crate::PoolReading> {
+        self.pool_tally.entries()
     }
 
     /// Publish what the balancing pass measured of every balanced table's

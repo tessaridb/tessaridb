@@ -3794,11 +3794,31 @@ Shown once. The node keeps only its digest.`);
       const peers = typeof cluster === "object" && cluster !== null ? cluster.peers : void 0;
       draw4(all2);
       know(all2["id"], all2["endpoints"], Array.isArray(peers) ? peers.length : 0);
+      const balancer = typeof cluster === "object" && cluster !== null ? cluster.balancer : void 0;
+      const balancerLine = (held6) => {
+        if (typeof held6 !== "object" || held6 === null) {
+          return null;
+        }
+        const row = held6;
+        const above = typeof row["above"] === "number" ? row["above"] / 100 : null;
+        const within = typeof row["within"] === "string" ? row["within"] : null;
+        const spacing = typeof row["spacing"] === "string" ? row["spacing"] : null;
+        if (above === null || within === null || spacing === null) {
+          return null;
+        }
+        const epoch = typeof row["epoch"] === "number" ? ` · epoch ${String(row["epoch"])}` : "";
+        const version = typeof row["version"] === "number" ? ` · version ${String(row["version"])}` : "";
+        return `load above ${above.toFixed(2)} within ${within}, spacing ${spacing}${epoch}${version}`;
+      };
+      const policy2 = balancerLine(balancer);
       facts("cluster-facts", {
         roles: all2["roles"],
         peers: peers ?? [],
         endpoints: all2["endpoints"],
-        id: all2["id"]
+        id: all2["id"],
+        // No balancer declared: the key stays out rather than reading none,
+        // on the rule that an absent row is not a fact about the cluster.
+        ...policy2 !== null ? { balancer: policy2 } : {}
       });
       try {
         const links = held3(await valueOf("INFO FOR REPLICATIONS;", "Node")) ?? {};
@@ -3807,21 +3827,16 @@ Shown once. The node keeps only its digest.`);
           state("replication-status", "empty", "No replication links — this cluster ships to nobody and receives from nobody.");
         } else {
           settled("replication-status");
-          facts("replication-facts", {
-            links: rows2.map((row) => {
-              const link = row ?? {};
-              const name = typeof link["name"] === "string" ? link["name"] : "?";
-              const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
-              const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
-              const paused = link["paused"] === true ? " · paused" : "";
-              return `${name} · ${direction} · ${endpoint}${paused}`;
-            }).join("\n")
-          });
           const edges = [];
+          const lines = [];
           for (const row of rows2) {
             const link = row ?? {};
             const name = typeof link["name"] === "string" ? link["name"] : null;
+            const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
+            const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
+            const paused = link["paused"] === true ? " · paused" : "";
             let confirmed = null;
+            let lifecycle = "";
             if (name !== null) {
               try {
                 const report = held3(await valueOf(`INFO FOR REPLICATION ${name};`, "Node"));
@@ -3834,16 +3849,67 @@ Shown once. The node keeps only its digest.`);
                     return `${log} ${String(at2)}`;
                   }).join(" · ");
                 }
+                const progress = typeof report?.["progress"] === "object" && report["progress"] !== null ? report["progress"] : null;
+                if (progress !== null) {
+                  const at2 = typeof progress["state"] === "string" ? progress["state"] : null;
+                  if (at2 !== null) {
+                    const figures = [];
+                    const seedAt = progress["seed_at"];
+                    if (typeof seedAt === "number") {
+                      figures.push(`seed ${String(seedAt)}`);
+                    }
+                    const applied = progress["applied"];
+                    if (typeof applied === "number") {
+                      figures.push(`applied ${String(applied)}`);
+                    }
+                    const latest = progress["source_latest"];
+                    if (typeof latest === "number") {
+                      figures.push(`source ${String(latest)}`);
+                    }
+                    const lag = progress["lag"];
+                    if (typeof lag === "number") {
+                      figures.push(`lag ${String(lag)}`);
+                    }
+                    const detail = figures.length === 0 ? "" : ` (${figures.join(", ")})`;
+                    lifecycle = ` · ${at2}${detail}`;
+                  }
+                }
               } catch {
                 confirmed = null;
               }
             }
+            lines.push(`${name ?? "?"} · ${direction} · ${endpoint}${lifecycle}${paused}`);
             edges.push({ row: link, confirmed });
           }
+          facts("replication-facts", { links: lines.join("\n") });
           layout = { ...layout, links: edges };
         }
       } catch {
         state("replication-status", "empty", "Replication links need the store's operator to read them.");
+      }
+      try {
+        const answered3 = held3(await valueOf("INFO FOR POOLS;", "Node"));
+        const rows2 = Array.isArray(answered3) ? answered3 : [];
+        if (rows2.length === 0) {
+          state("pools-status", "empty", "No workload pools — every statement is admitted as today.");
+        } else {
+          settled("pools-status");
+          facts("pools-facts", {
+            pools: rows2.map((row) => {
+              const pool = row ?? {};
+              const name = typeof pool["name"] === "string" ? pool["name"] : "?";
+              const max = typeof pool["max_concurrent"] === "number" ? String(pool["max_concurrent"]) : "?";
+              const kinds = ["reads", "writes", "definitions"].filter((kind3) => pool[kind3] === true).join(", ");
+              const classifier = pool["database"] === null || pool["database"] === void 0 ? "any database" : `database ${String(pool["database"])}`;
+              const user = pool["user"] === null || pool["user"] === void 0 ? "" : `, user ${String(pool["user"])}`;
+              const running = typeof pool["running"] === "number" ? String(pool["running"]) : "?";
+              const refused = typeof pool["refused"] === "number" ? String(pool["refused"]) : "?";
+              return `${name} · at most ${max} at once · ${kinds} · ${classifier}${user} · running ${running} · refused ${refused}`;
+            }).join("\n")
+          });
+        }
+      } catch {
+        state("pools-status", "empty", "Workload pools need the namespace's manager to read them.");
       }
       clear("cluster-map");
       draw5(at("cluster-map"), all2, layout);

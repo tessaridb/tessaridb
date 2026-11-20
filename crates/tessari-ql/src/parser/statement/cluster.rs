@@ -10,7 +10,8 @@ use tessari_types::{
 };
 
 use crate::ast::{
-    ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange, TopologyRealm,
+    PoolKinds, Ratio, ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange,
+    TopologyRealm,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -305,6 +306,169 @@ impl Parser<'_> {
         })
     }
 
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>`
+    ///
+    /// In this order, and all three. The relations between them (`ABOVE`
+    /// above 1, `SPACING` at least one lease period, `WITHIN` at least the
+    /// round's cadence) are checked where the policy is built, for the reason
+    /// [`Self::define_failover`] keeps for the failover policy's relations:
+    /// exactly one place knows the directions, and a copy in the parser would
+    /// be a second answer that drifts. The one check that stays here is the
+    /// ratio's size — a value not above 1 is a mistake in what was typed, and
+    /// the statement is where the number is.
+    pub(super) fn define_balancer(&mut self) -> Result<StatementKind> {
+        self.expect_word("load", "`LOAD` after `BALANCER`")?;
+        self.expect_word("above", "`ABOVE` and the load margin")?;
+        let above = self.ratio()?;
+        // `expect_word` rather than `period` for the clause names: the
+        // refusal for a missing clause names the clause, the way the failover
+        // statement's do, and a shared helper's fallback message would name
+        // another clause's words instead.
+        self.expect_word("within", "`WITHIN` and the window the rates span")?;
+        let within = self.length("within")?;
+        self.expect_word(
+            "spacing",
+            "`SPACING` and how soon a moved range may move again",
+        )?;
+        let spacing = self.length("spacing")?;
+        Ok(StatementKind::DefineBalancer {
+            above,
+            within,
+            spacing,
+        })
+    }
+
+    /// The ratio after `ABOVE`, refused where the number is when it is not
+    /// above 1 — a margin of one would move a placement on any noise, and a
+    /// statement that asked for it could only be a half-written one.
+    fn ratio(&mut self) -> Result<Ratio> {
+        // The integer spelling lands as hundredths by integer multiplication —
+        // no float is ever constructed for it, so the conversion question the
+        // fixed-point spelling exists to close never arises.
+        if let Some(Token::Number(Number::Integer(written))) = self.peek() {
+            let scaled = written
+                .checked_mul(100)
+                .and_then(|scaled| u64::try_from(scaled).ok())
+                .and_then(Ratio::of_hundredths);
+            let Some(above) = scaled else {
+                return Err(self
+                    .error_here("a ratio above 1, like `1.5` — what stands here is not above 1"));
+            };
+            self.advance();
+            return Ok(above);
+        }
+        let times = match self.peek() {
+            Some(Token::Number(Number::Float(written))) => *written,
+            _ => {
+                return Err(self.error_here(
+                    "`ABOVE` takes a ratio above 1, like `1.5` — what stands here is not above 1",
+                ));
+            }
+        };
+        let Some(above) = Ratio::nearest(times) else {
+            return Err(self.error_here("a ratio above 1 — what was written is not above 1"));
+        };
+        self.advance();
+        Ok(above)
+    }
+
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit as a namespace-scoped
+    /// catalog row.
+    ///
+    /// `WITH MAX CONCURRENT n` is required: the limit is what a pool is. The
+    /// classifier clauses follow in any order — at most one `FOR DATABASE`,
+    /// at most one `FOR USER`, at most one `FOR` kind list — and the
+    /// relations a misshapen classifier breaks (a limit of zero refuses
+    /// everything the classifier names) are checked here, where the words
+    /// are, the way the balancer's margin is.
+    pub(super) fn define_pool(&mut self) -> Result<StatementKind> {
+        let name = self.name()?;
+        self.expect_word(
+            "with",
+            "`WITH MAX CONCURRENT` and the limit the pool exists for",
+        )?;
+        self.expect_word(
+            "max",
+            "`MAX CONCURRENT` and how much work the pool admits at once",
+        )?;
+        self.expect_word("concurrent", "`CONCURRENT` after `MAX`")?;
+        let max_concurrent = self.pool_limit()?;
+        let mut database = None;
+        let mut user = None;
+        let mut kinds = None;
+        loop {
+            if self.eat_word("for") {
+                if self.eat_keyword(Keyword::Database) {
+                    if database.is_some() {
+                        return Err(
+                            self.error_here("one `FOR DATABASE` — a pool classifies one database")
+                        );
+                    }
+                    database = Some(self.name()?);
+                } else if self.eat_keyword(Keyword::User) {
+                    if user.is_some() {
+                        return Err(self.error_here("one `FOR USER` — a pool classifies one user"));
+                    }
+                    user = Some(self.name()?);
+                } else {
+                    let mut read = PoolKinds {
+                        reads: false,
+                        writes: false,
+                        definitions: false,
+                    };
+                    loop {
+                        if self.eat_word("reads") {
+                            read.reads = true;
+                        } else if self.eat_word("writes") {
+                            read.writes = true;
+                        } else if self.eat_word("definitions") {
+                            read.definitions = true;
+                        } else {
+                            return Err(
+                                self.error_here("`READS`, `WRITES` or `DEFINITIONS` after `FOR`")
+                            );
+                        }
+                        if !self.eat_punct(Punct::Comma) {
+                            break;
+                        }
+                    }
+                    if kinds.is_some() {
+                        return Err(
+                            self.error_here("one `FOR` kind list — the kinds one pool bounds")
+                        );
+                    }
+                    kinds = Some(read);
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(StatementKind::DefinePool {
+            name,
+            max_concurrent,
+            database,
+            user,
+            kinds: kinds.unwrap_or(PoolKinds::ALL),
+        })
+    }
+
+    /// The limit after `MAX CONCURRENT`, refused where the number is when it
+    /// is not a limit — zero or negative would refuse everything the
+    /// classifier names, a deny-list wearing a pool's clothes.
+    fn pool_limit(&mut self) -> Result<u64> {
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a limit, like `10`"));
+        };
+        if *written <= 0 {
+            return Err(self.error_here("a limit — what stands here is not a limit"));
+        }
+        let limit = u64::try_from(*written)
+            .map_err(|_| self.error_here("a limit within what a count of running work holds"))?;
+        self.advance();
+        Ok(limit)
+    }
+
     /// `DEFINE TOPOLOGY main REALM 'dc-a' [DOMAIN 'az-1', …] … [SURVIVES REALM LOSS]`
     ///
     /// One `REALM` clause per realm, at least one, each naming the realm as
@@ -450,6 +614,24 @@ impl Parser<'_> {
             return Err(self.error_here(expected));
         };
         let held = u32::try_from(*held).map_err(|_| self.error_here(expected))?;
+        if held == 0 {
+            return Err(self.error_here(expected));
+        }
+        self.advance();
+        Ok(held)
+    }
+
+    /// A log position standing where one is required.
+    ///
+    /// Refused rather than clamped or truncated when it does not fit or is
+    /// not positive, for [`Self::whole_number`]'s reason, and read as `u64`
+    /// because a stored position is a `u64` sequence: truncating it would
+    /// serve a history the copy holds from a point it does not.
+    pub(super) fn position(&mut self, expected: &'static str) -> Result<u64> {
+        let Some(Token::Number(tessari_types::Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here(expected));
+        };
+        let held = u64::try_from(*held).map_err(|_| self.error_here(expected))?;
         if held == 0 {
             return Err(self.error_here(expected));
         }

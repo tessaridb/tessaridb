@@ -54,6 +54,9 @@ impl Atomic<'_, '_> {
         if matches!(Effect::of_script(&script), Effect::Write) {
             admits(store.node_identity().await?.roles, &script)?;
         }
+        // The pool gate, beside the roles check; the slot stands for the
+        // whole run inside the held transaction.
+        let _slot = self.session.admit_pool(&script, None).await?;
         // Boxed: a `RESTORE` statement runs its script through here.
         Box::pin(
             self.session
@@ -97,6 +100,9 @@ impl Atomic<'_, '_> {
         if matches!(Effect::of_script(&script), Effect::Write) {
             admits(store.node_identity().await?.roles, &script)?;
         }
+        // The pool gate, beside the roles check; the slot stands for the
+        // whole run inside the held transaction.
+        let _slot = self.session.admit_pool(&script, None).await?;
         // Boxed: a `RESTORE` statement runs its script through here.
         Box::pin(
             self.session

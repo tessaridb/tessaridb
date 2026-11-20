@@ -1,5 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
+use std::time::Duration as Elapsed;
+
 use tessari_encoding::Roles;
 use tessari_ql::{Name, Span, TopologyChange, TopologyRealm};
 use tessari_storage::{
@@ -11,6 +13,20 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 use super::{Declared, FORMAT_JSON, Peer, named_roles};
+
+/// The pool clauses a [`Session::define_pool`] states, one bundle so the
+/// signature stays under the argument count the lint keeps — the four travel
+/// together or not at all.
+pub(super) struct StatedPool<'a> {
+    /// `WITH MAX CONCURRENT n`.
+    pub max_concurrent: u64,
+    /// `FOR DATABASE d`.
+    pub database: Option<&'a Name>,
+    /// `FOR USER u`.
+    pub user: Option<&'a Name>,
+    /// `FOR READS, WRITES, …`.
+    pub kinds: tessari_types::PoolKinds,
+}
 
 /// A `DEFINE REPLICATION` statement's parts, as the parser left them — the
 /// shape `DEFINE REPLICA`'s `Peer` takes, so the signature stays a statement
@@ -26,6 +42,9 @@ pub(super) struct DeclaredReplication<'s> {
     pub(super) remote: Option<&'s str>,
     /// The direction: `TO` outbound, `FROM` inbound.
     pub(super) inbound: bool,
+    /// The position the receiving copy's snapshot ends at (`SEED AT
+    /// <position>`), when the statement named one.
+    pub(super) seed_at: Option<u64>,
     /// Whether re-defining an existing name is accepted.
     pub(super) if_not_exists: bool,
 }
@@ -128,6 +147,145 @@ impl Session<'_> {
         // single-node deployment unable to configure itself.
         let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
         catalog.set_failover(policy, epoch, version, balance_leaderships)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>` —
+    /// the margins under which the store line's leader moves a placement for
+    /// measured load or a drained node, as a log record beside the failover
+    /// policy, for that policy's reason: when serving work may move is a
+    /// cluster-wide fact every node must agree about.
+    ///
+    /// # The checks that run here
+    ///
+    /// The margin-against-one check ran at the statement; the relations
+    /// against the failover policy (`SPACING` at least one `LEASE` period,
+    /// `WITHIN` at least the round's cadence) are [`tessari_storage::Balancer`]'s
+    /// own, run through `Balancer::stated`, for [`Self::define_failover`]'s
+    /// reason: one place knows the directions. The failover policy the
+    /// relations are judged against is the one this catalog holds — the same
+    /// row the pass will read when it acts.
+    pub(super) async fn define_balancer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        above_hundredths: u64,
+        within: Elapsed,
+        spacing: Elapsed,
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut catalog = Catalog::new(transaction);
+        let failover = catalog
+            .failover()
+            .await?
+            .map_or(tessari_storage::Failover::DEFAULT, |held| held.policy);
+        let policy =
+            tessari_storage::Balancer::stated(above_hundredths, within, spacing, &failover)
+                .map_err(|why| Error::BalancerRefused {
+                    reason: why.to_string(),
+                    span,
+                })?;
+        // `None` means nobody has ever set one, and the first policy is
+        // version zero rather than one, for the failover row's reason: the
+        // number counts settings under a leadership, and this is the first.
+        let version = catalog
+            .balancer()
+            .await?
+            .map_or(0, |held| held.version.saturating_add(1));
+        let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+        catalog.set_balancer(policy, epoch, version)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit as a namespace-scoped
+    /// catalog row, for the failover policy's reason: whose statement may
+    /// run is a cluster-wide fact every node must agree about, and a pool
+    /// that reached one node and not the rest would refuse on half the
+    /// cluster.
+    ///
+    /// # The checks that run here
+    ///
+    /// The limit's positivity is the statement's own check; the relations
+    /// that need the catalog are [`tessari_storage::Pool`]'s own, run
+    /// through `Pool::stated`, for [`Self::define_failover`]'s reason: one
+    /// place knows the directions. The classifier's database resolves in
+    /// the session's namespace and is refused `Unknown` when absent, the
+    /// way a grant's table is.
+    pub(super) async fn define_pool(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        stated: &StatedPool<'_>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let namespace = self.namespace_id(transaction, span).await?;
+        let database = match stated.database {
+            None => None,
+            Some(named) => Some(
+                Catalog::new(transaction)
+                    .database_id(namespace, &named.text)
+                    .await?
+                    .ok_or(Error::Unknown {
+                        entity: "database",
+                        name: named.text.clone(),
+                        span,
+                    })?,
+            ),
+        };
+        let pool = tessari_storage::Pool::stated(
+            stated.max_concurrent,
+            database,
+            stated.user.map(|held| held.text.clone()),
+            stated.kinds,
+        )
+        .map_err(|why| Error::PoolRefused {
+            reason: why.to_string(),
+            span,
+        })?;
+        Catalog::new(transaction)
+            .create_pool(namespace, &name.text, pool)
+            .await?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP POOL web` — the pool whole; the namespace returns to its
+    /// default pool, which names no limit.
+    pub(super) async fn drop_pool(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let namespace = self.namespace_id(transaction, span).await?;
+        if !Catalog::new(transaction)
+            .drop_pool(namespace, &name.text)
+            .await?
+        {
+            return Err(Error::Unknown {
+                entity: "pool",
+                name: name.text.clone(),
+                span,
+            });
+        }
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP BALANCER` — the load policy whole. The store line returns to
+    /// count-only balancing: the acts are OFF until a statement turns them
+    /// on, so removing the row is the off-switch.
+    pub(super) async fn drop_balancer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let removed = Catalog::new(transaction).drop_balancer().await?;
+        if !removed {
+            return Err(Error::Unknown {
+                entity: "balancer",
+                name: "policy".to_owned(),
+                span,
+            });
+        }
         Ok(Outcome::Done)
     }
 
@@ -463,6 +621,30 @@ impl Session<'_> {
             tessari_encoding::FormatVersion::REPLICATION_LINK,
         )
         .await?;
+        // The lifecycle the seed position opens: a seeded link is `seeding`
+        // until the copy it names holds everything through it. The
+        // receiving side checks the copy it already has at declaration
+        // time — the ordinary procedure restores the snapshot first, and
+        // the declaration that finds the floor already held lands in
+        // `standby`, the state that serves reads. The shipping side starts
+        // `seeding`: what the far side has confirmed is learned by
+        // serving, and before the first pass nothing is.
+        let seed_at = declared.seed_at.map(tessari_types::Sequence::new);
+        let state = match (seed_at, declared.inbound) {
+            (Some(floor), true) => {
+                match self
+                    .link_log_tail(tessari_storage::Reach::Database(namespace, database_id))
+                    .await
+                {
+                    Ok(Some(applied)) if applied >= floor => {
+                        tessari_storage::ReplicationState::Standby
+                    }
+                    _ => tessari_storage::ReplicationState::Seeding,
+                }
+            }
+            (Some(_), false) => tessari_storage::ReplicationState::Seeding,
+            (None, _) => tessari_storage::ReplicationState::Active,
+        };
         Catalog::new(transaction)
             .create_replication_with(tessari_storage::ReplicationDefinition {
                 name: declared.name.text.clone(),
@@ -473,9 +655,28 @@ impl Session<'_> {
                 paused: false,
                 join: None,
                 position: None,
+                state,
+                seed_at,
             })
             .await?;
         Ok(Outcome::Done)
+    }
+
+    /// The committed tail of the log a link's position counts in at this
+    /// reach — how far the copy this cluster holds has caught up. `None`
+    /// answers when the reach names no log here yet, read as *nothing caught
+    /// up*. The answer is the one log the position surface names seeds
+    /// from ([`tessari_storage::Store::answering_log`]), never a maximum
+    /// across the home's logs: positions count in one log, and a survivor's
+    /// received sibling runs ahead on an unrelated counter — its larger tail
+    /// is a number nobody stands at, and measuring lag against it refuses a
+    /// caught-up link forever.
+    async fn link_log_tail(
+        &self,
+        reach: tessari_storage::Reach,
+    ) -> Result<Option<tessari_types::Sequence>> {
+        let log = self.store.answering_log(reach).await?;
+        Ok(Some(self.store.committed_tail(log).await?))
     }
 
     /// `ALTER REPLICATION east AT '…'` · `… AS '…'` · `… PAUSED` · `… RESUMED`
@@ -510,6 +711,9 @@ impl Session<'_> {
                     .amend_replication(&name.text, |row| row.paused = false)
                     .await?
             }
+            ReplicationChange::Active => {
+                return self.promote_replication(transaction, name, span).await;
+            }
         };
         if !amended {
             return Err(Error::Unknown {
@@ -519,6 +723,97 @@ impl Session<'_> {
             });
         }
         Ok(Outcome::Done)
+    }
+
+    /// `ALTER REPLICATION east ACTIVE` — the early-promote spelling of the
+    /// seeding lifecycle.
+    ///
+    /// The gate refuses on what this cluster can see, and names it. A
+    /// seeding link is short of the seed position — the refusal says where
+    /// the copy stands and where the floor is. A standby outbound link
+    /// whose source tail runs ahead of what the far side has confirmed is
+    /// behind by a measurable lag — the refusal says by how much, and one
+    /// serve closes it. A standby inbound link promotes: its copy's tail
+    /// is the last thing shipped against it, so its lag reads zero by
+    /// construction. An active link answers ok and changes nothing.
+    async fn promote_replication(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let row = Catalog::new(transaction)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == name.text);
+        let Some(row) = row else {
+            return Err(Error::Unknown {
+                entity: "replication",
+                name: name.text.clone(),
+                span,
+            });
+        };
+        use tessari_storage::ReplicationState;
+        match row.state {
+            ReplicationState::Active => return Ok(Outcome::Done),
+            ReplicationState::Seeding => {
+                let seed_at = row.seed_at.unwrap_or(tessari_types::Sequence::new(0));
+                let applied = if row.inbound {
+                    self.link_log_tail(row.database)
+                        .await?
+                        .unwrap_or(tessari_types::Sequence::new(0))
+                } else {
+                    self.confirmed_floor(&row).await?
+                };
+                return Err(Error::Seeding {
+                    name: name.text.clone(),
+                    applied: applied.get(),
+                    seed_at: seed_at.get(),
+                    span,
+                });
+            }
+            ReplicationState::Standby => {
+                if !row.inbound {
+                    let tail = self
+                        .link_log_tail(row.database)
+                        .await?
+                        .unwrap_or(tessari_types::Sequence::new(0));
+                    let confirmed = self.confirmed_floor(&row).await?;
+                    if tail > confirmed {
+                        return Err(Error::LinkBehind {
+                            name: name.text.clone(),
+                            lag: tail.get().saturating_sub(confirmed.get()),
+                            span,
+                        });
+                    }
+                }
+            }
+        }
+        Catalog::new(transaction)
+            .amend_replication(&name.text, |held| held.state = ReplicationState::Active)
+            .await?;
+        Ok(Outcome::Done)
+    }
+
+    /// How far the far side has confirmed, on an outbound row: the seed
+    /// floor the far side's snapshot declares it holds, the cursor the row
+    /// persisted, and the live registry floor this process holds — whichever
+    /// stands furthest along. All three count in the one log the seed names
+    /// ([`tessari_storage::Store::answering_log`]); a sibling log of the same
+    /// home is on an unrelated counter and never answers the comparison.
+    async fn confirmed_floor(
+        &self,
+        row: &tessari_storage::ReplicationDefinition,
+    ) -> Result<tessari_types::Sequence> {
+        let answerer = self.store.answering_log(row.database).await?;
+        let mut best = row.position.max(row.seed_at);
+        for (log, at) in self.store.links().floors(&row.name) {
+            if log == answerer {
+                best = Some(best.map_or(at, |held| held.max(at)));
+            }
+        }
+        Ok(best.unwrap_or(tessari_types::Sequence::new(0)))
     }
 
     /// `DROP REPLICATION east` — stops shipping a database to another cluster.

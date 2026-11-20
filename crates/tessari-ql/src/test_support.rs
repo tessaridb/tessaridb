@@ -214,7 +214,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Seal(None)
             | InfoSubject::Consumers
             | InfoSubject::Replications
-            | InfoSubject::Topologies => {}
+            | InfoSubject::Topologies
+            | InfoSubject::Pools => {}
             InfoSubject::Seal(Some(vault)) => erase_name(vault),
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)
@@ -234,6 +235,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::TopicConsumer(name)
             | InfoSubject::Replication(name)
             | InfoSubject::Topology(name)
+            | InfoSubject::Pool(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Search(name)
@@ -318,6 +320,10 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::DefineTopology { name, .. } => erase_name(name),
         StatementKind::AlterTopology { name, .. } => erase_name(name),
         StatementKind::DropTopology { name } => erase_name(name),
+        StatementKind::DefineBalancer { .. } => {}
+        StatementKind::DropBalancer => {}
+        StatementKind::DefinePool { name, .. } => erase_name(name),
+        StatementKind::DropPool { name } => erase_name(name),
         StatementKind::FinalizeFormat => {}
         // A fingerprint is not a name.
         StatementKind::RevokeCertificate { .. } => {}

@@ -2411,10 +2411,13 @@ re-created from it is split at the same points. A table whose map has been moved
 - Points that do not ascend strictly in key order, or a point written twice. The
   list is refused rather than sorted, because a list sorted for you accepts a
   boundary you wrote in the wrong place and says nothing.
-- `SPLIT AT` on anything but a table declared with `DEFINE TABLE`: a collection,
-  a bucket, an edge table, a vault, a queue, a view, a series, a vector or geo
-  store, and a graph's node table — a walk reaches a node from its neighbours and
-  has no span to confine it to one shard.
+- `SPLIT AT` on anything but a table declared with `DEFINE TABLE` or a space
+  declared with `DEFINE SPACE`: a collection, a bucket, an edge table, a vault,
+  a queue, a view, a series, a vector or geo store, and a graph's node table — a
+  walk reaches a node from its neighbours and has no span to confine it to one
+  shard. A space is the exception for the reason its keys are the caller's: they
+  are never generated, so the counter rule above does not apply to one, and its
+  cuts are text points a cluster operator names at the declare.
 
 **Where generated identities land.** A table declared `IDENTITY uuid` names
 records with UUID v7, whose leading bits are a timestamp — so every record the
@@ -3851,6 +3854,24 @@ key folds each partition's lanes and merges the partials.
   columnar projection of the points the same way — the series read shapes
   (windows, `FILL`, `LATEST BY`, `ASOF JOIN`, counter folds) answer exactly
   what the row series answers.
+- **A columnar table on a cluster splits and gathers like any record table.**
+  The born-split spelling is the one that files the cuts —
+  `DEFINE TABLE events (seq int, kind string) STORE COLUMN IDENTITY uuid
+  SPLIT AT 'g', 'p'` — and from there the shard map, per-shard leadership
+  and gathered reads are the record table's own machinery: the row stays
+  the authority (above), rows file into shards the way rows do, and the
+  projection is a per-node derivation of the rows a node holds, so chunks
+  never cross nodes on their own. A node holding one shard of a split
+  columnar table answers a read of the whole table by gathering the rest
+  from their leaders — records in key order, pushed folds exact, the
+  `gathered` note naming how. `ALTER TABLE … SPLIT AT` on an unsplit
+  columnar table refuses `NotASplitTable`, the same generic refusal an
+  unsplit row table answers — nothing column-kind-aware in the message,
+  and the migration to a split shape is the kind's own `DROP` and
+  `DEFINE` over a snapshot. `SPLIT AUTOMATICALLY` at the table define
+  refuses at the parser (`expected 'AT'` — the table clause speaks
+  `SPLIT AT` only); the auto-split default is the namespace's, and a
+  columnar table inherits it like any other.
 
 The stated limits of a columnar table at this milestone, each honest rather
 than implicit:
@@ -7473,6 +7494,40 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
   map as soon as the drop commits — or, when a transaction that began before
   the drop is still open, as soon as the last such transaction ends.
 
+### A space split into shards
+
+```
+DEFINE SPACE sessions SPLIT AT 'user:', 'sess:';
+INFO FOR TABLE sessions;
+```
+
+A space can be **born split** the way a table can: the clause names where each
+shard begins, in the key order a `KEYS` walk takes (text points, since a
+space's keys are text). `INFO FOR TABLE` reports the map the same way it
+reports a table's, and the `definition` it carries re-creates the space split
+at the same points.
+
+On a cluster, a space's keys are filed under the shard their key falls in, and
+a key's write is led by that shard's leader — exactly a table's routing. What
+differs from a table is how a space **gets** its map:
+
+- A space can be born split only **at the declare** (`SPLIT AT` above) or by a
+  namespace that declares `DEFINE NAMESPACE … SPLIT AUTOMATICALLY`, which born
+  every table under it with one whole shard a later `ALTER TABLE … SPLIT AT`
+  refines. A space that was created with neither holds its records in its
+  database's log, and splitting it after it has records is refused: a map
+  cannot retroactively attach to records already filed (see *Splitting and
+  merging a table that holds records*). Plan the cuts before the first key.
+- Every read of a space is a walk of one contiguous stretch of the keyspace —
+  a `KEYS` prefix, range or page — and it answers whole wherever it runs; only
+  writes concentrate on a shard's leader. A hot key (a counter, a lock) is one
+  shard's leader by construction. A hot **range** — sequential ids, timestamps
+  — is the shape identity order cannot spread: the cuts are a static snapshot
+  of a distribution that moves, and the newest shard takes every new write.
+  Name keys so the leading part varies (a tenant, a bucket) and cut on that.
+- A space held `IN MEMORY` composes with the clause the way the section above
+  says: the map routes, the leader holds the keys.
+
 ### Data structures on a space
 
 A key may hold a list, a hash, a set of members, or members ranked by score,
@@ -8672,9 +8727,18 @@ The rate is counted **in messages, per node, in memory**: a quiet topic takes
 `n` at once and then one every `d / n`. An append past it is refused with
 `topic signups takes at most 60 anonymous messages per 1m on this node`, and an
 `INSERT` of more rows than `n` is always refused. Two things follow from "per
-node, in memory" and are worth sizing for: a cluster of three nodes that all
-accept writes admits three times the rate, and a restarted node has forgotten
-what it counted. A signed-in caller is never rated.
+node, in memory" and are worth sizing for: the allowance is spent on the node
+the append **executes** on, and a restarted node has forgotten what it counted.
+A signed-in caller is never rated.
+
+On a cluster this has a shape the declaration does not state by itself: an
+anonymous append is carried to the range's leader before it runs, and the
+allowance is spent there — so on a cluster whose topic one node leads, every
+door's anonymous appends draw on that one node's bucket, and the rate is the
+leader's, not the cluster's. (Measured on a three-node cluster: three appends
+admitted through one door, then every door refused — one shared bucket.) Size
+`PUBLIC RATE` for the nodes that **lead** the topic, and remember a failover
+moves the bucket: the new leader's memory starts empty.
 
 ### Reading a topic into a table
 
@@ -10480,7 +10544,17 @@ statement is sent rather than after.
 node bound by a membership row it is an override the next open discards — the
 desired role is the shared truth and a local word that outlived it is a
 disagreement nobody can see. To drain a bound node so that it stays drained,
-write the membership row instead.
+clear the roles on its membership row instead:
+
+```
+ALTER REPLICA n1 ROLES NONE;
+```
+
+The row's other clauses — its address, its identity, its subscription, and any
+placement it holds — stand exactly as they were: draining is what the node is
+for, not where its data lives or who leads the ranges it placed. `NONE` is the
+whole-answer spelling, for `DEFINE NODE`'s reason: `ALTER` amends, so a clause
+left out leaves the field alone, and only an explicit word can clear it.
 
 ### What that peer may collect, and the refusal that comes with saying nothing
 
@@ -11058,6 +11132,132 @@ placement of …`) and a change to the peer rows `INFO FOR NODE` reports as
 without the clause turns the balancer off; `cluster.failover.balance_leaderships`
 says which.
 
+### Moving work by measured load — `DEFINE BALANCER`
+
+`BALANCE LEADERSHIPS` evens out the *count* of what each node leads. What it
+deliberately does not read is how *busy* each leadership is — a node can lead
+one line and be saturated, and another lead its share and idle. The load
+balancer is the second policy, declared in the catalog the way the failover
+policy is:
+
+```
+DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;
+```
+
+All three clauses, in this order, and one policy per store line — a second
+`DEFINE BALANCER` replaces the first, and `DROP BALANCER` returns the line to
+count-only balancing. The clauses:
+
+- `LOAD ABOVE <ratio>` — the margin a move waits for: the busiest measured
+  range's rate must exceed the quietest eligible voter's by this factor before
+  the pass moves anything. A ratio of 1 would move on any noise, and is
+  refused where the number is as not above 1.
+- `WITHIN <period>` — the window the rates are measured over.
+- `SPACING <period>` — how little time must pass before a range the pass moved
+  may be considered again, at least one `LEASE` period of the failover policy
+  it runs beside, so a move is never re-examined while the election it
+  provoked may still be settling. A shorter spacing is refused naming the
+  direction, at the policy's build, the way the failover relations are.
+
+The relations between the clauses are checked where the policy is built, not
+in the statement: `SPACING` below one lease period, or `WITHIN` below the
+round's cadence, is refused naming which and in which direction.
+
+**What the pass reads, it can verify.** The store line's leader measures each
+range's rate from the log records the shard walk already reads — the records
+name the shard each write was filed in — and reads peer load only from the
+resource samples every node publishes over the build-gated greeting, aged and
+verdicted `stale` the way `INFO FOR NODE` reports them. A figure the committer
+cannot re-derive is not a signal the balancer consumes.
+
+**A drained node empties.** A node whose roles the membership row cleared (see
+*Draining this node*) leads nothing new: its ranges are move candidates on the
+next passes regardless of load, in rate order, onto voters eligible the way
+`BALANCE LEADERSHIPS` requires. Where the drained node is the only voter a
+line has, the line stays — the refusal is quiet and the leadership remains,
+because a balancer that moved it would move it nowhere.
+
+**Off until declared, like every automatic machinery here.** No `DEFINE
+BALANCER` row, no load pass — the round keeps doing what it has always done.
+Dropping the policy returns the line to count-only balancing:
+
+```
+DROP BALANCER;
+```
+
+Each move lands in the store leader's log beside the count balancer's and in
+`/metrics` as `tessari_balancer_load_moves_total`, beside the count pass's
+`tessari_balancer_moves_total`.
+
+
+### Bounding a tenant's work — `DEFINE POOL`
+
+A pool is an admission limit on the statements a classifier names, declared
+in the namespace the statement runs in:
+
+```
+DEFINE POOL web WITH MAX CONCURRENT 10 FOR DATABASE shop FOR READS, WRITES;
+```
+
+`WITH MAX CONCURRENT n` is the one required clause — a pool is its limit,
+and a name with no bound would be a wish. A limit of zero is refused where
+the number is: it would refuse everything the classifier names, a deny-list
+wearing a pool's clothes. The classifier clauses narrow what counts, in any
+order and at most one of each: `FOR DATABASE d` (only statements in that
+database), `FOR USER u` (only statements authenticated as that user), and
+`FOR READS, WRITES, DEFINITIONS` (the statement kinds — absent means every
+kind, so a plain limit bounds the whole tenant). A statement that matches no
+declared pool runs in the namespace's default pool, which names no limit and
+admits anything. Dropping returns the namespace to that default:
+
+```
+DROP POOL web;
+```
+
+A pool at capacity refuses the next matching statement `PoolAtCapacity`,
+naming the pool — a refusal of the conflict class, so a client may retry it
+the way it retries `CommitContention`: the limit is an admission decision,
+not a sentence. What a pool never does is wait: nothing queues at the gate,
+because a queue a caller cannot see the depth of is a latency lie.
+
+**The pool is a catalog row, for the failover policy's reason.** Whose
+statement may run is a cluster-wide fact: a pool that reached one node and
+not the rest would refuse on half the cluster, and the noisy-tenant bounding
+the feature exists for would be an accident of which node a client reached.
+The limit and the classifier travel in the log the way a peer row does, and
+`INFO FOR POOL web` / `INFO FOR POOLS` read back what the namespace holds,
+with `/metrics` carrying the per-pool running and refused counts beside the
+node's own.
+
+**Counted where the gate already stands.** The check runs at the admission
+gate the per-surface running ceiling already keeps, and composes with it:
+the pool limit is consulted beside the ceiling, never instead of it, and the
+tighter of the two answers.
+
+**The families the kinds clause names.** A script belongs to exactly one
+family — the strongest present — so one script is never counted in two
+pools. A script that defines, alters or drops a catalog object is a
+`DEFINITIONS` script no matter what else it holds: tables, fields, indexes,
+analyzers, users, grants and the authority statements, the cluster rows,
+and the pools themselves. Else a script that writes is a `WRITES` script:
+the record verbs, `TRUNCATE`, `REBUILD INDEX`, a vault's passphrase change.
+Else it reads. Two borderlines are stated rather than left to a reading:
+a vault's `SEAL` and `UNSEAL` move only the process's hold on the master
+key and ride the engine's read routing, and `ANALYZE TABLE` with
+`CHECK TABLE` read, routed as reads for the reason their section gives.
+The catalog is the authority at the gate as everywhere else: each matching
+script costs one bounded read-only pass over the namespace's pool rows, and
+the pass is never cached away — a pool declared a second ago bounds the
+next script, not the next interval. `INFO FOR POOL web` reads one pool's
+declaration back with this node's running and refused counts — the counts
+are process-local and stated as such, the declaration follows a backup the
+way every catalog row does — and `INFO FOR POOLS` lists what the selected
+namespace holds, both answered to the namespace's administrator. `/metrics`
+carries the same two counts per pool as `tessari_pool_running` and
+`tessari_pool_refused_total`, absent until a pool has been counted at all,
+because an always-empty series trains whoever watches it to ignore the one
+reading that matters.
+
 
 ### The layout a cluster is arranged over
 
@@ -11436,7 +11636,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.49.2", "build": "0.49.2", "endpoints": ["db-1.internal:9000"],
+ "version": "0.50.0", "build": "0.50.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],
@@ -11572,9 +11772,11 @@ cluster is the neighbouring statement, and its unit is one database:
 
 ```
 DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'warehouse';
+DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 4812;
 INFO FOR REPLICATION east;
 ALTER REPLICATION east PAUSED;
 ALTER REPLICATION east AT 'cluster-c:9080';
+ALTER REPLICATION west ACTIVE;
 CREATE LINK TOKEN FOR REPLICATION east EXPIRES 10m;
 DROP REPLICATION east;
 ```
@@ -11626,6 +11828,62 @@ statement, not a process to hunt down. The serving loop re-reads the catalog
 every pass, so pausing holds the stream at the next tick rather than at the
 next restart, and a link declared after the node came up starts serving without
 anything being told.
+
+**`SEED AT <position>` names where the receiving copy's snapshot ends, and
+opens the seeding lifecycle.** Stand the copy up from a snapshot, declare the
+link with the snapshot's end position, and the source serves the log tail from
+one past it — the history the snapshot already holds does not cross again (in
+the log the position counts in; the parent logs the reach reads re-read from
+their origins, and the copy's already-held positions answer them as no-ops).
+The position is declared on each side: on the `TO` row it is the floor the
+serve starts from, on the `FROM` row it is the floor the copy's catch-up is
+measured against. A seeded link is `seeding` until the copy holds everything
+through the position, then `standby` — the automatic transition, checked at the
+declaration, at every apply and at every serve. `ALTER REPLICATION … ACTIVE`
+promotes a standby link to `active`, the ordinary running state, and refuses
+while the copy is short of the seed position or the source's tail runs ahead
+of what the far side has confirmed — naming the floor or the lag, one serve or
+one catch-up later the spelling takes. `INFO FOR REPLICATION` reports the
+lifecycle in `progress`: `state`, `seed_at`, `applied` (how far the copy
+stands), `source_latest` (how far the source has written, as known on this
+side) and `lag`, each answered from the facts the answering side holds and
+absent where it holds none — after a restart, before the first serve. The
+position itself is read, not remembered: `INFO FOR DATABASE` answers a `log`
+group, `start` and `tail` — where this node's copy of the database's log still
+begins and where it ends, the two numbers the seed procedure is written from.
+The log is the one the machinery answers by: the line's once it holds records,
+this node's own before any leadership, and the furthest other log of the
+database when a restored snapshot holds history under the writer that made
+it. On a copy restored from a state snapshot the log is empty by design — the
+snapshot carries the data whole and the positions, and records the resume one
+past the tail — so the group reads `(tail+1, tail)`; the seed is named from
+the tail, which is where the snapshot ends. The same log the report names is
+the log a seeded link serves and is promoted by — one rule everywhere, because
+positions count in one log and a home can hold several. That is the reverse
+direction's whole story: when a cluster survives its source and becomes the
+source, it holds two logs of the home — the received one and its own — and a
+seeded link serves only the log its seed names (the survivor's own, the one
+the report carries), never the received sibling: the far side's snapshot
+already holds every effect that log carries, and the seed position is a
+number in one log, not a claim over the home. The promote guard measures the
+same log — a standby link refuses `ACTIVE` only while that log's tail runs
+ahead of what the far side confirmed, and a sibling log's further-along tail
+is an unrelated counter, not lag. A link declared without `SEED AT` is
+`active` from birth; the lifecycle is a seeded link's story, not a tax on
+every link.
+
+**The seed's two halves refuse dishonesty rather than converging over it.** A
+truncated snapshot is refused where the restore reads it — `CutShort`, naming
+where the file stopped and what it promised. A shipment whose own log starts
+at or below the seed position claims the snapshot the copy never took: the
+seed and the source disagree about what the copy holds, and the intake refuses
+naming the shipment's start and the seed floor — the repair is the seed's
+procedure again, a fresh snapshot and a re-declared link. And a source that
+has pruned its log below what the link still owes refuses the serve with
+`BelowLogStart`, naming the asked position and the surviving start: the far
+side's remedy is state, not more history. The pruner keeps a live link's
+confirmed floors by itself, so the pruned-below shape is the dropped-link
+disaster, not an accident of retention.
 
 `REPLICATION` is read as a contextual word like `REPLICA`, so a table called
 `replication` keeps its name everywhere but directly after `DEFINE`.

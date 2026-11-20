@@ -115,6 +115,45 @@ impl Store {
         self.own_log(home).await
     }
 
+    /// The one log `home`'s positions are named and measured in — the rule the
+    /// database report's `log` group answers by, and the rule a seeded link
+    /// serves and is promoted by: the line's once it holds records, then this
+    /// node's own, then the furthest other log of the home (a state-restored
+    /// copy's history under the writer that made it, whose records the copy
+    /// does not hold but whose positions it does). Positions count in one log,
+    /// so every reader that resumes from a position or measures a lag in one
+    /// asks this log, never a maximum across the home's logs — the counters
+    /// are unrelated, and their larger is a number nobody stands at.
+    ///
+    /// `own` is the answer when the home holds nothing, which is what a fresh
+    /// store reports and the log its first write will ride.
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::line_log`] and [`Self::logs_of`], and a tail that
+    /// cannot be read.
+    pub async fn answering_log(&self, home: Reach) -> Result<LogId> {
+        let line = self.line_log(home).await?;
+        let own = self.own_log(home).await?;
+        for candidate in [line, own] {
+            if self.committed_tail(candidate).await? > Sequence::ZERO {
+                return Ok(candidate);
+            }
+        }
+        let mut held: Option<(LogId, Sequence)> = None;
+        for log in self.logs_of(home).await? {
+            let tail = self.committed_tail(log).await?;
+            held = Some(match held {
+                Some((kept, at)) if at >= tail => (kept, at),
+                _ => (log, tail),
+            });
+        }
+        Ok(match held {
+            Some((log, _)) => log,
+            None => own,
+        })
+    }
+
     /// The log a follower of `leader` measures `home` in and files its answers
     /// under: the line's once it holds records, and before that its copy of the
     /// leader's own log — the same rule the leader serves by

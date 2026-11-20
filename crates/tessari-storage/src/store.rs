@@ -164,6 +164,10 @@ pub struct Health {
     /// Placements the leadership balancer moved since this process opened the
     /// store (ADR-0113 D3, D4).
     pub balancer_moves: u64,
+    /// Placements the load balancer moved since this process opened the
+    /// store — beside the leadership counter so a reader tells the two
+    /// triggers apart without the log.
+    pub balancer_load_moves: u64,
 }
 
 impl Health {
@@ -278,6 +282,9 @@ pub struct Store {
     /// `NotHeldHere` answers and majority waits since this process opened the
     /// store, shared with every handle for the reason the counters above are.
     tally: Arc<crate::tally::ClusterTally>,
+    /// Per-pool running and refused counts this process counted at the
+    /// admission gate, shared with every handle like the tally beside it.
+    pool_tally: Arc<crate::pool_tally::PoolTally>,
     /// What the balancing pass last measured of each balanced table's shards
     /// (ADR-0113 D4), shared with every handle like the tally beside it.
     sampled: Arc<crate::sampled_shards::SampledShards>,

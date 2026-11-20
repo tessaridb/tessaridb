@@ -29,6 +29,7 @@ mod consumer;
 // count with the same `count`/`count_of` pair the record sequence uses, so the
 // two per-table numbers are written and read one way rather than two.
 mod allocation;
+mod balancer;
 mod creating;
 mod decoded;
 pub(crate) mod definition;
@@ -43,6 +44,7 @@ mod group;
 mod indexes;
 mod leadership;
 mod params;
+mod pool;
 mod position;
 mod qualified;
 mod renaming;
@@ -67,6 +69,7 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 pub(crate) use allocation::{Allocated, maintain as maintain_allocators};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
+pub use balancer::BalancerDefinition;
 pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_analyzer, defined_index};
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};
@@ -90,11 +93,12 @@ pub use group::{GroupDeclaration, GroupMemberState, GroupState, InFlight};
 pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
 pub use leadership::governing;
+pub use pool::PoolDefinition;
 pub use replica::{
     Greeter, JoinTicket, ReplicaDefinition, another_node_may_write, names_a_peer,
     the_row_a_greeting_binds,
 };
-pub use replication::ReplicationDefinition;
+pub use replication::{ReplicationDefinition, ReplicationState};
 pub(crate) use rows::CatalogRows;
 pub use shard::{ShardMap, ShardSpan};
 pub use space::{Eviction, SpaceDeclaration, SpaceLimit};

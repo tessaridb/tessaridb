@@ -62,12 +62,54 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
         .copied()
         .chain(["SELECT * FROM kept;", "INFO FOR DATABASE;"])
     {
+        let mut expected = here.run_now(script).unwrap();
+        let mut found = there.run_now(script).unwrap();
+        if script == "INFO FOR DATABASE;" {
+            // The `log` group is the store's own fact, and a follower re-seeded
+            // by copy holds state, not history: its log is empty and resumes
+            // where the copy recorded it, one past the tail, where the
+            // leader's log is whole from one. The data answers compare equal;
+            // the resume point is pinned separately below.
+            for outcomes in [&mut expected, &mut found] {
+                for outcome in outcomes.iter_mut() {
+                    if let tessari_session::Outcome::Value(tessari_types::Value::Object(report)) =
+                        outcome
+                    {
+                        report.remove("log");
+                    }
+                }
+            }
+        }
         assert_eq!(
-            format!("{:?}", here.run_now(script).unwrap()),
-            format!("{:?}", there.run_now(script).unwrap()),
+            format!("{expected:?}"),
+            format!("{found:?}"),
             "the follower and its leader disagree about {script}"
         );
     }
+    let resumed = there
+        .run_now("INFO FOR DATABASE;")
+        .unwrap()
+        .pop()
+        .expect("the report");
+    let tessari_session::Outcome::Value(tessari_types::Value::Object(report)) = resumed else {
+        panic!("expected a report, got {resumed:?}");
+    };
+    let Some(tessari_types::Value::Object(log)) = report.get("log") else {
+        panic!("expected a log group in {report:?}");
+    };
+    assert_eq!(
+        log.get("tail"),
+        Some(&tessari_types::Value::from(24)),
+        "the copy's tail stands where the leader's log stood"
+    );
+    let number = |field: &str| match log.get(field) {
+        Some(tessari_types::Value::Number(tessari_types::Number::Integer(held))) => *held,
+        other => panic!("expected {field} to be an integer in {other:?}"),
+    };
+    assert!(
+        number("start") > number("tail"),
+        "the follower's log is empty below the resume the copy recorded: {log:?}"
+    );
 
     // The derived entries are the leader's own: an index that kept an entry for
     // a removed record, or missed one for a changed record, is a difference in

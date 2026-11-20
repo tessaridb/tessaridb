@@ -1222,6 +1222,8 @@ already written carries it. A new table takes the next id; none is reused.
 | `31` | `FEED_SCAN_STATES` | where each declared feed's initial scan has reached: its snapshot sequence, resume position, and whether the table is exhausted (row `table id + feed name`, FEAT-S1) |
 | `32` | `REPLICATIONS` | each outbound replication's declaration: the remote cluster's endpoint, the database shipped to it, the database's name there, whether the stream is paused, and the link token awaiting a bind (row `replication name`) |
 | `33` | `TOPOLOGY` | the realm/domain scheme the cluster is arranged over: the scheme's name, its realms with their domains, the survival claim, and the leadership pair that orders the row (one row, key `scheme`) |
+| `34` | `BALANCER` | the load-balancing policy the store line's leader runs a placement move under: the margin as hundredths of one, the measurement window, the spacing, and the leadership pair that orders the row (one row, key `policy`, beside the failover policy's row) |
+| `35` | `POOLS` | the workload pools a namespace admits work under: the limit, the classifier (database, user, kinds), one row per pool keyed `namespace:name` |
 
 ## 10. Format versions
 
@@ -1247,6 +1249,8 @@ and is rewritten at open only where the row below says so.
 | `12` | key kinds `0x47` and `0x48`: the per-column planner statistics and the table write counter they are freshened against (G083) — node-local facts a build before it neither reads nor writes; nothing a pre-12 build does changes or is changed by them | opened as is and keeps its stamp |
 | `13` | the catalog keeps an outbound replication's declaration in system table `32` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `32` | opened as is and keeps its stamp; `DEFINE REPLICATION` is refused (`FormatNotFinalized`) until the store is finalized |
 | `14` | the catalog keeps the declared realm/domain topology in system table `33` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `33` | opened as is and keeps its stamp; `DEFINE TOPOLOGY` is refused (`FormatNotFinalized`) until the store is finalized |
+| `15` | the catalog keeps the load-balancing policy in system table `34` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `34` | opened as is and keeps its stamp; `DEFINE BALANCER` is refused (`FormatNotFinalized`) until the store is finalized |
+| `16` | the catalog keeps a namespace's workload pools in system table `35` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `35` | opened as is and keeps its stamp; `DEFINE POOL` is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

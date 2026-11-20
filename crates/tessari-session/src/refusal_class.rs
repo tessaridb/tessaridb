@@ -76,7 +76,16 @@ impl Error {
             | Self::GroupExists { .. }
             // A row another open transaction claims: the contender is told,
             // the way the committer beside it is (the claims design, §2).
-            | Self::ClaimedByAnother { .. } => RefusalClass::Conflict,
+            | Self::ClaimedByAnother { .. }
+            // A pool's gate turned a matching script away: named, transient,
+            // and retryable the way CommitContention is — the spec section's
+            // conflict class, with the remedy the sentence beside it states.
+            | Self::PoolAtCapacity { .. }
+            // The seeding lifecycle's gates: the copy is short of the floor
+            // or the tail runs ahead — both are named, transient, and the
+            // refusal itself says what closes them (a serve, a catch-up).
+            | Self::Seeding { .. }
+            | Self::LinkBehind { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
             | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }
@@ -95,6 +104,14 @@ impl Error {
             | Self::Thrown { .. }
             | Self::JsonTextRefused { .. }
             | Self::FailoverRefused { .. }
+            // The load policy's margins are a request to fix, exactly the
+            // policy's class: the relations are the operator's own statement
+            // being wrong about the store, not the store being broken.
+            | Self::BalancerRefused { .. }
+            // The pool's limit is a request to fix, exactly the policy's
+            // class: the relation is the operator's own statement being
+            // wrong about the store, not the store being broken.
+            | Self::PoolRefused { .. }
             // A scheme that does not hold together is a request to fix, the
             // policy's class; one that would replace a held scheme is the
             // same — drop or amend first, then the statement runs.

@@ -141,6 +141,16 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         | StatementKind::DefineTopology { .. }
         | StatementKind::AlterTopology { .. }
         | StatementKind::DropTopology { .. }
+        // The load policy names margins and periods, which are not tables
+        // either — the grant loop has nothing to check, for the scheme's
+        // reason.
+        | StatementKind::DefineBalancer { .. }
+        | StatementKind::DropBalancer
+        // A pool names a limit and a classifier; the classifier's database
+        // and user are names the grant loop resolves, not tables it checks,
+        // for the scheme's reason — nothing here is a table.
+        | StatementKind::DefinePool { .. }
+        | StatementKind::DropPool { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its
         // destination.

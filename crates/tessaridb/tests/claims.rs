@@ -135,7 +135,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 31] = [
+const CROSS_CUTTING: [&str; 32] = [
     // A fused order combines the orders of several engines — full-text, vector,
     // geographic — by rank, and is the work of none of them: filing it under one
     // would make that engine look like the owner of the other two's answers.
@@ -215,6 +215,12 @@ const CROSS_CUTTING: [&str; 31] = [
     // engine: realms and domains are labels a layout is validated against,
     // whichever engines the tables they span are served by.
     "topology",
+    // Bounding whose statements may run at once is about the tenant and the
+    // cluster and about no engine: the pool's classifier names the statement
+    // families (reads, writes, definitions) whichever engines the bounded
+    // scripts touch, and the row is namespace-scoped the way the tenancy
+    // confinement's rows are.
+    "pools",
     // How many records a read says it answers with is about no engine either:
     // `ONLY` asserts the same thing of a scan, a walk and an index read.
     "only",

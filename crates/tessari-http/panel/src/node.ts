@@ -147,11 +147,37 @@ export async function readNode(): Promise<void> {
     // the authority the node actually holds.
     drawTrust(all as Trusted);
     know(all["id"], all["endpoints"], Array.isArray(peers) ? peers.length : 0);
+    // The load balancer, when one is declared: the row the catalog holds,
+    // reported in the fixed-point spelling the store writes (above is
+    // hundredths — a reader divides, the report never guesses a float).
+    const balancer =
+      typeof cluster === "object" && cluster !== null
+        ? (cluster as { balancer?: unknown }).balancer
+        : undefined;
+    const balancerLine = (held: unknown): string | null => {
+      if (typeof held !== "object" || held === null) {
+        return null;
+      }
+      const row = held as Record<string, unknown>;
+      const above = typeof row["above"] === "number" ? row["above"] / 100 : null;
+      const within = typeof row["within"] === "string" ? row["within"] : null;
+      const spacing = typeof row["spacing"] === "string" ? row["spacing"] : null;
+      if (above === null || within === null || spacing === null) {
+        return null;
+      }
+      const epoch = typeof row["epoch"] === "number" ? ` · epoch ${String(row["epoch"])}` : "";
+      const version = typeof row["version"] === "number" ? ` · version ${String(row["version"])}` : "";
+      return `load above ${above.toFixed(2)} within ${within}, spacing ${spacing}${epoch}${version}`;
+    };
+    const policy = balancerLine(balancer);
     facts("cluster-facts", {
       roles: all["roles"],
       peers: peers ?? [],
       endpoints: all["endpoints"],
       id: all["id"],
+      // No balancer declared: the key stays out rather than reading none,
+      // on the rule that an absent row is not a fact about the cluster.
+      ...(policy !== null ? { balancer: policy } : {}),
     });
     // Replication links are the cluster's other topology, and they read the
     // same way. A refusal — a signed-in user who may not operate the store —
@@ -164,28 +190,23 @@ export async function readNode(): Promise<void> {
         state("replication-status", "empty", "No replication links — this cluster ships to nobody and receives from nobody.");
       } else {
         settled("replication-status");
-        facts("replication-facts", {
-          links: rows
-            .map((row) => {
-              const link = (row ?? {}) as Record<string, unknown>;
-              const name = typeof link["name"] === "string" ? link["name"] : "?";
-              const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
-              const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
-              const paused = link["paused"] === true ? " · paused" : "";
-              return `${name} · ${direction} · ${endpoint}${paused}`;
-            })
-            .join("\n"),
-        });
-        // The edge on the map wants the registry's confirmed positions, one
-        // `INFO FOR REPLICATION <name>` per link. Process-local truth: a link
-        // the registry has not read renders as "no confirmation held", and a
-        // link whose report refuses renders the same — the registry answers
-        // for itself or not at all, and the map does not invent a reading.
+        // The edge on the map and the state on the facts line want the
+        // registry's confirmed positions and the lifecycle the link row
+        // carries — one `INFO FOR REPLICATION <name>` per link.
+        // Process-local truth: a link the registry has not read renders as
+        // "no confirmation held", and a link whose report refuses renders
+        // the same — the registry answers for itself or not at all, and the
+        // map does not invent a reading.
         const edges: Link[] = [];
+        const lines: string[] = [];
         for (const row of rows) {
           const link = (row ?? {}) as Record<string, unknown>;
           const name = typeof link["name"] === "string" ? link["name"] : null;
+          const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
+          const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
+          const paused = link["paused"] === true ? " · paused" : "";
           let confirmed: string | null = null;
+          let lifecycle = "";
           if (name !== null) {
             try {
               const report = held(await valueOf(`INFO FOR REPLICATION ${name};`, "Node"));
@@ -205,16 +226,87 @@ export async function readNode(): Promise<void> {
                   })
                   .join(" · ");
               }
+              // The seeding lifecycle, when the row carries one: the state
+              // word with the progress figures beside it. An unseeded link
+              // answers no progress group and its line stays what it was.
+              const progress =
+                typeof report?.["progress"] === "object" && report["progress"] !== null
+                  ? (report["progress"] as Record<string, unknown>)
+                  : null;
+              if (progress !== null) {
+                const at = typeof progress["state"] === "string" ? progress["state"] : null;
+                if (at !== null) {
+                  const figures: string[] = [];
+                  const seedAt = progress["seed_at"];
+                  if (typeof seedAt === "number") {
+                    figures.push(`seed ${String(seedAt)}`);
+                  }
+                  const applied = progress["applied"];
+                  if (typeof applied === "number") {
+                    figures.push(`applied ${String(applied)}`);
+                  }
+                  const latest = progress["source_latest"];
+                  if (typeof latest === "number") {
+                    figures.push(`source ${String(latest)}`);
+                  }
+                  const lag = progress["lag"];
+                  if (typeof lag === "number") {
+                    figures.push(`lag ${String(lag)}`);
+                  }
+                  const detail = figures.length === 0 ? "" : ` (${figures.join(", ")})`;
+                  lifecycle = ` · ${at}${detail}`;
+                }
+              }
             } catch {
               confirmed = null;
             }
           }
+          lines.push(`${name ?? "?"} · ${direction} · ${endpoint}${lifecycle}${paused}`);
           edges.push({ row: link, confirmed });
         }
+        facts("replication-facts", { links: lines.join("\n") });
         layout = { ...layout, links: edges };
       }
     } catch {
       state("replication-status", "empty", "Replication links need the store's operator to read them.");
+    }
+    // Workload pools: the namespace's admission governance, read the same
+    // way. A refusal — pools answer to the namespace's manager — leaves the
+    // part quiet, the way a refused link list does.
+    try {
+      const answered = held(await valueOf("INFO FOR POOLS;", "Node"));
+      const rows = Array.isArray(answered) ? answered : [];
+      if (rows.length === 0) {
+        state("pools-status", "empty", "No workload pools — every statement is admitted as today.");
+      } else {
+        settled("pools-status");
+        facts("pools-facts", {
+          pools: rows
+            .map((row) => {
+              const pool = (row ?? {}) as Record<string, unknown>;
+              const name = typeof pool["name"] === "string" ? pool["name"] : "?";
+              const max =
+                typeof pool["max_concurrent"] === "number" ? String(pool["max_concurrent"]) : "?";
+              const kinds = ["reads", "writes", "definitions"]
+                .filter((kind) => pool[kind] === true)
+                .join(", ");
+              const classifier =
+                pool["database"] === null || pool["database"] === undefined
+                  ? "any database"
+                  : `database ${String(pool["database"])}`;
+              const user =
+                pool["user"] === null || pool["user"] === undefined
+                  ? ""
+                  : `, user ${String(pool["user"])}`;
+              const running = typeof pool["running"] === "number" ? String(pool["running"]) : "?";
+              const refused = typeof pool["refused"] === "number" ? String(pool["refused"]) : "?";
+              return `${name} · at most ${max} at once · ${kinds} · ${classifier}${user} · running ${running} · refused ${refused}`;
+            })
+            .join("\n"),
+        });
+      }
+    } catch {
+      state("pools-status", "empty", "Workload pools need the namespace's manager to read them.");
     }
     // The map last of the reads, so the layout carries every layer: the
     // cluster figures, the scheme, the link edges with the registry's

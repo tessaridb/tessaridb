@@ -551,6 +551,14 @@ const ACCEPTED_NEGATIONS: &[(&str, &str)] = &[
         "True: the link list is read from the catalog, and an empty catalog names no links.",
     ),
     (
+        "No workload pools — every statement is admitted as today.",
+        "True: the pool list is read from the catalog, and an empty catalog names no pools — no declared pool matches any statement, and the default pool names no limit, so admission holds no bound (the C2 evidence's quiet-tenant half).",
+    ),
+    (
+        "Drain re-places what a leaving node led, with no balance statement.",
+        "True: the load pass's drain branch moves the placement when a bound member row's roles are cleared (ALTER REPLICA n ROLES NONE) — U4 measured a drained store leader's shard-2 placement landing on an idle voter with no BALANCE LEADERSHIPS anywhere in the run.",
+    ),
+    (
         "No topology scheme is declared on this cluster — realms are not named, so the map draws the cluster as it stands rather than an empty diagram that would read as a fault.",
         "True: INFO FOR TOPOLOGY answers null when nobody has declared a scheme — one topology per cluster, and the absence of a scheme is itself the answer, distinct from a scheme that declares nothing. The sentence is the map's honesty row: an empty diagram would read as a fault the engine never named.",
     ),

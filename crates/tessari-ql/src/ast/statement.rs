@@ -10,7 +10,7 @@ use super::{
 use crate::token::Span;
 use tessari_types::{
     Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number,
-    RecordId, Replication, ReplicationClass,
+    PoolKinds, RecordId, Replication, ReplicationClass,
 };
 
 /// `ON CONFLICT [(name, …)] DO …` — the arbiter clause an insert may carry.
@@ -50,6 +50,44 @@ pub struct ConflictUpdate {
     /// proposed row beside it as `excluded`; a false condition skips the row
     /// rather than refusing the statement.
     pub condition: Option<Expr>,
+}
+
+/// A load margin as hundredths of one (150 is 1.5), the fixed-point spelling
+/// a ratio takes in the statement tree: the kind derives `Eq`, and a float
+/// field would take that away from every match over statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ratio(u64);
+
+impl Ratio {
+    /// The stored hundredths, for the catalog row, the render, and every
+    /// comparison: hundredths is the ratio's only spelling — a float would
+    /// re-introduce the precision question the fixed-point spelling exists
+    /// to close, and nothing here needs one.
+    pub fn hundredths(self) -> u64 {
+        self.0
+    }
+
+    /// The margin as hundredths, refused when it is not above one by at least
+    /// a hundredth, or past a ceiling where a ratio is a typo rather than a
+    /// policy.
+    pub fn of_hundredths(hundredths: u64) -> Option<Self> {
+        (101..=1_000_000_000)
+            .contains(&hundredths)
+            .then_some(Self(hundredths))
+    }
+
+    /// The nearest hundredths to `times`, when it is a finite margin in the
+    /// range [`Self::of_hundredths`] admits.
+    pub fn nearest(times: f64) -> Option<Self> {
+        let hundredths = times * 100.0;
+        if !hundredths.is_finite() || !(101.0..=1_000_000_000.0).contains(&hundredths) {
+            return None;
+        }
+        // Range-checked above to a figure `u64` holds with room, and `std`
+        // offers no fallible float-to-int conversion to take instead of this:
+        // round-tripping the decimal spelling is the `as`-free way to land it.
+        Self::of_hundredths(hundredths.round().to_string().parse::<u64>().ok()?)
+    }
 }
 
 /// The statement forms this milestone accepts.
@@ -257,6 +295,10 @@ pub enum StatementKind {
         memory: bool,
         /// `MAX n [EVICT NONE]` — the most keys the space holds .
         limit: Option<SpaceBound>,
+        /// `SPLIT AT …` — where the space's shards begin, when it is born
+        /// split: a space's keys are named by the caller, so the cuts are
+        /// text points a cluster operator writes at the declare.
+        split: Vec<RecordId>,
     },
     /// `DEFINE TOPIC events RETAIN 7d MAX BYTES 4096 PUBLIC RATE 100 PER 1m` —
     /// an append-only order of messages .
@@ -828,6 +870,34 @@ pub enum StatementKind {
         /// write. Absent means the structure is declared with no claim made.
         survives_realm_loss: bool,
     },
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>`
+    /// — the policy under which the store line's leader moves a placement
+    /// because of measured load or a drained node, not only because one node
+    /// leads more lines than another (the count pass,
+    /// [`Self::DefineFailover`]'s `BALANCE LEADERSHIPS`).
+    ///
+    /// **Every clause is required, in this order, and one per store line** —
+    /// the set is checked against itself, so a partial statement could only
+    /// mix new values with old under a single version, and a second `DEFINE`
+    /// replaces the policy whole. The relations (`ABOVE` above 1, `SPACING`
+    /// at least one lease period, `WITHIN` at least the round's cadence) are
+    /// checked where the policy is built, the way `Failover::stated` checks
+    /// the failover relations — the refusal names the direction the value is
+    /// wrong in, and there is exactly one place that knows those directions.
+    DefineBalancer {
+        /// The load margin a move waits for: the busiest measured range's
+        /// rate must exceed the quietest eligible voter's by this factor
+        /// before the pass moves anything. A value of 1 would move on any
+        /// noise, and is refused as not above 1.
+        above: Ratio,
+        /// The window the rates are measured over.
+        within: Duration,
+        /// How little time must pass before a range the pass moved may be
+        /// considered again — the anti-flapping bound, at least one lease
+        /// period so a move is never re-examined while the election it
+        /// provoked may still be settling.
+        spacing: Duration,
+    },
     /// `ALTER TOPOLOGY main ADD REALM 'dc-d' [DOMAIN 'az-1', …]` ·
     /// `ALTER TOPOLOGY main DROP REALM 'dc-c'` — one realm of the scheme per
     /// statement, amended in place for [`ReplicaChange`]'s reason.
@@ -842,6 +912,43 @@ pub enum StatementKind {
     /// declares them.
     DropTopology {
         /// The scheme to drop.
+        name: Name,
+    },
+    /// `DROP BALANCER` — the load policy whole, and the store line returns to
+    /// count-only balancing. The balancer's acts are OFF until a statement
+    /// turns them on, the way every automatic mechanism here is, so removing
+    /// the policy is the off-switch — there is no smaller truthful spelling
+    /// of "balance by count again".
+    DropBalancer,
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit on the work the classifier
+    /// names, a catalog row in the namespace the statement runs in.
+    ///
+    /// **`MAX CONCURRENT` is the one required clause**, because a pool is its
+    /// limit: a name with no bound would be a wish, not a policy. The
+    /// classifier clauses narrow what counts — at most one database, at most
+    /// one user, and a kind list that names reads / writes / definitions,
+    /// absent meaning every kind. A statement that matches no declared pool
+    /// runs in the namespace's default pool, which names no limit.
+    DefinePool {
+        /// The name the pool is known by, unique within its namespace.
+        name: Name,
+        /// How many statements the classifier may run at once; the next one
+        /// is refused `PoolAtCapacity` naming the pool.
+        max_concurrent: u64,
+        /// `FOR DATABASE d`: only statements in this database classify here.
+        database: Option<Name>,
+        /// `FOR USER u`: only statements authenticated as this user classify
+        /// here.
+        user: Option<Name>,
+        /// `FOR READS, WRITES, …`: the statement kinds the pool bounds.
+        /// Absent is every kind, so a plain limit bounds the whole tenant.
+        kinds: PoolKinds,
+    },
+    /// `DROP POOL web` — the pool whole; the namespace returns to its default
+    /// pool, which names no limit.
+    DropPool {
+        /// The pool to drop.
         name: Name,
     },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
@@ -958,6 +1065,15 @@ pub enum StatementKind {
         /// and this cluster's copy is read-only by declaration until the link
         /// is dropped.
         inbound: bool,
+        /// The position the receiving copy's snapshot ends at (`SEED AT
+        /// <position>`), when the statement names one: the link is `seeding`
+        /// until the copy holds everything through it, then `standby`, and
+        /// `active` once the operator promotes it. On an outbound row the
+        /// position is the floor the source serves the tail from; on an
+        /// inbound row it is the floor the copy's catch-up is measured
+        /// against. Absent is the link without a seeding story, active from
+        /// birth.
+        seed_at: Option<u64>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

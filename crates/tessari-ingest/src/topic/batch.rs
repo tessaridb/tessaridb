@@ -268,9 +268,16 @@ fn handed_out(read: &[Outcome]) -> Result<Vec<Handed>, Stopped> {
 /// it; anything else may be one message's doing.
 fn classify(failure: Error) -> Result<Batch, String> {
     match failure {
-        Error::NotWritable { .. } | Error::Store(tessari_storage::Error::LeaseSpent { .. }) => {
-            Ok(Batch::NotHere)
-        }
+        Error::NotWritable { .. }
+        | Error::Store(
+            tessari_storage::Error::LeaseSpent { .. }
+            // A write the cluster led elsewhere is the wait arm too: the
+            // member's node does not lead this range right now, and the
+            // leadership moving to it (a failover) is exactly what the wait
+            // is for — a follower waits, and a failover moves the
+            // application without a re-declare.
+            | tessari_storage::Error::WriteIsElsewhere { .. },
+        ) => Ok(Batch::NotHere),
         Error::Store(
             tessari_storage::Error::Conflict { .. }
             | tessari_storage::Error::CommitContention { .. },
@@ -299,7 +306,7 @@ mod tests {
     use tessari_storage::Store;
     use tessari_types::Value;
 
-    use super::{Batch, hand_back_one, run_batch};
+    use super::{Batch, classify, hand_back_one, run_batch};
     use crate::topic::{Names, declared};
 
     /// A store with `shop.live.orders`, its dead letter, a group that parks a
@@ -507,5 +514,21 @@ mod tests {
             "{halted:?}"
         );
         assert!(rows(&store).is_empty());
+    }
+
+    #[test]
+    fn a_write_elsewhere_waits_like_a_may_not_write() {
+        // On a cluster the write gate's refusal for a range another node
+        // leads is the WAIT arm too — a follower's member waits for the
+        // leadership instead of narrowing to a halt. The shipped hole,
+        // measured on a live cluster: members met this refusal, treated it
+        // as a message's doing, and halted; a failover then applied nothing
+        // until an operator re-declared.
+        let elsewhere = tessari_session::Error::Store(tessari_storage::Error::WriteIsElsewhere {
+            endpoint: "127.0.0.1:47922".to_owned(),
+            node: [0x42; 16],
+            epoch: tessari_types::Epoch::new(12),
+        });
+        assert_eq!(classify(elsewhere), Ok(Batch::NotHere));
     }
 }

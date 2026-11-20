@@ -31,6 +31,7 @@ pub mod json;
 mod nesting;
 mod number;
 mod path;
+mod pool;
 mod reach;
 mod record_id;
 mod refusal_class;
@@ -61,6 +62,7 @@ pub use ids::{
 pub use nesting::MAX_NESTING;
 pub use number::Number;
 pub use path::{Path, Step};
+pub use pool::PoolKinds;
 pub use reach::Reach;
 pub use record_id::RecordId;
 pub use refusal_class::RefusalClass;

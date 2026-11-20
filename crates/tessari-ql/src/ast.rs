@@ -42,8 +42,8 @@ pub use select::{
     Using, Version, WindowFunction, Windowed,
 };
 pub use statement::{
-    BackupForm, ConflictAction, ConflictUpdate, OnConflict, RollupCompute, SearchAsk, SearchCosts,
-    SearchField, SearchMember, SearchOperator, StatementKind, VaultKey,
+    BackupForm, ConflictAction, ConflictUpdate, OnConflict, Ratio, RollupCompute, SearchAsk,
+    SearchCosts, SearchField, SearchMember, SearchOperator, StatementKind, VaultKey,
 };
 pub use structure::{
     Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,
@@ -242,6 +242,7 @@ pub use tables::{
     Reference, StoreKind, TableChange, TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
+pub use tessari_types::PoolKinds;
 pub use users::{Credential, Password, UserChange, UserGrant};
 
 /// A route to a value inside a record, as written.
@@ -365,6 +366,11 @@ pub enum ReplicationChange {
     Paused,
     /// `RESUMED` — the driver takes it up again.
     Resumed,
+    /// `ACTIVE` — the early-promote spelling: moves a caught-up seeded link
+    /// from `standby` to `active`, refusing while the copy is short of the
+    /// seed position or the source's tail runs ahead of what the far side
+    /// has confirmed.
+    Active,
 }
 
 /// A table, optionally qualified by its database.

@@ -54,7 +54,15 @@ impl<'a> Session<'a> {
             );
         }
         let script = self.bind_script(script, parameters).await?;
-        let ran = self.run_script(script).await?;
+        let ran = self
+            .run_script(
+                script,
+                match (namespace, database) {
+                    (Some(namespace), database) => Some((namespace, database)),
+                    (None, _) => None,
+                },
+            )
+            .await?;
         // The built `USE` answered too; the caller sent none and is owed none.
         Ok(if namespace.is_some() || database.is_some() {
             ran.into_iter().skip(1).collect()
@@ -67,10 +75,14 @@ impl<'a> Session<'a> {
     /// [`Session::run_with`] runs one it read.
     ///
     /// Shared with the vault surface, whose statements are built rather than
-    /// read so that a passphrase is never text (ADR-0092 D2).
+    /// read so that a passphrase is never text (ADR-0092 D2). `carried` is
+    /// the tenancy a built `USE` puts in front of the script — the
+    /// peer-carried form — which is what the pool gate classifies against
+    /// when the session's own selection says nothing.
     pub(crate) async fn run_script(
         &mut self,
         mut script: tessari_ql::Script,
+        carried: Option<(&str, Option<&str>)>,
     ) -> Result<Vec<Outcome>> {
         let store = self.store;
 
@@ -86,6 +98,11 @@ impl<'a> Session<'a> {
         if matches!(Effect::of_script(&script), Effect::Write) {
             admits(store.node_identity().await?.roles, &script)?;
         }
+        // The pool gate, beside the roles check: a matching declared pool
+        // holds its slot for the whole run, and the refusal — PoolAtCapacity
+        // naming the pool — lands before anything in the script runs. The
+        // slot returns when the run ends, by whichever path.
+        let _slot = self.admit_pool(&script, carried).await?;
 
         let mut open: Option<(Transaction<'a>, tessari_ql::Span)> = None;
         let outcomes = self.run_statements(store, &mut open, &mut script).await?;
@@ -114,6 +131,9 @@ impl<'a> Session<'a> {
         if matches!(Effect::of_script(&script), Effect::Write) {
             admits(store.node_identity().await?.roles, &script)?;
         }
+        // The pool gate, for the same reason run_script holds it: the slot
+        // stands for the whole run, including the parked transaction's.
+        let _slot = self.admit_pool(&script, None).await?;
 
         // The parked transaction rejoins as this run's open one — the
         // binding's type seats the `'static` spelling into this run's

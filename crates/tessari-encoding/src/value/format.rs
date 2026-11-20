@@ -102,7 +102,19 @@ impl FormatVersion {
     /// cannot place — the version-13 shape again, so a store below is opened
     /// as is and keeps its stamp, and the scheme's statements refuse
     /// (`FormatNotFinalized`) until the store is finalized.
-    pub const CURRENT: Self = Self(14);
+    ///
+    /// Format 15 is the same shape one table later: the catalog keeps the
+    /// load-balancing policy in system table `34` (one row, key `policy`,
+    /// beside the failover row) — a build before it never reads the row, but
+    /// its key grammar cannot place a key naming table `34`. A store below
+    /// is opened as is and keeps its stamp, and `DEFINE BALANCER` refuses
+    /// (`FormatNotFinalized`) until the store is finalized.
+    ///
+    /// Format 16 is the shape again: the catalog keeps a namespace's workload
+    /// pools in system table `35` (one row per pool, key `namespace:name`).
+    /// A store below is opened as is and keeps its stamp, and `DEFINE POOL`
+    /// refuses (`FormatNotFinalized`) until the store is finalized.
+    pub const CURRENT: Self = Self(16);
 
     /// The first format whose tables may be declared columnar (ADR-0137,
     /// ADR-0137). Named for the reason [`Self::HOMED_LOG`] is.
@@ -197,6 +209,8 @@ impl FormatVersion {
             12 => (0, 41),
             13 => (0, 42),
             14 => (0, 48),
+            15 => (0, 50),
+            16 => (0, 50),
             _ => return None,
         };
         Some(crate::NodeVersion {

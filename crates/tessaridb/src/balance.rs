@@ -43,6 +43,7 @@ use crate::{Db, Result};
 
 mod handing_back;
 mod leaderships;
+mod load;
 pub use leaderships::{LeadershipMoves, Moved};
 
 /// How many records one page of a shard's walk reads.
@@ -143,6 +144,8 @@ impl Db {
             let measured = self.measure(&table, map, above, &rates).await?;
             let mut sampled = SampledTable {
                 name,
+                namespace: table.namespace,
+                database: table.database,
                 shards: measured.iter().map(Measured::sampled).collect(),
                 last_act: None,
             };

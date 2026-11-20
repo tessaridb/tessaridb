@@ -1729,6 +1729,168 @@ fn failover_is_a_contextual_word_and_still_names_a_table() {
 }
 
 #[test]
+fn a_balancer_policy_is_a_ratio_a_window_and_a_spacing() {
+    // `docs/tessariql.md` § Moving work by load, copied from the specification
+    // as every statement in this file is. Every clause is required, in this
+    // order, for the reason `DEFINE FAILOVER`'s five are: the set is checked
+    // against itself, and a partial statement could only mix new values with
+    // old ones under a single version.
+    let StatementKind::DefineBalancer {
+        above,
+        within,
+        spacing,
+    } = one("DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;")
+    else {
+        panic!("DEFINE BALANCER did not parse as DEFINE BALANCER");
+    };
+    assert_eq!(above.hundredths(), 150);
+    assert_eq!(within.seconds(), 30);
+    assert_eq!(spacing.seconds(), 60);
+}
+
+#[test]
+fn a_balancer_statement_missing_a_clause_is_refused_and_says_which_one() {
+    // The refusal names the CLAUSE, for the reason the failover refusal does:
+    // three clauses in a fixed order means the mistake is almost always which
+    // one is missing, and an error that cannot say leaves the operator
+    // recounting what they typed.
+    for (statement, missing) in [
+        ("DEFINE BALANCER LOAD ABOVE 1.5 SPACING 60s;", "`WITHIN`"),
+        ("DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s;", "`SPACING`"),
+    ] {
+        let refused = parse(statement).expect_err("an incomplete balancer parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains(missing.trim_matches('`')),
+            "the refusal did not name the missing clause {missing}: {said}"
+        );
+    }
+}
+
+#[test]
+fn a_balancer_ratio_of_no_size_is_refused_where_the_number_is() {
+    // Caught at the statement rather than at the policy's build, for the
+    // reason a zero period is: it is a mistake in what was typed, and a ratio
+    // is the one figure here that can be meaningless without being unlexable.
+    for statement in [
+        "DEFINE BALANCER LOAD ABOVE 0 WITHIN 30s SPACING 60s;",
+        "DEFINE BALANCER LOAD ABOVE -1.5 WITHIN 30s SPACING 60s;",
+    ] {
+        let refused = parse(statement).expect_err("a ratio of no size parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("not above 1"),
+            "refused, but not as a ratio: {said}"
+        );
+    }
+}
+
+#[test]
+fn balancer_is_a_contextual_word_and_still_names_a_table() {
+    // `failover` and `topology` are read the same way: special after `DEFINE`,
+    // an ordinary identifier everywhere else.
+    assert!(matches!(
+        one("SELECT * FROM balancer;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
+fn a_balancer_may_be_dropped() {
+    // `DROP BALANCER` returns the store line to count-only balancing — the
+    // shipped behavior — because the statement replaces the set and the set
+    // has no smaller truthful off-switch than removing it.
+    assert!(matches!(one("DROP BALANCER;"), StatementKind::DropBalancer));
+}
+
+#[test]
+fn a_pool_limits_concurrency_and_names_its_classifier() {
+    // `docs/tessariql.md` § Bounding a tenant's work, copied from the
+    // specification as every statement in this file is. `MAX CONCURRENT` is
+    // the one required clause — a pool is its admission limit, and a name
+    // with no limit would be a wish. The classifier clauses narrow which
+    // work counts: at most one database, at most one user, and a kind list
+    // that defaults to every kind the session runs.
+    let StatementKind::DefinePool {
+        name,
+        max_concurrent,
+        database,
+        user,
+        kinds,
+    } = one("DEFINE POOL web WITH MAX CONCURRENT 10 FOR DATABASE shop FOR READS, WRITES;")
+    else {
+        panic!("DEFINE POOL did not parse as DEFINE POOL");
+    };
+    assert_eq!(name.text, "web");
+    assert_eq!(max_concurrent, 10);
+    assert_eq!(database.map(|held| held.text).as_deref(), Some("shop"));
+    assert_eq!(user.map(|held| held.text).as_deref(), None);
+    assert!(kinds.reads && kinds.writes && !kinds.definitions);
+    let StatementKind::DefinePool { user, kinds, .. } =
+        one("DEFINE POOL etl WITH MAX CONCURRENT 2 FOR USER loader;")
+    else {
+        panic!("DEFINE POOL did not parse as DEFINE POOL");
+    };
+    assert_eq!(user.map(|held| held.text).as_deref(), Some("loader"));
+    assert!(
+        kinds.reads && kinds.writes && kinds.definitions,
+        "a pool without a kind clause bounds every kind"
+    );
+}
+
+#[test]
+fn a_pool_without_its_limit_is_refused_and_says_which_clause() {
+    // The limit is what a pool IS; the refusal names the missing clause for
+    // the reason the balancer's does — a fixed order means the mistake is
+    // almost always which one was left out.
+    let refused = parse("DEFINE POOL web FOR READS;").expect_err("a pool with no limit parsed");
+    let said = refused.to_string();
+    assert!(
+        said.contains("MAX CONCURRENT"),
+        "the refusal did not name the missing clause: {said}"
+    );
+}
+
+#[test]
+fn a_pool_limit_of_no_size_is_refused_where_the_number_is() {
+    // Zero is not a bound: it would refuse every statement the classifier
+    // matches, which is a deny-list wearing a pool's clothes. Refused at the
+    // statement, the way the balancer's margin is — it is a mistake in what
+    // was typed, not in the catalog.
+    for statement in [
+        "DEFINE POOL web WITH MAX CONCURRENT 0;",
+        "DEFINE POOL web WITH MAX CONCURRENT -1;",
+    ] {
+        let refused = parse(statement).expect_err("a limit of no size parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("not a limit"),
+            "refused, but not as a limit: {said}"
+        );
+    }
+}
+
+#[test]
+fn pool_is_a_contextual_word_and_still_names_a_table() {
+    // `balancer` and `failover` are read the same way: special after
+    // `DEFINE`/`DROP`, an ordinary identifier everywhere else.
+    assert!(matches!(
+        one("SELECT * FROM pool;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
+fn a_pool_may_be_dropped() {
+    // Dropping returns the namespace to its default pool — no limits — the
+    // way `DROP BALANCER` returns the line to count-only balancing.
+    let StatementKind::DropPool { name } = one("DROP POOL web;") else {
+        panic!("DROP POOL did not parse as DROP POOL");
+    };
+    assert_eq!(name.text, "web");
+}
+
+#[test]
 fn a_topology_declares_its_realms_and_the_optional_claim() {
     // `docs/tessariql.md` § The layout a cluster is arranged over, copied from
     // the specification as every statement in this file is. One REALM clause
@@ -1829,6 +1991,34 @@ fn the_scheme_is_asked_about_by_name_and_in_the_plural() {
 }
 
 #[test]
+fn a_pool_is_asked_about_by_name_and_in_the_plural() {
+    // `docs/tessariql.md` § Bounding a tenant's work. The plural is read
+    // first, as with `TOPOLOGIES`, so no subject is half-eaten, and the
+    // whole-answer error line lists both beside the subjects beside them.
+    let StatementKind::Info {
+        subject: tessari_ql::InfoSubject::Pool(name),
+    } = one("INFO FOR POOL web;")
+    else {
+        panic!("INFO FOR POOL did not parse as INFO FOR POOL");
+    };
+    assert_eq!(name.text, "web");
+    assert!(matches!(
+        one("INFO FOR POOLS;"),
+        StatementKind::Info {
+            subject: tessari_ql::InfoSubject::Pools,
+        }
+    ));
+    // The subject takes a name; `INFO FOR POOL` alone is not a question.
+    assert!(parse("INFO FOR POOL;").is_err());
+    // `pool` is contextual like `topology`: a table called `pool` keeps its
+    // name everywhere but directly after `INFO FOR`.
+    assert!(matches!(
+        one("SELECT * FROM pool;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
 fn a_member_row_names_its_domain_within_its_region() {
     // The DOMAIN clause on a member row: optional, last — every declaration
     // written before it reads as it did — and a position within the region,
@@ -1908,6 +2098,28 @@ fn none_is_a_whole_answer_and_not_a_member_of_the_role_list() {
 }
 
 #[test]
+fn altering_a_peers_roles_to_none_drains_the_bound_row() {
+    // `docs/tessariql.md` § Draining this node, the membership-row half:
+    // `DEFINE REPLICA` declares rather than amends (a second declare of one
+    // name is `NameTaken`), so a bound row's roles can only move through
+    // `ALTER` — and amending is the one place absence means *leave alone*, so
+    // clearing needs the whole-answer spelling `DEFINE NODE` already keeps.
+    let StatementKind::AlterReplica { name, change } = one("ALTER REPLICA n1 ROLES NONE;") else {
+        panic!("ALTER REPLICA ROLES NONE did not parse as ALTER REPLICA");
+    };
+    assert_eq!(name.text, "n1");
+    let tessari_ql::ReplicaChange::Roles(words) = change else {
+        panic!("ROLES NONE did not parse as a roles change");
+    };
+    assert!(words.is_empty(), "NONE clears rather than names");
+    // The whole-answer rule holds here exactly the way it holds on
+    // `DEFINE NODE`: a list that mixes NONE with a role would have to decide
+    // which one won.
+    assert!(parse("ALTER REPLICA n1 ROLES NONE, serving;").is_err());
+    assert!(parse("ALTER REPLICA n1 ROLES serving, NONE;").is_err());
+}
+
+#[test]
 fn a_peer_keeps_no_second_spelling_for_an_absent_roles_clause() {
     // `DEFINE REPLICA` declares rather than amends, so an absent `ROLES`
     // already means no roles and already drains. Adding `NONE` there would be
@@ -1938,6 +2150,7 @@ fn a_replication_names_a_fully_qualified_database() {
         database,
         remote,
         inbound,
+        seed_at,
         if_not_exists,
     } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop AS 'shop';")
     else {
@@ -1954,6 +2167,7 @@ fn a_replication_names_a_fully_qualified_database() {
     assert_eq!(remote.as_deref(), Some("shop"));
     assert!(!inbound, "`TO` is the outbound half — this cluster ships");
     assert!(!if_not_exists);
+    assert_eq!(seed_at, None, "no seed position was named");
     // Absent clauses: no remote name, no IF NOT EXISTS — declared, not amended.
     let StatementKind::DefineReplication {
         remote,
@@ -1979,6 +2193,41 @@ fn a_replication_names_a_fully_qualified_database() {
     // One direction per declaration: neither is a default, and `AT` is not a
     // spelling for either.
     assert!(parse("DEFINE REPLICATION east AT 'cluster-b:9080' FOR DATABASE prod.shop;").is_err());
+    // `SEED AT` names where the receiving copy's snapshot ends — the position
+    // the seeding lifecycle measures catch-up against. Optional, after the
+    // remote name, in either direction.
+    let StatementKind::DefineReplication {
+        seed_at, inbound, ..
+    } = one("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 42;")
+    else {
+        panic!("DEFINE REPLICATION SEED AT did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, Some(42));
+    assert!(inbound);
+    let StatementKind::DefineReplication {
+        seed_at, inbound, ..
+    } = one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop SEED AT 42;")
+    else {
+        panic!("DEFINE REPLICATION TO SEED AT did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, Some(42));
+    assert!(!inbound, "the serve floor rides the outbound row too");
+    let StatementKind::DefineReplication { seed_at, .. } =
+        one("DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop;")
+    else {
+        panic!("DEFINE REPLICATION did not parse as DEFINE REPLICATION");
+    };
+    assert_eq!(seed_at, None, "absent is the link without a seeding story");
+    // The position is a positive whole number; a name, text or nothing where
+    // the number stands is refused where the span is.
+    assert!(
+        parse("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED AT 'forty-two';")
+            .is_err()
+    );
+    assert!(
+        parse("DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop SEED;")
+            .is_err()
+    );
 }
 
 #[test]
@@ -2021,6 +2270,11 @@ fn one_clause_of_a_replication_changes_per_statement() {
         panic!("ALTER REPLICATION RESUMED did not parse as ALTER REPLICATION");
     };
     assert!(matches!(change, tessari_ql::ReplicationChange::Resumed));
+    let StatementKind::AlterReplication { change, .. } = one("ALTER REPLICATION east ACTIVE;")
+    else {
+        panic!("ALTER REPLICATION ACTIVE did not parse as ALTER REPLICATION");
+    };
+    assert!(matches!(change, tessari_ql::ReplicationChange::Active));
     assert!(parse("ALTER REPLICATION east ROLES serving;").is_err());
 }
 

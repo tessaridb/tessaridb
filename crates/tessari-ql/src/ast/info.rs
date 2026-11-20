@@ -282,4 +282,22 @@ pub enum InfoSubject {
     Topology(Name),
     /// `INFO FOR TOPOLOGIES` — the declared schemes, by name.
     Topologies,
+    /// `INFO FOR POOL web` — one pool's declaration with this node's counts:
+    /// the limit, the classifier clauses, how many matching scripts are
+    /// running here right now, and how many the gate has refused.
+    ///
+    /// The counts are **this node's own**, stated as such: the tally is
+    /// process-local for the cluster tally's reason, and an INFO row that
+    /// presented them as the cluster's would be a claim the store cannot
+    /// check. The declaration beside them follows a backup the way every
+    /// catalog row does.
+    Pool(Name),
+    /// `INFO FOR POOLS` — every pool the selected namespace holds, by name.
+    ///
+    /// The plural exists for the reason [`InfoSubject::Topologies`] does: a
+    /// manager has a name to ask before it has a name to look up. Answered to
+    /// the namespace's administrator, for [`InfoSubject::User`]'s reason
+    /// applied one level down: the rows are who may run what, and a partial
+    /// account of that reads as the whole one.
+    Pools,
 }

@@ -25,7 +25,7 @@ use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Outcome, Session};
 
 use tessari_storage::{Catalog, Reach, Store};
-use tessari_types::{Sequence, Value};
+use tessari_types::{Number, Sequence, Value};
 
 const PASSWORD: &str = "correct horse battery";
 
@@ -80,6 +80,75 @@ fn listed(report: &Value, field: &str) -> Vec<String> {
             other => panic!("expected a name, got {other:?}"),
         })
         .collect()
+}
+
+/// The `log` group of a database report, as (start, tail) — the two numbers
+/// the seed procedure is written from.
+fn logged(report: &Value) -> (u64, u64) {
+    let Value::Object(fields) = report else {
+        panic!("expected an object, got {report:?}");
+    };
+    let Some(Value::Object(log)) = fields.get("log") else {
+        panic!("expected a log group in {report:?}");
+    };
+    let number = |field: &str| match log.get(field) {
+        Some(Value::Number(Number::Integer(held))) => {
+            u64::try_from(*held).expect("a log position fits")
+        }
+        other => panic!("expected {field} to be an integer in {other:?}"),
+    };
+    (number("start"), number("tail"))
+}
+
+#[test]
+fn a_database_reports_where_its_log_begins_and_ends_so_a_seed_can_be_named_by_hand() {
+    // The seed procedure is written from two numbers — where the database's
+    // log still begins and where it ends — and no statement answered either
+    // until this report carried them: the suites read positions through store
+    // APIs, the operator had no equivalent, so `SEED AT <position>` could not
+    // be named by hand. The group names the history a backup carries — the
+    // line's once it holds records, this node's own before any leadership,
+    // the same choice the serve path answers by.
+    let store = store();
+    let mut session = ready(&store);
+    assert_eq!(logged(&report(&mut session, "INFO FOR DATABASE;")), (0, 0));
+
+    session
+        .run_now(
+            "CREATE orders:1 = { item: 'book' }; \
+             CREATE orders:2 = { item: 'map' };",
+        )
+        .unwrap();
+    assert_eq!(logged(&report(&mut session, "INFO FOR DATABASE;")), (1, 2));
+}
+
+#[test]
+fn a_pruned_database_log_reports_its_surviving_start() {
+    // `start` is the oldest position the log still holds, not where it began:
+    // after a prune the report moves with the floor — the number a re-seeded
+    // link's catch-up is measured against, which the serve path refuses on
+    // (`BelowLogStart` names it) when a seed is declared below it.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "CREATE orders:1 = { item: 'book' }; \
+             CREATE orders:2 = { item: 'map' }; \
+             CREATE orders:3 = { item: 'atlas' };",
+        )
+        .unwrap();
+    let log = store
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| matches!(log.home, Reach::Database(..)))
+        .expect("the database's own log");
+    let tail = store.committed_tail(log).now().unwrap();
+    let upto = Sequence::new(tail.get().saturating_sub(1));
+    let pruned = store.prune_log(log, upto).now().expect("the prune lands");
+    let answered = logged(&report(&mut session, "INFO FOR DATABASE;"));
+    assert_eq!(answered, (pruned.start.get(), tail.get()));
 }
 
 #[test]

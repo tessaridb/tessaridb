@@ -36,7 +36,7 @@ use tessari_encoding::{LogId, LogRecord};
 use tessari_types::Sequence;
 
 use crate::catalog::{Catalog, Reach, ReplicationDefinition};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::store::Store;
 
 /// How many records one read of a link's log asks for.
@@ -165,10 +165,50 @@ pub async fn serve_once(
 ) -> Result<usize> {
     let origin = store.node_identity().await?.id;
     let mut shipped = 0_usize;
+    // A seeded link names one position, and positions count in one log: the
+    // home's served log is the one the seed names — the answerer the position
+    // surface reports — and a sibling of the same home (a survivor's received
+    // log) never serves. The far side's snapshot already holds every effect
+    // the sibling carries, by the seed's own declaration, and shipping it
+    // re-sends state the far side cannot apply below its snapshot-restored
+    // start — a permanent wedge at the apply. The unseeded link serves every
+    // log of the home, as before.
+    let answerer = if definition.seed_at.is_some() {
+        Some(store.answering_log(definition.database).await?)
+    } else {
+        None
+    };
     for (log, _) in logs_of(store, definition.database).await? {
+        if answerer.is_some_and(|held| log.home == definition.database && log != held) {
+            continue;
+        }
         let start = store.log_start(log).await?;
-        let confirmed = registry.confirmed(&definition.name, log, start);
-        let from = Sequence::new(confirmed.get().saturating_add(1));
+        // The resume point, chosen per log. A served link resumes one past
+        // what the far side has confirmed; a seeded link that has not
+        // served yet resumes one past its seed floor — the far side holds
+        // the snapshot by declaration, so the floor, not the log's own
+        // start, is what is owed; an unseeded link ships what exists, from
+        // the log's start. The read is then asked at the resume point and
+        // never past a pruned span: when the source has pruned its log
+        // below what the link still owes, `log_records` refuses
+        // `BelowLogStart`, naming the asked position and the surviving
+        // start, instead of this pass silently shipping around a hole the
+        // far side would read as caught up.
+        let floor = match definition.seed_at {
+            Some(floor) if log.home == definition.database => Some(floor),
+            _ => None,
+        };
+        let served = registry.confirmed(&definition.name, log, Sequence::new(0));
+        let base = match (served.get() > 0, floor) {
+            (true, _) => served,
+            (false, Some(floor)) => floor,
+            (false, None) => start,
+        };
+        let from = Sequence::new(
+            base.get()
+                .max(floor.map_or(0, tessari_types::Sequence::get))
+                .saturating_add(1),
+        );
         let records = store
             .log_records_within(definition.database, log, from, BATCH)
             .await?;
@@ -183,9 +223,54 @@ pub async fn serve_once(
         };
         let confirmed = sink.ship(&definition.name, envelope).await?;
         registry.advance(&definition.name, log, confirmed);
+        // The lifecycle's automatic half, on the serving side: once the far
+        // side has confirmed through the seed position, the link is caught
+        // up and reports standby.
+        promote_when_caught_up(store, &definition.name, confirmed).await?;
         shipped = shipped.saturating_add(1);
     }
     Ok(shipped)
+}
+
+/// The automatic `seeding → standby` transition: a seeded link whose side of
+/// the relationship holds `applied` through the seed position is caught up,
+/// and the row says so. Amends the row in its own transaction when the
+/// transition fires; a no-op for the unseeded, the already-promoted, and the
+/// still-catching-up. `applied` is the local fact each caller already holds —
+/// the confirmed position a serve just advanced, or the tail an intake just
+/// landed.
+///
+/// # Errors
+///
+/// Returns an error when the row cannot be read or written; a transition
+/// failure never turns the serve or the intake that noticed it into a
+/// failure of its own.
+async fn promote_when_caught_up(store: &Store, link: &str, applied: Sequence) -> Result<()> {
+    let definition = {
+        let mut reading = store.begin().await?;
+        Catalog::new(&mut reading)
+            .replications()
+            .await?
+            .into_iter()
+            .find(|held| held.name == link)
+    };
+    let Some(definition) = definition else {
+        return Ok(());
+    };
+    let Some(seed_at) = definition.seed_at else {
+        return Ok(());
+    };
+    if definition.state != crate::ReplicationState::Seeding || applied < seed_at {
+        return Ok(());
+    }
+    let mut transaction = store.begin().await?;
+    let amended = Catalog::new(&mut transaction)
+        .amend_replication(link, |row| row.state = crate::ReplicationState::Standby)
+        .await?;
+    if amended {
+        transaction.commit().await?;
+    }
+    Ok(())
 }
 
 /// The logs a link's reach reads: those whose home is inside the reach, or
@@ -258,6 +343,38 @@ pub struct Replicated {
     inbound: DashMap<(tessari_types::NamespaceId, tessari_types::DatabaseId), String>,
 }
 
+impl Store {
+    /// Rebuild the receiver registry from the catalog at open.
+    ///
+    /// The registry is otherwise derived from the log records declarations
+    /// write (`maintain`, on the commit and the apply), and a fresh open used
+    /// to start it empty: nothing re-derived it, so a restarted receiver
+    /// refused its own link's shipments — `'prod.shop' is not received from
+    /// another cluster` — and the write gate over a received database went
+    /// blind, accepting the local writes its declaration exists to refuse.
+    /// The catalog is the persisted truth the log derives; reading it here is
+    /// the same derivation by a shorter route, taken last for the reason
+    /// `reconcile_roles` is: the format is settled and the identity exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and [`Error::CatalogMalformed`] when
+    /// a replication row cannot be decoded — refused rather than skipped,
+    /// because a row read as nothing is a gate that quietly stops refusing.
+    pub(crate) async fn reconcile_inbound_links(&self) -> Result<()> {
+        let mut reading = self.begin().await?;
+        for definition in Catalog::new(&mut reading).replications().await? {
+            if definition.inbound
+                && let Reach::Database(namespace, database) = definition.database
+            {
+                self.replicated()
+                    .insert_inbound((namespace, database), definition.name);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Replicated {
     /// An empty registry.
     #[must_use]
@@ -272,6 +389,16 @@ impl Replicated {
         tenancy: (tessari_types::NamespaceId, tessari_types::DatabaseId),
     ) -> Option<String> {
         self.inbound.get(&tenancy).map(|held| held.clone())
+    }
+
+    /// Record one inbound mapping directly — the open path's rebuild, which
+    /// starts from the catalog rather than from log records.
+    pub(crate) fn insert_inbound(
+        &self,
+        tenancy: (tessari_types::NamespaceId, tessari_types::DatabaseId),
+        link: String,
+    ) {
+        self.inbound.insert(tenancy, link);
     }
 
     /// Learn what one record's mutations say about inbound links. Called from
@@ -354,6 +481,32 @@ impl Replicated {
 /// substrate failure. The source keeps the batch and re-reads it when the
 /// refusal is retryable; a divergence is not, and is the operator's question.
 pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
+    // The seed's tail-half honesty, checked before anything is applied: on
+    // the link's own log, a shipment that starts at or below the seed
+    // position claims the snapshot the receiving copy never took — the
+    // copy declares it holds through the seed, so the overlapping half of
+    // the shipment is a disagreement between the seed and the source, not
+    // data. Refused naming both numbers, the way a truncated backup
+    // refuses `CutShort` naming where it stopped and what it promised.
+    if let Reach::Database(namespace, database) = envelope.log.home
+        && let Some(link) = store.replicated().link_over((namespace, database))
+        && let Some(definition) = {
+            let mut reading = store.begin().await?;
+            Catalog::new(&mut reading)
+                .replications()
+                .await?
+                .into_iter()
+                .find(|held| held.name == link)
+        }
+        && let Some(seed_at) = definition.seed_at
+        && envelope.from <= seed_at
+    {
+        return Err(Error::TailBelowSeed {
+            link: definition.name,
+            from: envelope.from.get(),
+            seed_at: seed_at.get(),
+        });
+    }
     let mut applied = envelope.from;
     for (at, record) in envelope.records {
         if record.mutations().is_empty()
@@ -364,6 +517,15 @@ pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
         }
         store.apply_shipped(envelope.log, at, &record).await?;
         applied = at;
+    }
+    // The automatic half of the lifecycle, on the receiving side: the copy
+    // this envelope extends belongs to the inbound link the envelope's log
+    // names; once the copy's tail reaches the seed position, the link is
+    // caught up and reports standby.
+    if let Reach::Database(namespace, database) = envelope.log.home
+        && let Some(link) = store.replicated().link_over((namespace, database))
+    {
+        promote_when_caught_up(store, &link, store.committed_tail(envelope.log).await?).await?;
     }
     Ok(applied)
 }
@@ -454,12 +616,16 @@ async fn seed_from_rows(store: &Store) -> Result<()> {
         Catalog::new(&mut reading).replications().await?
     };
     for definition in links.iter().filter(|held| !held.inbound) {
-        let Some(position) = definition.position else {
+        // The cursor and the seed floor, whichever stands further along: a
+        // seeded link resumes from the snapshot's end even when no serve has
+        // confirmed past it yet. A row with neither stays unserved — nothing
+        // ships, and the row's `None` cursor keeps meaning the driver never
+        // shipped from it.
+        let Some(floor) = definition.position.max(definition.seed_at) else {
             continue;
         };
-        if let Some(log) = own_log(store, definition.database).await? {
-            store.links().advance(&definition.name, log, position);
-        }
+        let log = store.answering_log(definition.database).await?;
+        store.links().advance(&definition.name, log, floor);
     }
     Ok(())
 }
@@ -473,9 +639,7 @@ async fn persist_floors(store: &Store) -> Result<()> {
         Catalog::new(&mut reading).replications().await?
     };
     for definition in links.iter().filter(|held| !held.inbound) {
-        let Some(log) = own_log(store, definition.database).await? else {
-            continue;
-        };
+        let log = store.answering_log(definition.database).await?;
         if !store
             .links()
             .floors(&definition.name)
@@ -499,15 +663,4 @@ async fn persist_floors(store: &Store) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The one log whose home is the reach itself — the log a link's position
-/// counts in, beside the parent logs whose records the reach filter empties
-/// but whose positions still ride the stream.
-async fn own_log(store: &Store, reach: Reach) -> Result<Option<LogId>> {
-    Ok(logs_of(store, reach)
-        .await?
-        .into_iter()
-        .map(|(log, _)| log)
-        .find(|log| log.home == reach))
 }

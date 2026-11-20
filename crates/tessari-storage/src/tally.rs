@@ -40,6 +40,9 @@ pub(crate) struct ClusterTally {
     across_with_intents: AtomicU64,
     /// Placements the leadership balancer moved (ADR-0113 D3).
     balancer_moves: AtomicU64,
+    /// Placements the load balancer moved, for the leadership counter's
+    /// reason: the two triggers are a different question a scrape asks.
+    balancer_load_moves: AtomicU64,
 }
 
 impl Default for ClusterTally {
@@ -55,6 +58,7 @@ impl Default for ClusterTally {
             across_pending: AtomicU64::new(UNSAMPLED),
             across_with_intents: AtomicU64::new(UNSAMPLED),
             balancer_moves: AtomicU64::new(0),
+            balancer_load_moves: AtomicU64::new(0),
         }
     }
 }
@@ -66,6 +70,17 @@ impl ClusterTally {
 
     pub(crate) fn balancer_moves(&self) -> u64 {
         self.balancer_moves.load(Ordering::Relaxed)
+    }
+
+    /// Record one placement the load balancer moved — a counter of its own,
+    /// beside the leadership counter, so a scrape can tell a count-driven
+    /// move from a load- or drain-driven one without reading the log.
+    pub(crate) fn moved_by_load(&self) {
+        self.balancer_load_moves.fetch_add(1, Ordering::Relaxed);
+    }
+
+    pub(crate) fn balancer_load_moves(&self) -> u64 {
+        self.balancer_load_moves.load(Ordering::Relaxed)
     }
 
     pub(crate) fn held_elsewhere(&self) {

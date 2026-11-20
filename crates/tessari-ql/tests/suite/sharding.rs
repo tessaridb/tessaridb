@@ -251,3 +251,39 @@ fn a_peer_row_is_amended_one_clause_at_a_time() {
         assert!(parse(refused).is_err(), "{refused}");
     }
 }
+
+#[test]
+fn a_space_accepts_the_clause_beside_its_other_adjectives() {
+    assert_eq!(
+        space_split_of("DEFINE SPACE sessions SPLIT AT 'g', 's';"),
+        vec![text("g"), text("s")]
+    );
+    // The clause composes with IN MEMORY and MAX in either order.
+    assert_eq!(
+        space_split_of("DEFINE SPACE cache IN MEMORY MAX 1000 SPLIT AT 'm';"),
+        vec![text("m")]
+    );
+    assert_eq!(
+        space_split_of("DEFINE SPACE cache SPLIT AT 'm' IN MEMORY MAX 1000;"),
+        vec![text("m")]
+    );
+}
+
+#[test]
+fn a_space_split_point_is_written_in_the_statement_and_never_supplied() {
+    let refused = parse("DEFINE SPACE s SPLIT AT $from;").unwrap_err();
+    assert!(
+        matches!(refused, Error::SplitPointIsNotWritten { .. }),
+        "a parameter as a split point must be refused by name: {refused:?}"
+    );
+    assert!(parse("DEFINE SPACE s SPLIT AT;").is_err());
+}
+
+fn space_split_of(source: &str) -> Vec<RecordId> {
+    let parsed = parse(source).unwrap_or_else(|error| panic!("{source}\n  failed: {error}"));
+    assert_eq!(parsed.statements.len(), 1, "{source}");
+    match parsed.statements.into_iter().next().unwrap().kind {
+        StatementKind::DefineSpace { split, .. } => split,
+        other => panic!("{source} parsed as {other:?}"),
+    }
+}

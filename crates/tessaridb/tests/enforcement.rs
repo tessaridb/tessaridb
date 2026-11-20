@@ -1179,7 +1179,48 @@ const TABLES: &[Table] = &[
         // becoming reachable from a surface that does not ask who is asking
         // first, or becoming persistent — either one moves them from
         // diagnostics to data and re-opens the classification.
-        expected: 91,
+        //
+        // 92 since the load balancer (the balancer policy's act): one more
+        // `Store::leadership_moved_by_load`, a counter bump on the cluster
+        // counters' exact ground — the load pass's twin of
+        // `leadership_moved`, writing nothing but a process-memory tally the
+        // reports read, with the same re-classification trigger as the 72
+        // row it joins.
+        //
+        // 94 since the workload pools: `Store::pool_take` and
+        // `Store::pool_counters`. The first **is the admission gate's own
+        // mechanism, not a data path**: it takes or refuses a slot in a
+        // process-memory tally, reads and writes no record, catalog entry or
+        // grant, and the limit it enforces is the catalog's own declaration
+        // — the authority question was answered where the pool row was
+        // written, and this method is how a matching script is counted
+        // against it. Its callers are `Session::admit_pool`, which resolves
+        // the namespace's pools through the catalog before it asks, and the
+        // suite, standing a concurrent in-flight script on the guard's own
+        // seam. The second is **not a data path, on `follower_lag`'s
+        // ground**: it reads the tally back for `INFO FOR POOL` (which owes
+        // `Manage` on the namespace, classified at its own subject) and the
+        // `/metrics` series (the owner-only cluster section), and discloses
+        // no store content — two counts per pool, nothing else.
+        // Re-classification trigger, for both: a caller reachable from a
+        // statement or a route that could move what an operator reads
+        // without the gate — a slot taken or released outside `admit_pool`
+        // would be a count an alert fires on without the admission it
+        // reports.
+        //
+        // 95 since the link's one log: `Store::answering_log` names the log a
+        // home's positions count in — the line's once it holds records, then
+        // own, then the furthest other — the selector `INFO FOR DATABASE`'s
+        // log group, the seeded link's serve and the promote guard all read.
+        // Classified **exempt on `own_log` / `line_log`'s ground** (the 91
+        // row above): it takes a store and a reach, no identity, answers a
+        // fact about the store's own shape — which log exists and how far
+        // each reaches — and writes nothing. Every caller reaches it through
+        // a statement (`INFO`, `DEFINE`/`ALTER REPLICATION`, whose authority
+        // is the statement's) or the link serve, which is driven by catalog
+        // rows the statement wrote; none lets a caller name a home the
+        // session has not already resolved.
+        expected: 95,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1469,7 +1510,17 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 180 since `Store::readings_sampled` and `Store::readings_heard` — the
     // two recorders of the same surface, classified above with their table.
-    assert_eq!(total, 182, "the counted tables no longer sum to 182");
+    //
+    // 183 since `Store::leadership_moved_by_load` — the load pass's counter
+    // bump, classified above on the cluster counters' ground.
+    //
+    // 185 since `Store::pool_take` and `Store::pool_counters` — the pool
+    // gate's take and the tally's read-back, classified above on the cluster
+    // counters' ground.
+    //
+    // 186 since `Store::answering_log` — the link's one log, classified above
+    // on `own_log` / `line_log`'s ground.
+    assert_eq!(total, 186, "the counted tables no longer sum to 186");
 }
 
 /// Every `.rs` file under a directory.

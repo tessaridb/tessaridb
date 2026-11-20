@@ -107,6 +107,10 @@ forms! {
     DefineNode => "DEFINE NODE",
     DefineFailover => "DEFINE FAILOVER",
     DefineTopology => "DEFINE TOPOLOGY",
+    DefineBalancer => "DEFINE BALANCER",
+    DropBalancer => "DROP BALANCER",
+    DefinePool => "DEFINE POOL",
+    DropPool => "DROP POOL",
     AlterTopology => "ALTER TOPOLOGY",
     DropTopology => "DROP TOPOLOGY",
     RevokeCertificate => "REVOKE CERTIFICATE",
@@ -328,6 +332,10 @@ mod tests {
              DEFINE REPLICA second AT 'host:9001';\
              DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s \
              CAMPAIGN 1s LEASE 30s;\
+             DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;\
+             DROP BALANCER;\
+             DEFINE POOL web WITH MAX CONCURRENT 10 FOR READS;\
+             DROP POOL web;\
              ALTER STORE FINALIZE FORMAT;\
              REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';\
              CREATE JOIN TOKEN FOR REPLICA second EXPIRES 10m;\

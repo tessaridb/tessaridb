@@ -1842,7 +1842,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
-/// The pooled cluster's band — the proof set of the SG2 worksheet exercised
+/// The pooled cluster's band — the proof set of the placement worksheet exercised
 /// against three operating-system processes.
 ///
 /// A band of its own for the reason every cluster test here carries one: two
@@ -1880,7 +1880,7 @@ const POOLED_SCHEMA: &str = "DEFINE NAMESPACE tenant_a REPLICATION FACTOR 3; USE
 /// of namespaces — does not parse today: a member row carries exactly one
 /// reach (`replicates: Option<ReachRef>`, `tessari-ql/src/ast/statement.rs`),
 /// and the second `REPLICATES` is a parse refusal. That gap is recorded in the
-/// SG2 worksheet as G-SG2-1 and is W4's decision, not this test's.
+/// worksheet's open row, and is a later wave's decision, not this test's.
 const POOLED_ROW: &str = "ROLES serving, writable, coordinating REPLICATES STORE";
 
 #[test]
@@ -2315,6 +2315,1035 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
     );
 }
 
+/// The seeding lifecycle's pair. The write-through pair sits at
+/// 48068/48069 and the 2-DC bands at 48071-48082, so the lifecycle owns the
+/// next two doors; the reverse exercise owns the two after it.
+const SEED_PRIMARY: &str = "127.0.0.1:48083";
+const SEED_DR: &str = "127.0.0.1:48084";
+const REV_PRIMARY: &str = "127.0.0.1:48085";
+const REV_DR: &str = "127.0.0.1:48086";
+
+/// Start the shipped binary serving `store` on `door`, stderr at `log`, the
+/// link tokens in its environment. A fresh process per call, because an
+/// environment is fixed at spawn.
+fn serving_with(
+    store: &std::path::Path,
+    door: &str,
+    log: &std::path::Path,
+    env: &[(&str, &str)],
+) -> Running {
+    let writing = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
+    let mut command = Command::new(TESSARIDB);
+    command
+        .arg(store)
+        .args(["--serve", door])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing));
+    for (named, value) in env {
+        command.env(named, value);
+    }
+    let child = command.spawn().unwrap();
+    let running = Running(child);
+    assert!(
+        listening(door, Duration::from_secs(30)),
+        "the wire never accepted a connection on {door}"
+    );
+    running
+}
+
+/// `INFO FOR DATABASE`'s log group at `surface`, as (start, tail) — the two
+/// numbers the seed procedure is written from, read by hand over the wire.
+fn database_log_at(surface: &str, who: Option<(&str, &str)>) -> Result<(i64, i64), String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("USE NAMESPACE prod DATABASE shop; INFO FOR DATABASE;", who)
+        .map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Value {
+            value: tessari_types::Value::Object(report),
+            ..
+        }) => match report.get("log") {
+            Some(tessari_types::Value::Object(log)) => {
+                let number = |field: &str| match log.get(field) {
+                    Some(tessari_types::Value::Number(tessari_types::Number::Integer(held))) => {
+                        Ok(*held)
+                    }
+                    other => Err(format!("{field}: {other:?}")),
+                };
+                Ok((number("start")?, number("tail")?))
+            }
+            other => Err(format!("the log group: {other:?}")),
+        },
+        other => Err(format!("not a database report: {other:?}")),
+    }
+}
+
+/// `INFO FOR REPLICATION <name>`'s progress.state at `surface` — the seeding
+/// lifecycle as this side of the link reports it.
+fn link_state_at(surface: &str, name: &str, who: Option<(&str, &str)>) -> Result<String, String> {
+    let report = replication_at(surface, name, who)?;
+    match report.get("progress") {
+        Some(tessari_types::Value::Object(progress)) => match progress.get("state") {
+            Some(tessari_types::Value::String(held)) => Ok(held.clone()),
+            other => Err(format!("the state: {other:?}")),
+        },
+        other => Err(format!("the progress group: {other:?}")),
+    }
+}
+
+#[test]
+fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
+    // The seeding lifecycle SEEDING → STANDBY → ACTIVE rehearsed on two
+    // live clusters, the
+    // seed named by hand from the position-reading surface the exercise's
+    // first act added (`INFO FOR DATABASE`'s log group). The procedure is the
+    // dossier's: a snapshot, a copy restored from it into an empty store, a
+    // seed declared at the snapshot's end, the tail served from one past the
+    // floor, the operator's promote. The reverse direction on the same pair
+    // is W4's slice — the exercise surfaced that a survivor-turned-source
+    // holds two logs (the received one and its own) and the link's serve and
+    // promote-guard semantics across them want their own design. Where each
+    // state is seen here is honest to
+    // how a restore works: a state snapshot carries the data whole and the
+    // positions, but no log records, so a restored copy stands at the
+    // snapshot's end already and declares straight into standby — the
+    // seeding state belongs to the serving side's row at the declaration,
+    // and both clusters take that turn, each as the source of its half.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let signed = Some(("operator", SECRET));
+
+    // The primary: the schema, its five records, and the outbound half. The
+    // serve floor names where the snapshot ends, which the schema knows
+    // because it wrote the five records.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  CREATE orders:4 = { item: 'globe' }; \
+                  CREATE orders:5 = { item: 'almanac' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48084' FOR DATABASE prod.shop SEED AT 5; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+
+    // The snapshot, taken while every store is a file no process holds.
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // The source's edge, live: the seed's number read by hand, and the
+    // source's own row still seeding — an outbound seeded row is born
+    // seeding, and nothing has served yet.
+    let primary = serving_with(
+        &primary_store,
+        SEED_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    assert_eq!(
+        database_log_at(SEED_PRIMARY, signed),
+        Ok((1, 5)),
+        "the source's edge names the snapshot's end"
+    );
+    assert_eq!(
+        link_state_at(SEED_PRIMARY, "east", signed),
+        Ok("seeding".to_owned()),
+        "the source's serve row is born seeding"
+    );
+    drop(primary);
+
+    // The copy: the snapshot restored into an empty store. The restored edge
+    // names the same snapshot's end — a state snapshot carries the positions
+    // but no log records, so the copy's log is empty and resumes where the
+    // tail does; the pair reads (tail+1, tail) and the seed is named from
+    // the tail. The snapshot's outbound row came with it and names this
+    // cluster as its destination, so it is dropped before the inbound half
+    // is declared at the number the restored edge carried.
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let dr = serving_with(
+        &dr_store,
+        SEED_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    assert_eq!(
+        database_log_at(SEED_DR, signed),
+        Ok((6, 5)),
+        "the restored edge names the same snapshot's end: the tail"
+    );
+    let seed = database_log_at(SEED_DR, signed)
+        .expect("the restored edge")
+        .1;
+    {
+        let mut client = Client::connect(SEED_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DROP REPLICATION east; \
+                     DEFINE REPLICATION west FROM '{SEED_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the copy's half of the link: {why}"));
+    }
+    assert_eq!(
+        link_state_at(SEED_DR, "west", signed),
+        Ok("standby".to_owned()),
+        "the restored copy holds its snapshot's end at the declaration"
+    );
+    let token = {
+        let mut client = Client::connect(SEED_DR).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(dr);
+
+    // Both clusters live, the token in the source's environment. The source's
+    // row promotes at the first shipment it confirms through the floor — a
+    // serve promotes only what it shipped — so the write below is the act
+    // that carries both rows to standby: the copy's intake applies it and
+    // the source's serve confirms it.
+    let _primary = serving_with(
+        &primary_store,
+        SEED_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        SEED_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
+            signed,
+        )
+        .unwrap();
+    let east_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(SEED_PRIMARY, "east", signed).is_ok_and(|state| state == "standby")
+    });
+    let west_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(SEED_DR, "west", signed).is_ok_and(|state| state == "standby")
+    });
+    let count_ready = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(SEED_DR).is_ok_and(|count| count == 6)
+    });
+    assert!(
+        east_ready && west_ready && count_ready,
+        "east standby: {east_ready}, west standby: {west_ready}, count 6: {count_ready}\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+
+    // The operator's promote is the early spelling; on an active link it is a
+    // no-op, so it is safe to run at every catch-up.
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION east ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the source's promote: {why}"));
+    let mut client = Client::connect(SEED_DR).unwrap();
+    client
+        .run("ALTER REPLICATION west ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the copy's promote: {why}"));
+    assert_eq!(
+        link_state_at(SEED_PRIMARY, "east", signed),
+        Ok("active".to_owned())
+    );
+    assert_eq!(
+        link_state_at(SEED_DR, "west", signed),
+        Ok("active".to_owned())
+    );
+
+    // A write through the active pair lands on the copy.
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:7 = { item: 'ledger' };",
+            signed,
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(SEED_DR).is_ok_and(|count| count == 7)
+    });
+    assert!(
+        converged,
+        "the write through the active pair reached the copy"
+    );
+}
+
+#[test]
+fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
+    // The reverse direction, live, on its own pair of doors: the primary dies, the copy survives it,
+    // and the survivor becomes the source that reseeds the lost primary.
+    // The survivor holds two logs of the home — the received one and its own —
+    // and the seed is named from its own log's tail, the number its position
+    // report carries; the serve reads that log alone (the received log's
+    // effects are inside the far side's snapshot by the seed's declaration)
+    // and the promote guard measures the same log, never the sibling whose
+    // tail runs ahead. The procedure is the forward's mirror: a snapshot from
+    // the survivor, the lost primary's store wiped and restored from it, the
+    // seed declared from the tail the report named, the operator's promote.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let signed = Some(("operator", SECRET));
+
+    // The forward base, taken to the active pair: the schema, five records,
+    // the snapshot, the copy restored from it, the link up both ways at the
+    // snapshot's end.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  CREATE orders:4 = { item: 'globe' }; \
+                  CREATE orders:5 = { item: 'almanac' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48086' FOR DATABASE prod.shop SEED AT 5; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(restored.status.success(), "the restore: {restored:?}");
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let seed = database_log_at(REV_DR, signed)
+        .expect("the restored edge")
+        .1;
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DROP REPLICATION east; \
+                     DEFINE REPLICATION west FROM '{REV_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the copy's half of the link: {why}"));
+    }
+    let token = {
+        let mut client = Client::connect(REV_DR).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(dr);
+    let _primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
+            signed,
+        )
+        .unwrap();
+    let forward_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(REV_PRIMARY, "east", signed).is_ok_and(|state| state == "standby")
+            && link_state_at(REV_DR, "west", signed).is_ok_and(|state| state == "standby")
+            && order_count_at(REV_DR).is_ok_and(|count| count == 6)
+    });
+    assert!(
+        forward_ready,
+        "the forward link did not reach standby with count 6\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION east ACTIVE;", signed)
+        .unwrap();
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run("ALTER REPLICATION west ACTIVE;", signed)
+        .unwrap();
+
+    // The primary dies. The survivor drops the dead link, and the drop lifts
+    // the read-only gate: its own history begins — one record in its own log,
+    // the post-loss history the lost primary lacks.
+    drop(_primary);
+    drop(_dr);
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run("DROP REPLICATION west;", signed)
+            .unwrap_or_else(|why| panic!("dropping the dead link: {why}"));
+        client
+            .run(
+                "USE NAMESPACE prod DATABASE shop; CREATE orders:9 = { item: 'compass' };",
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the survivor's own write: {why}"));
+    }
+    assert_eq!(
+        database_log_at(REV_DR, signed),
+        Ok((1, 1)),
+        "the survivor's edge names its own log's tail — the reverse seed"
+    );
+    let reverse_seed = database_log_at(REV_DR, signed)
+        .expect("the survivor's edge")
+        .1;
+    drop(dr);
+
+    // The snapshot from the survivor; the lost primary's store wiped and
+    // restored from it — the ordinary procedure run from the survivor's side.
+    let reverse_backup = directory.path().join("reverse.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--backup")
+        .arg(&reverse_backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the survivor's backup: {taken:?}");
+    std::fs::remove_dir_all(&primary_store).unwrap();
+    std::fs::create_dir_all(&primary_store).unwrap();
+    let restored = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--restore")
+        .arg(&reverse_backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the lost primary's restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+
+    // The lost primary, live again: its copy holds the survivor's snapshot's
+    // end, so the inbound half declares straight into standby at the seed the
+    // survivor's report named; it also mints the token the survivor's outbound
+    // half will offer.
+    let primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        client
+            .run(
+                &format!(
+                    "DEFINE REPLICATION north FROM '{REV_DR}' FOR DATABASE prod.shop \
+                     SEED AT {reverse_seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the restored primary's half: {why}"));
+    }
+    assert_eq!(
+        link_state_at(REV_PRIMARY, "north", signed),
+        Ok("standby".to_owned()),
+        "the restored primary holds its snapshot's end at the declaration"
+    );
+    let reverse_token = {
+        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION north EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(primary);
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DEFINE REPLICATION south TO '{REV_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {reverse_seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the survivor's outbound half: {why}"));
+    }
+    drop(dr);
+
+    // Both live, the token in the survivor's environment. The survivor's next
+    // write ships over its own log alone; the received log's records are
+    // already inside the restored primary's snapshot — re-serving them would
+    // be a shipment the far side cannot apply below its snapshot-restored
+    // start.
+    let _primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_SOUTH", reverse_token.as_str())],
+    );
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:10 = { item: 'lantern' };",
+            signed,
+        )
+        .unwrap();
+    let reverse_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(REV_DR, "south", signed).is_ok_and(|state| state == "standby")
+            && link_state_at(REV_PRIMARY, "north", signed).is_ok_and(|state| state == "standby")
+            && order_count_at(REV_PRIMARY).is_ok_and(|count| count == 8)
+    });
+    assert!(
+        reverse_ready,
+        "south: {:?}, north: {:?}, count at the restored primary: {:?}\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        link_state_at(REV_DR, "south", signed),
+        link_state_at(REV_PRIMARY, "north", signed),
+        order_count_at(REV_PRIMARY),
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+
+    // The operator's promote on both halves. The guard measures the seed's
+    // log — the survivor's own — not the received sibling whose tail stands
+    // further along; under the shipped cross-log arithmetic this refusal
+    // named a lag the link could never close.
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run("ALTER REPLICATION south ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the survivor's promote: {why}"));
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION north ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the restored primary's promote: {why}"));
+    assert_eq!(
+        link_state_at(REV_DR, "south", signed),
+        Ok("active".to_owned())
+    );
+    assert_eq!(
+        link_state_at(REV_PRIMARY, "north", signed),
+        Ok("active".to_owned())
+    );
+
+    // A write through the reversed active pair lands on the restored primary.
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:11 = { item: 'beacon' };",
+            signed,
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(REV_PRIMARY).is_ok_and(|count| count == 9)
+    });
+    assert!(
+        converged,
+        "the write through the reversed pair reached the restored primary"
+    );
+}
+
+/// The columnar × cluster exercise's band — three nodes, clear of the
+/// lifecycle bands above (G093 SG7).
+const COLUMNAR: Band = [
+    ("127.0.0.1:48087", "127.0.0.1:48088"),
+    ("127.0.0.1:48089", "127.0.0.1:48090"),
+    ("127.0.0.1:48091", "127.0.0.1:48092"),
+];
+
+/// The analytics schema both of the exercise's tables need, declared on every
+/// node before the membership so the per-shard subscriptions resolve in the
+/// declaring transaction (the G032/G033 discipline): `events` is a plain
+/// columnar table; `readings` is born split, the catalog filing 'g' and 'p'
+/// on a STORE COLUMN table.
+const COLUMNAR_PLACED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                      DEFINE DATABASE analytics; USE DATABASE analytics; \
+                      DEFINE TABLE events (kind string, n int) STORE COLUMN; \
+                      DEFINE TABLE readings (kind string, n int) STORE COLUMN IDENTITY uuid \
+                      SPLIT AT 'g', 'p';";
+
+/// A write into `readings` at `key`, which names its shard by its letters.
+fn into_readings(key: &str, n: i64) -> String {
+    format!(
+        "USE NAMESPACE prod DATABASE analytics; CREATE readings:'{key}' = {{ kind: '{key}', n: {n} }};"
+    )
+}
+
+/// Keep writing `key`-prefixed readings through `surface` until one is taken,
+/// and answer how long that took — or the last refusal, after `patience`.
+fn until_reading_taken(
+    surface: &str,
+    key: &str,
+    n: i64,
+    patience: Duration,
+) -> Result<Duration, String> {
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    let mut attempt = 0_u32;
+    while began.elapsed() < patience {
+        attempt = attempt.saturating_add(1);
+        if let Ok(mut client) = Client::connect(surface) {
+            let answered = client.run(&into_readings(&format!("{key}{attempt}"), n), None);
+            if landed(&answered) {
+                return Ok(began.elapsed());
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+/// A read in the analytics database at `surface`, answered as the records'
+/// identities — or the refusal.
+fn analytics_at(surface: &str, read: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let script = format!("USE NAMESPACE prod; USE DATABASE analytics; {read}");
+    match client.run(&script, None) {
+        Ok(answers) => match answers.last() {
+            Some(Answer::Records { records, .. }) => Ok(records
+                .iter()
+                .map(|(id, _)| id.trim_matches('\'').to_owned())
+                .collect()),
+            other => Err(format!("{other:?}")),
+        },
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+#[test]
+fn a_store_column_table_on_a_cluster_splits_end_to_end() {
+    // G093 SG7 / U5 (the SG1 dossier §D): the whole columnar module has no
+    // shard awareness and the split pass counts row-store records, so a split
+    // over a STORE COLUMN table was expected to be unfiled-by-design at best.
+    // Measured at the shipped build, three nodes: both ALTER spellings on a
+    // plain columnar table refuse with the GENERIC not-a-split-table refusal
+    // (nothing column-kind-aware in the message), and the born-split declare
+    // — STORE COLUMN IDENTITY uuid SPLIT AT — is ACCEPTED. So the catalog
+    // files the cuts, and the act below holds the columnar machinery to them
+    // in the only shape where gathered reads actually happen: node 2 holds
+    // shard 3 alone, so its reads of the whole table must gather shards 1
+    // and 2 from their leaders — and answer exactly.
+    let leads = |shard: u32| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             LEADS SHARD prod.analytics.readings {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &COLUMNAR,
+        COLUMNAR_PLACED,
+        [
+            leads(1),
+            leads(2),
+            "ROLES serving REPLICATES SHARD prod.analytics.readings 3".to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    // The born split stands: the definition renders the cuts.
+    let split_stands = until(Duration::from_secs(90), || {
+        says(
+            COLUMNAR[0].0,
+            None,
+            "USE NAMESPACE prod DATABASE analytics; INFO FOR TABLE readings;",
+            "SPLIT AT 'g', 'p'",
+        )
+    });
+    assert!(
+        split_stands,
+        "the born-split readings table never reported its cuts{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // One record per prefix, the letters naming the shard each files into:
+    // 'aa','ap' below 'g' (shard 1, led on node 0), 'h','m' at 'g'..'p'
+    // (shard 2, led on node 1), 'x' at 'p' and after (shard 3 — placed on
+    // nobody, so the store line's, taken through whichever store node leads).
+    // The n values sum to 15.
+    for (index, key, n) in [(0_usize, "aa", 1_i64), (0, "ap", 2)] {
+        if let Err(last) = until_reading_taken(COLUMNAR[index].0, key, n, Duration::from_secs(120))
+        {
+            panic!(
+                "node {index} never took a '{key}' reading; last: {last}{}",
+                what_the_nodes_said(&COLUMNAR, &logs)
+            );
+        }
+    }
+    for (index, key, n) in [(1_usize, "h", 3_i64), (1, "m", 4)] {
+        if let Err(last) = until_reading_taken(COLUMNAR[index].0, key, n, Duration::from_secs(120))
+        {
+            panic!(
+                "node {index} never took a '{key}' reading; last: {last}{}",
+                what_the_nodes_said(&COLUMNAR, &logs)
+            );
+        }
+    }
+    let began = Instant::now();
+    while [0_usize, 1].iter().all(|index| {
+        until_reading_taken(COLUMNAR[*index].0, "x", 5, Duration::from_millis(1)).is_err()
+    }) {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "neither store node took an 'x' reading{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    // Node 2 collects shard 3: its own record reads back first.
+    let collected = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;")
+            .is_ok_and(|ids| ids.iter().any(|id| id.starts_with('x')))
+    });
+    assert!(
+        collected,
+        "node 2 never collected shard 3{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // The partial holder answers the WHOLE table: shards 1 and 2 gathered
+    // from their leaders, exact — five records in key order, the fold 15/5.
+    // If the columnar scan is shard-blind (B9's hypothesis), node 2 answers
+    // from its local chunks alone: a plausible, wrong number, which is the
+    // gap the exercise exists to measure.
+    let whole = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;").is_ok_and(|ids| ids.len() == 5)
+    });
+    assert!(
+        whole,
+        "node 2 never answered the whole readings table{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    let ids = analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;").unwrap_or_default();
+    let first: Vec<char> = ids.iter().filter_map(|id| id.chars().next()).collect();
+    assert_eq!(
+        first,
+        ['a', 'a', 'h', 'm', 'x'],
+        "five records, in key order: {ids:?}"
+    );
+    let (fold, gathered) = fold_at(
+        COLUMNAR[2].0,
+        "USE NAMESPACE prod DATABASE analytics; SELECT sum(n) AS total, count(*) AS n FROM readings;",
+    )
+    .unwrap_or_else(|why| {
+        panic!(
+            "node 2 refused the gathered fold: {why}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        )
+    });
+    assert!(
+        fold.contains("Integer(15)") && fold.contains("Integer(5)"),
+        "node 2 gathered the wrong fold: {fold}"
+    );
+    // The gather names itself: the read crossed leaders, and the answer says
+    // so — the same note a row-store gathered read carries.
+    assert!(
+        gathered,
+        "node 2's gathered fold carried no gathered note: {fold}"
+    );
+    // The leader holding the store answers the same fold: one answer however
+    // the shards are held. Its copy of the shard logs levels on the
+    // collection cadence, so the whole read converges before the fold asks.
+    let store_converged = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[0].0, "SELECT * FROM readings;").is_ok_and(|ids| ids.len() == 5)
+    });
+    assert!(
+        store_converged,
+        "node 0's store copy never leveled{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    let (whole_fold, _) = fold_at(
+        COLUMNAR[0].0,
+        "USE NAMESPACE prod DATABASE analytics; SELECT sum(n) AS total, count(*) AS n FROM readings;",
+    )
+    .unwrap_or_else(|why| {
+        panic!(
+            "node 0 refused its own fold: {why}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        )
+    });
+    assert!(
+        whole_fold.contains("Integer(15)") && whole_fold.contains("Integer(5)"),
+        "node 0 folded the wrong answer: {whole_fold}"
+    );
+    // U5's first measured fact, on the same cluster: both ALTER spellings on
+    // the plain columnar table refuse with the generic not-a-split-table
+    // refusal — the same name a row-store table answers, nothing
+    // column-kind-aware in the message.
+    // The last spelling of the matrix comes after the events act because the
+    // default it names would re-shape tables born under it: measured above,
+    // the table grammar speaks SPLIT AT only — `DEFINE TABLE … SPLIT
+    // AUTOMATICALLY` refuses at the parser ("expected `AT` … found the name
+    // `AUTOMATICALLY`"). Auto-split arrives as the namespace default a table
+    // inherits (G085, ADR-0095), and a columnar table takes the inheritance
+    // like any other.
+    // both, one record at a time — a script is not a transaction, and an
+    // "already exists" on the first record must not stop the second. Named
+    // keys make retries idempotent, and the store line's honest ack refusal
+    // ("committed on this node … may not survive a failover") still means the
+    // record landed — that is what `landed` counts.
+    let mut last = String::new();
+    let load_events = until(Duration::from_secs(60), || {
+        [("apple", 1_i64), ("hat", 2)].iter().all(|(kind, n)| {
+            [0_usize, 1].iter().any(|index| {
+                match asked(
+                    COLUMNAR[*index].0,
+                    &format!(
+                        "USE NAMESPACE prod DATABASE analytics; \
+                         CREATE events:'{kind}' = {{ kind: '{kind}', n: {n} }};"
+                    ),
+                    None,
+                ) {
+                    Ok(_) => true,
+                    Err(why) => {
+                        let why = why.to_string();
+                        last = format!("node {index}: {why}");
+                        why.contains("already exists") || why.contains("is committed on this node")
+                    }
+                }
+            })
+        })
+    });
+    assert!(
+        load_events,
+        "neither store node took the events load; last: {last}{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    for spelling in [
+        "ALTER TABLE events SPLIT AT 'g', 'p';",
+        "ALTER TABLE events SPLIT AUTOMATICALLY;",
+    ] {
+        // The refusal is the store line's answer too, so try both nodes and
+        // take the one that NAMES the refusal — a redirect is not it.
+        let answers: Vec<_> = [0_usize, 1]
+            .iter()
+            .map(|index| {
+                asked(
+                    COLUMNAR[*index].0,
+                    &format!("USE NAMESPACE prod DATABASE analytics; {spelling}"),
+                    None,
+                )
+            })
+            .collect();
+        let refused = answers.iter().find_map(|answered| {
+            answered
+                .as_ref()
+                .err()
+                .filter(|why| why.contains("is not split"))
+        });
+        assert!(
+            refused.is_some(),
+            "measured {spelling}: {answers:?}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        );
+    }
+    // The refused table stays whole and readable: nothing was filed silently
+    // by the attempt. Node 0's copy of the store may lag the commit, so the
+    // read polls.
+    let events = until(Duration::from_secs(60), || {
+        analytics_at(COLUMNAR[0].0, "SELECT * FROM events;").is_ok_and(|rows| rows.len() == 2)
+    });
+    assert!(
+        events,
+        "node 0 lost events to the refused split{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // The last spelling of the matrix: SPLIT AUTOMATICALLY at the table
+    // define. Measured: the table grammar speaks SPLIT AT only — the parser
+    // refuses ("expected `AT` … found the name `AUTOMATICALLY`"), a local
+    // answer that needs no leadership, so one node names it. The
+    // auto-split default a table inherits is namespace machinery (G085,
+    // ADR-0095) proven kind-agnostic at the session level; the exercise
+    // does not re-measure it on a cluster.
+    let automatic_define = asked(
+        COLUMNAR[0].0,
+        "USE NAMESPACE prod DATABASE analytics; \
+         DEFINE TABLE autos (kind string, n int) STORE COLUMN IDENTITY uuid \
+         SPLIT AUTOMATICALLY;",
+        None,
+    );
+    assert!(
+        automatic_define
+            .as_ref()
+            .is_err_and(|why| why.contains("expected `AT`")),
+        "measured DEFINE TABLE ... SPLIT AUTOMATICALLY: {automatic_define:?}{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+}
+
+/// Run the fold at `surface` and answer its rendered record and whether a
+/// note says the read was gathered.
+fn fold_at(surface: &str, read: &str) -> Result<(String, bool), String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client.run(read, None).map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Records { records, notes, .. }) => {
+            let gathered = notes.iter().any(|note| note.kind == "gathered");
+            Ok((format!("{records:?}"), gathered))
+        }
+        other => Err(format!("{other:?}")),
+    }
+}
+#[test]
+fn a_truncated_seed_transfer_is_refused_at_the_restore() {
+    // The seed's snapshot half, live: a backup file cut mid-record is not a
+    // prefix an operator could mistake for a whole. The restore refuses
+    // rather than land a copy the seed would then overclaim — the truncated
+    // transfer's half of the honesty the intake refuses at the other end.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // One byte short of a frame: the section promises through its tail, the
+    // file ends inside a record.
+    let whole = std::fs::read(&backup).unwrap();
+    std::fs::write(&backup, &whole[..whole.len() - 1]).unwrap();
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        !restored.status.success(),
+        "the cut transfer refuses rather than restore: {restored:?}"
+    );
+    let said = String::from_utf8_lossy(&restored.stderr);
+    assert!(
+        !said.trim().is_empty(),
+        "the refusal says why, on the error stream: {restored:?}"
+    );
+}
+
 /// The 2-DC exercise's bands — two three-node regions on twelve ports derived
 /// from the tree the way the SG3 bands were: everything through 48070 is taken
 /// (the W2 pair sits at the top), so the exercise owns 48071-48082. Each entry
@@ -2568,6 +3597,32 @@ fn leaders_at(
             other => Err(format!("a leader row: {other:?}")),
         })
         .collect()
+}
+
+/// Whether the topic consumer the topics exercise declares is halted, as its
+/// `INFO FOR TOPIC CONSUMER` report answers on `surface`.
+fn consumer_halted_at(surface: &str) -> Option<bool> {
+    let mut client = Client::connect(surface).ok()?;
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; INFO FOR TOPIC CONSUMER orders_in;",
+            None,
+        )
+        .ok()?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return None;
+    };
+    let Some(tessari_types::Value::Object(running)) = report.get("running") else {
+        return None;
+    };
+    match running.get("halted") {
+        Some(tessari_types::Value::Bool(halted)) => Some(*halted),
+        _ => None,
+    }
 }
 
 /// Which node of `band` leads `range`, or `None` while no majority has
@@ -5848,6 +6903,337 @@ fn a_transaction_across_two_shard_leaders_commits_whole_or_is_refused() {
     );
 }
 
+/// The RESP-on-a-split-space scenario's addresses, its own band (G093 SG4 W3).
+const RESP_CLUSTER: Band = [
+    ("127.0.0.1:48090", "127.0.0.1:48091"),
+    ("127.0.0.1:48092", "127.0.0.1:48093"),
+    ("127.0.0.1:48094", "127.0.0.1:48095"),
+];
+/// The RESP door each node serves for this exercise, node order.
+const RESP_DOORS: [&str; 3] = ["127.0.0.1:48096", "127.0.0.1:48097", "127.0.0.1:48098"];
+
+/// A band for the topics-on-a-cluster exercise (SG5): three nodes on their
+/// own addresses, nothing else there.
+const TOPICS_CLUSTER: Band = [
+    ("127.0.0.1:48100", "127.0.0.1:48103"),
+    ("127.0.0.1:48101", "127.0.0.1:48104"),
+    ("127.0.0.1:48102", "127.0.0.1:48105"),
+];
+
+/// The topic half of the exercise: a split topic, a group, and a topic
+/// consumer, declared on the leader after the election so the definitions
+/// ride the log to every node (the operator path the live study measured) —
+/// each node starts its member within a second of the declaration arriving.
+const TOPICS_DEFINITIONS: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+     DEFINE DATABASE shop; USE DATABASE shop; \
+     DEFINE TOPIC orders PARTITIONS 2 BY key; DEFINE COLLECTION order_rows; \
+     DEFINE GROUP 'into-rows' ON TOPIC orders ACK DEADLINE 30s IN FLIGHT 16; \
+     DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'into-rows' INTO order_rows \
+     IDENTITY order_id MAP amount AS total ON FAILURE stop;";
+
+/// A split space, born at the declare (the W2 clause) so each node leads the
+/// shard its letter falls in.
+const SPLIT_SPACE: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                           DEFINE DATABASE shop; USE DATABASE shop; \
+                           DEFINE SPACE sessions SPLIT AT 'g';";
+
+/// A write into `sessions` at `key`, which names its shard by its first letter.
+fn into_sessions(key: &str) -> String {
+    format!("USE NAMESPACE prod; USE DATABASE shop; SET sessions:'{key}' = 'value:{key}';")
+}
+
+/// Keep writing into `sessions` through `surface` until one commits there, or
+/// the last answer after `patience` — [`until_taken`] for the space's spelling.
+fn space_taken(surface: &str, prefix: &str, patience: Duration) -> Result<String, String> {
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    let mut attempt = 0_u32;
+    while began.elapsed() < patience {
+        attempt = attempt.saturating_add(1);
+        if let Ok(mut client) = Client::connect(surface) {
+            let answered = client.run(&into_sessions(&format!("{prefix}{attempt}")), None);
+            if landed(&answered) {
+                return Ok(format!("{prefix}{attempt}"));
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+/// One RESP command over one connection, answered with the reply's text: the
+/// line for a status or error reply, the payload for a bulk one. The surface's
+/// own codec is deliberately NOT reused: this probe speaks what any RESP
+/// client speaks, which is the thing under test.
+fn resp_command(door: &str, parts: &[&str]) -> String {
+    use std::io::{BufRead, BufReader, Write};
+    use std::net::TcpStream;
+    let mut stream = TcpStream::connect(door).expect("the RESP door accepts");
+    let mut sent = format!("*{}\r\n", parts.len());
+    for part in parts {
+        sent.push_str(&format!("${}\r\n{}\r\n", part.len(), part));
+    }
+    stream
+        .write_all(sent.as_bytes())
+        .expect("the command is written");
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    reader
+        .read_line(&mut line)
+        .expect("the reply's first line is read");
+    let line = line.trim_end().to_owned();
+    match line.strip_prefix('$') {
+        // A bulk reply: its length line, then the payload and its terminator.
+        Some(len) if len != "-1" => {
+            let len: usize = len.parse().expect("a bulk length is a number");
+            let mut payload = vec![0_u8; len.saturating_add(2)];
+            use std::io::Read;
+            reader
+                .read_exact(&mut payload)
+                .expect("the bulk payload is read");
+            String::from_utf8_lossy(&payload[..len]).into_owned()
+        }
+        // $-1 is a missing key; a status or error reply answers with its line.
+        _ => line,
+    }
+}
+
+#[test]
+#[ignore = "real cadences across three processes — three shard lines have to be
+            elected before a wrong-node key can be carried to its leader. SG4
+            W3's validation, run explicitly: cargo test -p tessari-cli --test
+            serving resp_hides_the_redirect_a_wrong_node_key_is_carried
+            -- --ignored"]
+fn resp_hides_the_redirect_a_wrong_node_key_is_carried() {
+    let mut cluster = a_cluster_declared(
+        &RESP_CLUSTER,
+        SPLIT_SPACE,
+        [
+            " LEADS SHARD prod.shop.sessions 1",
+            " LEADS SHARD prod.shop.sessions 2",
+            "",
+        ],
+    );
+    // Every node serves RESP for this exercise, each pinned to the space: a
+    // probe is an ordinary client, and an ordinary client names no USE.
+    for (index, door) in RESP_DOORS.iter().enumerate() {
+        cluster.restart_with(
+            index,
+            &["--resp", door, "--resp-space", "prod.shop.sessions"],
+        );
+        assert!(
+            listening(RESP_CLUSTER[index].0, Duration::from_secs(30)),
+            "node {index} never re-served its wire door{}",
+            what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+        );
+        assert!(
+            listening(door, Duration::from_secs(30)),
+            "node {index} never served RESP at {door}{}",
+            what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+        );
+    }
+    // n0 leads shard 1 and n1 leads shard 2: warmed by writing into each
+    // leader's own shard, and n0 has learned n1 leads shard 2 (its row had to
+    // replicate first, or n0 would take shard 2 for a range nobody leads).
+    let mut warmed = Vec::new();
+    for (index, prefix) in ["a", "h"].iter().enumerate() {
+        match space_taken(RESP_CLUSTER[index].0, prefix, Duration::from_secs(120)) {
+            Ok(key) => warmed.push(key),
+            Err(last) => panic!(
+                "node {index} never took a write into its own shard; last: {last}{}",
+                what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+            ),
+        }
+    }
+    // Every node holds every warmed key before the probe: replication caught
+    // up across the restarts, so a later miss is the carry's, not the log's.
+    for (index, _) in RESP_CLUSTER.iter().enumerate() {
+        for key in &warmed {
+            assert!(
+                until(Duration::from_secs(60), || {
+                    read_at(RESP_CLUSTER[index].0, "SELECT id FROM sessions;")
+                        .is_ok_and(|ids| ids.iter().any(|id| id == key))
+                }),
+                "node {index} never caught up to {key}{}",
+                what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+            );
+        }
+    }
+
+    // The measurement: a client on n0's RESP door writes a key n0 does not
+    // lead. The answer is the value protocol (+OK), never the redirect: the
+    // surface carries the statement to shard 2's leader per command, the way
+    // the wire protocol's redirect is hidden from an HTTP caller.
+    let answered = resp_command(RESP_DOORS[0], &["SET", "h9", "value:h9"]);
+    assert_eq!(
+        answered, "+OK",
+        "a wrong-node SET refused instead of carrying"
+    );
+    assert_eq!(resp_command(RESP_DOORS[0], &["GET", "h9"]), "value:h9");
+    // The local-leader row: a key n0 leads is answered beside it.
+    assert_eq!(
+        resp_command(RESP_DOORS[0], &["SET", "a9", "value:a9"]),
+        "+OK"
+    );
+    assert_eq!(resp_command(RESP_DOORS[0], &["GET", "a9"]), "value:a9");
+    // And the carried write really landed on n1, not on n0: the shard's
+    // leader holds it, readable from every node that replicates the range.
+    assert!(
+        until(Duration::from_secs(30), || {
+            read_at(RESP_CLUSTER[1].0, "SELECT id FROM sessions;")
+                .is_ok_and(|ids| ids.contains(&"h9".to_owned()))
+        }),
+        "node 1 never held the carried key; it reads {:?}{}",
+        read_at(RESP_CLUSTER[1].0, "SELECT id FROM sessions;"),
+        what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+    );
+    assert!(
+        until(Duration::from_secs(30), || {
+            read_at(RESP_CLUSTER[2].0, "SELECT id FROM sessions;")
+                .is_ok_and(|ids| ids.contains(&"h9".to_owned()) && ids.contains(&"a9".to_owned()))
+        }),
+        "the follower never held both keys; it reads {:?}{}",
+        read_at(RESP_CLUSTER[2].0, "SELECT id FROM sessions;"),
+        what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+    );
+}
+
+#[test]
+fn a_topic_consumer_follows_the_leadership_without_a_redeclare() {
+    // Every node runs the declared consumer, the leader applies exactly
+    // once, and a failover MOVES the application to the winner — no operator
+    // re-declare. The shipped hole, measured on a live cluster: followers
+    // halted at declare with the led-elsewhere error and the failover winner
+    // applied nothing until the consumer was dropped and declared again.
+    let mut cluster = a_cluster_declared(&TOPICS_CLUSTER, "", ["", "", ""]);
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "no STORE leader at bring-up{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+    let (leader, _) = leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None)
+        .expect("the leader the bring-up election just produced");
+
+    // A write is attempted until it lands — a young cluster answers the
+    // majority-ack window with the committed-but-unconfirmed refusal, which
+    // `landed` reads as the write it is.
+    let write_at = |surface: &str, statement: &str| {
+        let began = Instant::now();
+        loop {
+            if let Ok(mut client) = Client::connect(surface)
+                && landed(&client.run(statement, None))
+            {
+                return;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "the write never landed: {statement}{}",
+                what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    };
+
+    // The definitions ride the log: the leader declares them, every node
+    // starts its member within a second of the declaration arriving.
+    write_at(TOPICS_CLUSTER[leader].0, TOPICS_DEFINITIONS);
+    let definitions_reached = (0..TOPICS_CLUSTER.len()).all(|index| {
+        until(Duration::from_secs(30), || {
+            consumer_halted_at(TOPICS_CLUSTER[index].0).is_some()
+        })
+    });
+    assert!(
+        definitions_reached,
+        "the definitions never reached every node{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // Four keyed messages into the topic: the leader's member applies them
+    // to order_rows exactly once.
+    for (id, key, amount) in [
+        ("o1", "a", 10),
+        ("o2", "b", 20),
+        ("o3", "c", 30),
+        ("o4", "d", 40),
+    ] {
+        write_at(
+            TOPICS_CLUSTER[leader].0,
+            &format!(
+                "USE NAMESPACE prod; USE DATABASE shop; \
+                 CREATE orders:'{id}' = {{ key: '{key}', order_id: '{id}', amount: {amount} }};"
+            ),
+        );
+    }
+    let applied = |count: usize| {
+        until(Duration::from_secs(60), || {
+            read_at(
+                TOPICS_CLUSTER[leader].0,
+                "USE NAMESPACE prod; USE DATABASE shop; SELECT id FROM order_rows;",
+            )
+            .is_ok_and(|ids| ids.len() == count)
+        })
+    };
+    assert!(
+        applied(4),
+        "the leader never applied the four messages{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // The contract the module doc already states (tessari-ingest topic.rs):
+    // a node that may not write WAITS — its member is never halted by the
+    // led-elsewhere refusal. The shipped hole halted it instead; a member
+    // that halts never comes back without a re-declare.
+    let follower = (0..TOPICS_CLUSTER.len())
+        .find(|index| *index != leader)
+        .unwrap();
+    let halted = until(Duration::from_secs(30), || {
+        consumer_halted_at(TOPICS_CLUSTER[follower].0).unwrap_or(false)
+    });
+    assert!(
+        !halted,
+        "the follower's member halted instead of waiting for the leadership{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // The leader is killed; the survivors elect a new STORE leader, and the
+    // winner's member — declared at bring-up, never re-declared — keeps
+    // applying.
+    cluster.running[leader] = None;
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None).is_some_and(|(at, _)| at != leader)
+    });
+    assert!(
+        elected,
+        "the survivors elected no new leader{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+    let (winner, _) = leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None)
+        .expect("the new leader the election just produced");
+    write_at(
+        TOPICS_CLUSTER[winner].0,
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         CREATE orders:'o5' = { key: 'e', order_id: 'o5', amount: 50 };",
+    );
+    assert!(
+        until(Duration::from_secs(60), || {
+            read_at(
+                TOPICS_CLUSTER[winner].0,
+                "USE NAMESPACE prod; USE DATABASE shop; SELECT id FROM order_rows;",
+            )
+            .is_ok_and(|ids| ids.len() == 5)
+        }),
+        "the failover winner never applied the fifth message without a \
+         re-declare{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+}
+
 /// The automatic-split scenario's addresses, its own band (G053 SG4b).
 const BALANCED: Band = [
     ("127.0.0.1:48010", "127.0.0.1:48011"),
@@ -6180,6 +7566,119 @@ fn a_range_given_back_to_the_store_line_keeps_every_write_it_took() {
             what_the_nodes_said(&HANDING_BACK, &logs)
         );
     }
+}
+
+/// The drain scenario's addresses, its own band (G093 SG2).
+const DRAINING: Band = [
+    ("127.0.0.1:48046", "127.0.0.1:48047"),
+    ("127.0.0.1:48048", "127.0.0.1:48049"),
+    ("127.0.0.1:48050", "127.0.0.1:48051"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a drained node's placement \
+            moves only after the store line settles on a survivor and that \
+            leader's next pass. G093 SG2's own validation, run explicitly: \
+            cargo test -p tessari-cli --test serving \
+            a_drained_nodes_placement -- --ignored"]
+fn a_drained_nodes_placement_is_replaced_without_a_balance_statement() {
+    // G093 C1 / U4: with `DEFINE BALANCER` declared and NO `BALANCE
+    // LEADERSHIPS` anywhere, draining the store line's leader — its member
+    // row's roles cleared, the spec's *Draining this node* — moves its placed
+    // range onto an idle voter by the load act's drain branch alone. The
+    // assertion that answers U4: no balance statement appears anywhere below.
+    let cluster = a_cluster_declared(&DRAINING, "", ["", "", ""]);
+    let policy = "DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms \
+                  LEASE 800ms; \
+                  DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 10s SPACING 1s;";
+    // The store leader is the node that takes a catalog change; the others
+    // redirect, and this client does not follow a redirect.
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = DRAINING
+            .iter()
+            .position(|(surface, _)| asked(surface, &format!("{PLACED} {policy}"), None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema and the balancer policy were never declared{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    let crowded = leader.unwrap_or_default();
+    let placed = until(Duration::from_secs(30), || {
+        asked(
+            DRAINING[crowded].0,
+            &format!("ALTER REPLICA n{crowded} LEADS SHARD prod.shop.orders 2;"),
+            None,
+        )
+        .is_ok()
+    });
+    assert!(
+        placed,
+        "the store leader n{crowded} could not be placed on shard 2{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // The imbalance existed: the store leader led shard 2 as well.
+    let crowded_led = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&cluster.logs[crowded]).is_empty()
+    });
+    assert!(
+        crowded_led,
+        "n{crowded} never led shard 2{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // The drain: the roles on the membership row cleared, the spec's
+    // *Draining this node* spelling — a local `DEFINE NODE ROLES NONE` would
+    // be an override this node's next open discards. Everything else on the
+    // row stands: the address, the identity, the subscription, and the
+    // placement this test put on it a moment ago.
+    let drained = format!("ALTER REPLICA n{crowded} ROLES NONE;");
+    let mut last = String::new();
+    let drained_row = until(Duration::from_secs(30), || {
+        match asked(DRAINING[crowded].0, &drained, None) {
+            Ok(_) => true,
+            Err(why) => {
+                last = why;
+                false
+            }
+        }
+    });
+    assert!(
+        drained_row,
+        "the membership row never took the drain: {last}{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // Re-placed, by the load act's drain branch, onto another node that now
+    // leads it — with no balance statement anywhere in the cluster's log.
+    let mut taker = None;
+    let moved = until(Duration::from_secs(120), || {
+        taker = (0..DRAINING.len())
+            .filter(|other| *other != crowded)
+            .find(|other| !shard_two_epochs(&cluster.logs[*other]).is_empty());
+        taker.is_some()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced load: a placement moved"))
+            })
+    });
+    assert!(
+        moved,
+        "the drained node's placement was never re-placed{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    let taker = taker.unwrap_or_default();
+    // The counter's own rendering is asserted where the surface exists, in
+    // the http suite — this harness starts no http surface, and the tally is
+    // process-local on the node that made the move (still the drained node's
+    // process, its local roles unchanged until its next open).
+    if let Err(last) = until_taken(DRAINING[taker].0, "hb", Duration::from_secs(60)) {
+        panic!(
+            "n{taker} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&DRAINING, &cluster.logs)
+        );
+    }
+    eprintln!("DRAIN n{crowded} drained, n{taker} took shard 2 without a balance statement");
 }
 
 /// The candidate-preference scenario's addresses, its own band (G053 SG5b).

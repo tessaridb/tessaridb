@@ -494,3 +494,177 @@ fn a_topic_emptied_by_retention_carries_on_numbering_after_a_restore() {
         "the restored topic started numbering again"
     );
 }
+
+#[test]
+fn a_survivor_turned_source_reseeds_the_lost_primary_over_its_own_log() {
+    // The reverse direction, at state level: the survivor's restored copy
+    // holds the received log's positions but no records; its own log is the
+    // history the lost primary lacks. The seed is named from the position
+    // report's tail; the serve reads the log the seed names — never the
+    // received sibling, whose every effect is inside the far side's snapshot
+    // by the seed's declaration — and the promote guard measures the same
+    // log, not the sibling whose tail runs ahead.
+    let (_, origin) = store();
+    {
+        let mut session = Session::new(&origin);
+        session
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                 CREATE orders:1 = { item: 'book' }; \
+                 CREATE orders:2 = { item: 'map' }; \
+                 CREATE orders:3 = { item: 'atlas' };",
+            )
+            .unwrap();
+    }
+    // The survivor: the primary's state, restored; then its own write — the
+    // post-loss history begins in its own log.
+    let (_, survivor) = restored(&snapshot(&origin));
+    {
+        let mut session = Session::new(&survivor);
+        session
+            .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:9 = { item: 'compass' };")
+            .unwrap();
+    }
+    // The lost primary, wiped and restored from the survivor's backup.
+    let (_, lost) = restored(&snapshot(&survivor));
+
+    // Both ends name the seed from the position report the restored store
+    // answers: the survivor's own-log tail.
+    let mut here = Session::new(&survivor);
+    let outcomes = here
+        .run_now("USE NAMESPACE prod DATABASE shop; INFO FOR DATABASE;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) =
+        outcomes.last()
+    else {
+        panic!("expected a database report, got {outcomes:?}");
+    };
+    let Some(tessari_types::Value::Object(log)) = report.get("log") else {
+        panic!("expected a log group in {report:?}");
+    };
+    let Some(tessari_types::Value::Number(tessari_types::Number::Integer(tail))) = log.get("tail")
+    else {
+        panic!("expected a tail in {log:?}");
+    };
+    let floor = u64::try_from(*tail).expect("the tail fits");
+    here.run_now(&format!(
+        "DEFINE REPLICATION south TO 'lost:9080' FOR DATABASE prod.shop SEED AT {floor};"
+    ))
+    .unwrap();
+    let mut there = Session::new(&lost);
+    there
+        .run_now(&format!(
+            "DEFINE REPLICATION north FROM 'survivor:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+
+    // The survivor writes past the floor; one serve ships its own log alone
+    // and the lost primary applies it.
+    here.run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:10 = { item: 'lantern' };")
+        .unwrap();
+    let row = {
+        let mut reading = survivor.begin().now().unwrap();
+        tessari_storage::Catalog::new(&mut reading)
+            .replications()
+            .now()
+            .unwrap()
+            .into_iter()
+            .find(|held| held.name == "south")
+            .expect("the south row")
+    };
+    let mut sink = tessari_storage::ChannelSink::new();
+    tessari_storage::serve_once(&survivor, &row, survivor.links(), &mut sink)
+        .now()
+        .unwrap();
+    let envelopes = sink.drain();
+    assert!(
+        !envelopes.is_empty(),
+        "the survivor shipped its post-loss history"
+    );
+    for (_, envelope) in &envelopes {
+        tessari_storage::intake(&lost, envelope.clone())
+            .now()
+            .unwrap();
+    }
+
+    // The write through landed at the lost primary — its copy holds the
+    // primary's three records and the survivor's two.
+    let outcomes = there
+        .run_now("USE NAMESPACE prod DATABASE shop; SELECT * FROM orders;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Records { records, .. }) = outcomes.last() else {
+        panic!("the SELECT did not answer records");
+    };
+    assert_eq!(
+        records.len(),
+        5,
+        "the lost primary holds the primary's records and the survivor's: {records:?}"
+    );
+
+    // Both links promote: the guard measures the seed's log, not the received
+    // sibling whose tail stands further along.
+    here.run_now("ALTER REPLICATION south ACTIVE;").unwrap();
+    there.run_now("ALTER REPLICATION north ACTIVE;").unwrap();
+    let outcomes = here.run_now("INFO FOR REPLICATION south;").unwrap();
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) =
+        outcomes.into_iter().next()
+    else {
+        panic!("INFO did not answer with an object");
+    };
+    let Some(tessari_types::Value::Object(progress)) = report.get("progress") else {
+        panic!("no progress group: {report:?}");
+    };
+    assert_eq!(
+        progress.get("state"),
+        Some(&tessari_types::Value::from("active")),
+        "the survivor's link promotes at zero lag in the log the seed names: {progress:?}"
+    );
+}
+
+#[test]
+fn a_state_restored_database_names_where_its_log_resumes() {
+    // A state snapshot restores the data whole and the positions, but no log
+    // records. The database report's log group names the log's truth: the
+    // tail stands where the snapshot took it, the log is empty and resumes
+    // where the tail does. The pair is what a reseed reads its seed number
+    // from — the tail — and the resume point is what the link is served from.
+    let (_, source) = store();
+    {
+        let mut session = Session::new(&source);
+        session
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                 CREATE orders:1 = { item: 'book' }; \
+                 CREATE orders:2 = { item: 'map' }; \
+                 CREATE orders:3 = { item: 'atlas' };",
+            )
+            .unwrap();
+    }
+    let taken = snapshot(&source);
+    let (_, restored) = restored(&taken);
+    let mut session = Session::new(&restored);
+    let outcomes = session
+        .run_now("USE NAMESPACE prod DATABASE shop; INFO FOR DATABASE;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) =
+        outcomes.last()
+    else {
+        panic!("expected a database report, got {outcomes:?}");
+    };
+    let Some(tessari_types::Value::Object(log)) = report.get("log") else {
+        panic!("expected a log group in {report:?}");
+    };
+    assert_eq!(
+        log.get("start"),
+        Some(&tessari_types::Value::from(4)),
+        "an empty log resumes where the tail does"
+    );
+    assert_eq!(
+        log.get("tail"),
+        Some(&tessari_types::Value::from(3)),
+        "the tail stands where the snapshot took it"
+    );
+}

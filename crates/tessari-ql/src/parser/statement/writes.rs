@@ -192,6 +192,14 @@ impl Parser<'_> {
             _ if self.eat_word("topology") => Ok(StatementKind::DropTopology {
                 name: self.dropped_name()?,
             }),
+            // Contextual, as the word is everywhere else it appears. The load
+            // policy is one per store line and names nothing, so the drop
+            // takes no name — the way `DROP BALANCER`'s whole shape promises.
+            _ if self.eat_word("balancer") => Ok(StatementKind::DropBalancer),
+            // Contextual, as the word is everywhere else it appears.
+            _ if self.eat_word("pool") => Ok(StatementKind::DropPool {
+                name: self.dropped_name()?,
+            }),
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
                 name: self.dropped_name()?,

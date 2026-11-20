@@ -17,6 +17,53 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
+## 0.50.0 — 2026-11-21
+
+Cluster operations: the cluster now watches measured load and re-homes work
+by itself, bounds a noisy tenant, seeds a fresh replica from a snapshot both
+directions, and carries the RESP/KV, topic and columnar surfaces across a
+cluster the way it carries tables.
+
+- The placement balancer: `DEFINE BALANCER LOAD ABOVE r WITHIN w SPACING s`
+  declares a load pass on the balancing round's own cadence — when a node's
+  load runs above the margin inside the window, the pass sheds a placement
+  to an idle voter, never twice within the spacing, with a no-overshoot
+  bound. Draining a node — `ALTER REPLICA <name> ROLES NONE` on its
+  membership row — re-places what it led automatically, no balance
+  statement. `INFO FOR NODE` answers `cluster.balancer`; `/metrics` carries
+  `tessari_balancer_load_moves_total`.
+- Workload pools: `DEFINE POOL` bounds how much of a node one tenant's
+  statements may take at once — a classifier over the database, the user
+  and the statement kind, and a concurrency ceiling the gate enforces with
+  a named `PoolAtCapacity` refusal. `INFO FOR POOL[S]` answers the
+  declaration with this node's counts; `/metrics` carries the
+  `tessari_pool_*` series.
+- The replication seeding lifecycle: `DEFINE REPLICATION … SEED AT <n>`
+  declares a link at a snapshot's end — the row carries `SEEDING → STANDBY
+  → ACTIVE`, promotes itself on catch-up, and `ALTER REPLICATION … ACTIVE`
+  is the early-promote spelling, refusing while the copy runs behind and
+  naming the lag. `INFO FOR REPLICATION` answers the progress; `INFO FOR
+  DATABASE` answers the log's own `start`/`tail` the seed is named from. A
+  seeded link serves and is measured by the one log its seed names, so a
+  survivor that becomes a source reseeds the lost primary over its own
+  log. Truncated transfers refuse at the restore; a tail below the seed
+  refuses at the intake.
+- RESP/KV spaces on a cluster: `DEFINE SPACE … SPLIT AT` declares the cuts
+  at the space, and a client writing a foreign-shard key to any node is
+  carried to its shard's leader — the client sees `+OK`, the key lands and
+  replicates.
+- Topics on a cluster: a declared topic consumer follows the leadership —
+  a follower's consumer waits, a failover moves application without a
+  re-declare — and the `PUBLIC RATE` semantics are stated for the cluster
+  shape.
+- Columnar tables on a cluster: a born-split `STORE COLUMN` table files
+  its cuts and gathers exactly — a node holding one shard answers the
+  whole table from its leaders' shards, folds exact. The spec's columnar
+  section states the measured semantics.
+- The web console's cluster section renders the new surfaces: the
+  balancer row, the seeding state on each replication link, and the
+  namespace's pools.
+
 ## 0.49.2 — 2026-11-20
 
 The relational wire, round four: everything possible, and a refusal — never
@@ -245,7 +292,7 @@ is refused by an older build at open (format 13).
   positions. The link's own definition never crosses the seam — it is this
   cluster's topology, the way a peer row is.
 - Format 13: the catalog gains the `REPLICATIONS` system table.
-- **1751 conformance cases** define the language and run in the build.
+- **1766 conformance cases** define the language and run in the build.
 
 ## 0.41.0 — 2026-11-16
 
@@ -391,7 +438,7 @@ Supersedes 0.39.4, which is withdrawn: use 0.39.5. 0.39.3 and 0.39.5 open each o
   `scores::between`, `scores::union` and `scores::intersect` read and combine rankings. A combination's answer can
   be written back with `SET`, so `SET k = set::intersect(GET a, GET b)` stores a set of members and
   `SET k = scores::union(GET a, GET b)` a ranking.
-- **1751 conformance cases** define the language and run in the build.
+- **1766 conformance cases** define the language and run in the build.
 
 ## 0.38.4 — 2026-10-25
 

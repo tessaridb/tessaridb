@@ -8,14 +8,15 @@ use super::*;
 ///
 /// # Errors
 ///
-/// [`Error::SplitOnAKindThatIsNotRecords`] for any kind but a table, [`Error::SplitNeedsGeneratedUuid`] for a counter identity, and
+/// [`Error::SplitOnAKindThatIsNotRecords`] for any kind but a table or a space,
+/// [`Error::SplitNeedsGeneratedUuid`] for a counter identity on a table, and
 /// [`Error::SplitPointsOutOfOrder`] for points that do not ascend strictly.
 pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<ShardMap>> {
     if shape.split.is_empty() {
         return Ok(None);
     }
     let kind = match &shape.kind {
-        TableKind::Table => None,
+        TableKind::Table | TableKind::Space(_) => None,
         TableKind::Collection => Some("a collection"),
         TableKind::Bucket(_) => Some("a bucket"),
         TableKind::Edge(_) => Some("an edge table"),
@@ -25,7 +26,6 @@ pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<Sha
         TableKind::Queue(_) => Some("a queue"),
         TableKind::View(_) => Some("a view"),
         TableKind::Series(_) => Some("a series"),
-        TableKind::Space(_) => Some("a space"),
         TableKind::Topic(_) => Some("a topic"),
     };
     if let Some(kind) = kind {
@@ -43,7 +43,12 @@ pub(crate) fn declared_for(table: &str, shape: &TableShape) -> Result<Option<Sha
             kind: "a node table of a graph",
         });
     }
-    if shape.identity != IdentityKind::Uuid {
+    // The uuid rule answers an argument about GENERATED identities: a shared
+    // counter serializes every insert through one place. A space's keys are
+    // named by the caller, never generated, so the argument does not apply —
+    // the same absence of a check that ALTER-time splitting of a space lives
+    // with, now stated once, at the declare.
+    if !matches!(shape.kind, TableKind::Space(_)) && shape.identity != IdentityKind::Uuid {
         return Err(Error::SplitNeedsGeneratedUuid {
             table: table.to_owned(),
         });

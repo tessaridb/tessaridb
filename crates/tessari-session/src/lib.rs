@@ -66,6 +66,7 @@ mod noticed;
 mod outcome;
 mod param;
 mod plan;
+mod pool;
 mod presented;
 pub use presented::{Certificates, ClientTransport, Listener, Presented};
 mod pushdown;
