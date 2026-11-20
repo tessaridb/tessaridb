@@ -1271,7 +1271,7 @@ fn a_batch_applied_twice_leaves_the_copy_unchanged() {
 
 #[test]
 fn a_shipped_empty_record_at_an_applied_position_is_a_noop_not_a_divergence() {
-    // D-SG4-12, in miniature: a clustered receiving side holds its OWN record
+    // The clustered-receiver rule in miniature: a receiving side holds its OWN record
     // at position 1 of the line log — every cluster writes its membership and
     // its leadership renewals there — while the shipment offers the source's
     // record at the same position filtered to nothing, because the record is
@@ -1319,7 +1319,7 @@ fn a_shipped_empty_record_at_an_applied_position_is_a_noop_not_a_divergence() {
 
 #[test]
 fn a_shipped_empty_record_at_a_fresh_position_keeps_the_arithmetic() {
-    // The other half of D-SG4-12: skipping is only for already-applied
+    // The other half of that rule: skipping is only for already-applied
     // positions. An empty marker at a fresh position still extends the log —
     // positions are arithmetic, and the record after it must not read as a gap.
     let target = Store::open(backend()).now().unwrap();
@@ -1470,4 +1470,40 @@ fn the_plural_lists_every_link_for_the_manager_that_has_no_name_yet() {
         })
         .collect();
     assert_eq!(directions, vec!["outbound", "inbound"]);
+}
+
+#[test]
+fn an_inbound_link_survives_a_store_reopen() {
+    // The receiver's registry is derived from the log records the link's
+    // declarations wrote, and a fresh open used to start it empty: nothing
+    // re-derived it, so a restarted receiver refused its own link's
+    // shipments ('prod.shop is not received from another cluster') and the
+    // write gate over a received database went blind — divergence's quietest
+    // shape, found by the live seeding exercise. The registry is rebuilt
+    // from the catalog at open.
+    let backend = backend();
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+             USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+             USE NAMESPACE prod DATABASE shop; \
+             DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop;",
+        )
+        .unwrap();
+    let declared = definition(&store, "west");
+    let Reach::Database(namespace, database) = declared.database else {
+        panic!("the link names a database");
+    };
+    drop(store);
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
+    assert_eq!(
+        reopened
+            .replicated()
+            .link_over((namespace, database))
+            .as_deref(),
+        Some("west"),
+        "a reopened store knows what it receives"
+    );
 }

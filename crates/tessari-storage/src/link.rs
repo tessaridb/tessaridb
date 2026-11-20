@@ -327,6 +327,38 @@ pub struct Replicated {
     inbound: DashMap<(tessari_types::NamespaceId, tessari_types::DatabaseId), String>,
 }
 
+impl Store {
+    /// Rebuild the receiver registry from the catalog at open.
+    ///
+    /// The registry is otherwise derived from the log records declarations
+    /// write (`maintain`, on the commit and the apply), and a fresh open used
+    /// to start it empty: nothing re-derived it, so a restarted receiver
+    /// refused its own link's shipments — `'prod.shop' is not received from
+    /// another cluster` — and the write gate over a received database went
+    /// blind, accepting the local writes its declaration exists to refuse.
+    /// The catalog is the persisted truth the log derives; reading it here is
+    /// the same derivation by a shorter route, taken last for the reason
+    /// `reconcile_roles` is: the format is settled and the identity exists.
+    ///
+    /// # Errors
+    ///
+    /// Returns the substrate's failure, and [`Error::CatalogMalformed`] when
+    /// a replication row cannot be decoded — refused rather than skipped,
+    /// because a row read as nothing is a gate that quietly stops refusing.
+    pub(crate) async fn reconcile_inbound_links(&self) -> Result<()> {
+        let mut reading = self.begin().await?;
+        for definition in Catalog::new(&mut reading).replications().await? {
+            if definition.inbound
+                && let Reach::Database(namespace, database) = definition.database
+            {
+                self.replicated()
+                    .insert_inbound((namespace, database), definition.name);
+            }
+        }
+        Ok(())
+    }
+}
+
 impl Replicated {
     /// An empty registry.
     #[must_use]
@@ -341,6 +373,16 @@ impl Replicated {
         tenancy: (tessari_types::NamespaceId, tessari_types::DatabaseId),
     ) -> Option<String> {
         self.inbound.get(&tenancy).map(|held| held.clone())
+    }
+
+    /// Record one inbound mapping directly — the open path's rebuild, which
+    /// starts from the catalog rather than from log records.
+    pub(crate) fn insert_inbound(
+        &self,
+        tenancy: (tessari_types::NamespaceId, tessari_types::DatabaseId),
+        link: String,
+    ) {
+        self.inbound.insert(tenancy, link);
     }
 
     /// Learn what one record's mutations say about inbound links. Called from

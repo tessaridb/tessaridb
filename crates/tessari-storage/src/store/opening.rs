@@ -122,6 +122,10 @@ impl Store {
         // Last, because it reads the catalog: the format is settled and the
         // identity exists by the time this asks which node it is.
         store.reconcile_roles().await?;
+        // After it for the same reason: a fresh open starts the receiver
+        // registry empty, and without this the read-only gate and the wire's
+        // receive check both go blind to every inbound link the catalog holds.
+        store.reconcile_inbound_links().await?;
         // And after it for the same reason: a finalize this node's older build
         // applied left the record and not the stamp (ADR-0118).
         store.catch_up_with_the_finalized_format().await?;

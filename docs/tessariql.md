@@ -11829,9 +11829,19 @@ one catch-up later the spelling takes. `INFO FOR REPLICATION` reports the
 lifecycle in `progress`: `state`, `seed_at`, `applied` (how far the copy
 stands), `source_latest` (how far the source has written, as known on this
 side) and `lag`, each answered from the facts the answering side holds and
-absent where it holds none — after a restart, before the first serve. A link
-declared without `SEED AT` is `active` from birth; the lifecycle is a seeded
-link's story, not a tax on every link.
+absent where it holds none — after a restart, before the first serve. The
+position itself is read, not remembered: `INFO FOR DATABASE` answers a `log`
+group, `start` and `tail` — where this node's copy of the database's log still
+begins and where it ends, the two numbers the seed procedure is written from.
+The log is the one the machinery answers by: the line's once it holds records,
+this node's own before any leadership, and the furthest other log of the
+database when a restored snapshot holds history under the writer that made
+it. On a copy restored from a state snapshot the log is empty by design — the
+snapshot carries the data whole and the positions, and records the resume one
+past the tail — so the group reads `(tail+1, tail)`; the seed is named from
+the tail, which is where the snapshot ends. A link declared without `SEED AT`
+is `active` from birth; the lifecycle is a seeded link's story, not a tax on
+every link.
 
 **The seed's two halves refuse dishonesty rather than converging over it.** A
 truncated snapshot is refused where the restore reads it — `CutShort`, naming

@@ -1842,7 +1842,7 @@ fn a_node_dials_the_peer_its_catalog_declares() {
     );
 }
 
-/// The pooled cluster's band — the proof set of the SG2 worksheet exercised
+/// The pooled cluster's band — the proof set of the placement worksheet exercised
 /// against three operating-system processes.
 ///
 /// A band of its own for the reason every cluster test here carries one: two
@@ -1880,7 +1880,7 @@ const POOLED_SCHEMA: &str = "DEFINE NAMESPACE tenant_a REPLICATION FACTOR 3; USE
 /// of namespaces — does not parse today: a member row carries exactly one
 /// reach (`replicates: Option<ReachRef>`, `tessari-ql/src/ast/statement.rs`),
 /// and the second `REPLICATES` is a parse refusal. That gap is recorded in the
-/// SG2 worksheet as G-SG2-1 and is W4's decision, not this test's.
+/// worksheet's open row, and is a later wave's decision, not this test's.
 const POOLED_ROW: &str = "ROLES serving, writable, coordinating REPLICATES STORE";
 
 #[test]
@@ -2312,6 +2312,358 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
     assert!(
         refused.to_string().contains("read-only"),
         "the refusal names the read-only: {refused}"
+    );
+}
+
+/// The seeding lifecycle's pair. The write-through pair sits at
+/// 48068/48069 and the 2-DC bands at 48071-48082, so the lifecycle owns the
+/// next two doors.
+const SEED_PRIMARY: &str = "127.0.0.1:48083";
+const SEED_DR: &str = "127.0.0.1:48084";
+
+/// Start the shipped binary serving `store` on `door`, stderr at `log`, the
+/// link tokens in its environment. A fresh process per call, because an
+/// environment is fixed at spawn.
+fn serving_with(
+    store: &std::path::Path,
+    door: &str,
+    log: &std::path::Path,
+    env: &[(&str, &str)],
+) -> Running {
+    let writing = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(log)
+        .unwrap();
+    let mut command = Command::new(TESSARIDB);
+    command
+        .arg(store)
+        .args(["--serve", door])
+        .stdout(Stdio::null())
+        .stderr(Stdio::from(writing));
+    for (named, value) in env {
+        command.env(named, value);
+    }
+    let child = command.spawn().unwrap();
+    let running = Running(child);
+    assert!(
+        listening(door, Duration::from_secs(30)),
+        "the wire never accepted a connection on {door}"
+    );
+    running
+}
+
+/// `INFO FOR DATABASE`'s log group at `surface`, as (start, tail) — the two
+/// numbers the seed procedure is written from, read by hand over the wire.
+fn database_log_at(surface: &str, who: Option<(&str, &str)>) -> Result<(i64, i64), String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client
+        .run("USE NAMESPACE prod DATABASE shop; INFO FOR DATABASE;", who)
+        .map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Value {
+            value: tessari_types::Value::Object(report),
+            ..
+        }) => match report.get("log") {
+            Some(tessari_types::Value::Object(log)) => {
+                let number = |field: &str| match log.get(field) {
+                    Some(tessari_types::Value::Number(tessari_types::Number::Integer(held))) => {
+                        Ok(*held)
+                    }
+                    other => Err(format!("{field}: {other:?}")),
+                };
+                Ok((number("start")?, number("tail")?))
+            }
+            other => Err(format!("the log group: {other:?}")),
+        },
+        other => Err(format!("not a database report: {other:?}")),
+    }
+}
+
+/// `INFO FOR REPLICATION <name>`'s progress.state at `surface` — the seeding
+/// lifecycle as this side of the link reports it.
+fn link_state_at(surface: &str, name: &str, who: Option<(&str, &str)>) -> Result<String, String> {
+    let report = replication_at(surface, name, who)?;
+    match report.get("progress") {
+        Some(tessari_types::Value::Object(progress)) => match progress.get("state") {
+            Some(tessari_types::Value::String(held)) => Ok(held.clone()),
+            other => Err(format!("the state: {other:?}")),
+        },
+        other => Err(format!("the progress group: {other:?}")),
+    }
+}
+
+#[test]
+fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
+    // The seeding lifecycle SEEDING → STANDBY → ACTIVE rehearsed on two
+    // live clusters, the
+    // seed named by hand from the position-reading surface the exercise's
+    // first act added (`INFO FOR DATABASE`'s log group). The procedure is the
+    // dossier's: a snapshot, a copy restored from it into an empty store, a
+    // seed declared at the snapshot's end, the tail served from one past the
+    // floor, the operator's promote. The reverse direction on the same pair
+    // is W4's slice — the exercise surfaced that a survivor-turned-source
+    // holds two logs (the received one and its own) and the link's serve and
+    // promote-guard semantics across them want their own design. Where each
+    // state is seen here is honest to
+    // how a restore works: a state snapshot carries the data whole and the
+    // positions, but no log records, so a restored copy stands at the
+    // snapshot's end already and declares straight into standby — the
+    // seeding state belongs to the serving side's row at the declaration,
+    // and both clusters take that turn, each as the source of its half.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let signed = Some(("operator", SECRET));
+
+    // The primary: the schema, its five records, and the outbound half. The
+    // serve floor names where the snapshot ends, which the schema knows
+    // because it wrote the five records.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  CREATE orders:4 = { item: 'globe' }; \
+                  CREATE orders:5 = { item: 'almanac' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48084' FOR DATABASE prod.shop SEED AT 5; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+
+    // The snapshot, taken while every store is a file no process holds.
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // The source's edge, live: the seed's number read by hand, and the
+    // source's own row still seeding — an outbound seeded row is born
+    // seeding, and nothing has served yet.
+    let primary = serving_with(
+        &primary_store,
+        SEED_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    assert_eq!(
+        database_log_at(SEED_PRIMARY, signed),
+        Ok((1, 5)),
+        "the source's edge names the snapshot's end"
+    );
+    assert_eq!(
+        link_state_at(SEED_PRIMARY, "east", signed),
+        Ok("seeding".to_owned()),
+        "the source's serve row is born seeding"
+    );
+    drop(primary);
+
+    // The copy: the snapshot restored into an empty store. The restored edge
+    // names the same snapshot's end — a state snapshot carries the positions
+    // but no log records, so the copy's log is empty and resumes where the
+    // tail does; the pair reads (tail+1, tail) and the seed is named from
+    // the tail. The snapshot's outbound row came with it and names this
+    // cluster as its destination, so it is dropped before the inbound half
+    // is declared at the number the restored edge carried.
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+    let dr = serving_with(
+        &dr_store,
+        SEED_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    assert_eq!(
+        database_log_at(SEED_DR, signed),
+        Ok((6, 5)),
+        "the restored edge names the same snapshot's end: the tail"
+    );
+    let seed = database_log_at(SEED_DR, signed)
+        .expect("the restored edge")
+        .1;
+    {
+        let mut client = Client::connect(SEED_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DROP REPLICATION east; \
+                     DEFINE REPLICATION west FROM '{SEED_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the copy's half of the link: {why}"));
+    }
+    assert_eq!(
+        link_state_at(SEED_DR, "west", signed),
+        Ok("standby".to_owned()),
+        "the restored copy holds its snapshot's end at the declaration"
+    );
+    let token = {
+        let mut client = Client::connect(SEED_DR).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(dr);
+
+    // Both clusters live, the token in the source's environment. The source's
+    // row promotes at the first shipment it confirms through the floor — a
+    // serve promotes only what it shipped — so the write below is the act
+    // that carries both rows to standby: the copy's intake applies it and
+    // the source's serve confirms it.
+    let _primary = serving_with(
+        &primary_store,
+        SEED_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        SEED_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
+            signed,
+        )
+        .unwrap();
+    let east_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(SEED_PRIMARY, "east", signed).is_ok_and(|state| state == "standby")
+    });
+    let west_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(SEED_DR, "west", signed).is_ok_and(|state| state == "standby")
+    });
+    let count_ready = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(SEED_DR).is_ok_and(|count| count == 6)
+    });
+    assert!(
+        east_ready && west_ready && count_ready,
+        "east standby: {east_ready}, west standby: {west_ready}, count 6: {count_ready}\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+
+    // The operator's promote is the early spelling; on an active link it is a
+    // no-op, so it is safe to run at every catch-up.
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION east ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the source's promote: {why}"));
+    let mut client = Client::connect(SEED_DR).unwrap();
+    client
+        .run("ALTER REPLICATION west ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the copy's promote: {why}"));
+    assert_eq!(
+        link_state_at(SEED_PRIMARY, "east", signed),
+        Ok("active".to_owned())
+    );
+    assert_eq!(
+        link_state_at(SEED_DR, "west", signed),
+        Ok("active".to_owned())
+    );
+
+    // A write through the active pair lands on the copy.
+    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:7 = { item: 'ledger' };",
+            signed,
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(SEED_DR).is_ok_and(|count| count == 7)
+    });
+    assert!(
+        converged,
+        "the write through the active pair reached the copy"
+    );
+}
+#[test]
+fn a_truncated_seed_transfer_is_refused_at_the_restore() {
+    // The seed's snapshot half, live: a backup file cut mid-record is not a
+    // prefix an operator could mistake for a whole. The restore refuses
+    // rather than land a copy the seed would then overclaim — the truncated
+    // transfer's half of the honesty the intake refuses at the other end.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+
+    // One byte short of a frame: the section promises through its tail, the
+    // file ends inside a record.
+    let whole = std::fs::read(&backup).unwrap();
+    std::fs::write(&backup, &whole[..whole.len() - 1]).unwrap();
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(
+        !restored.status.success(),
+        "the cut transfer refuses rather than restore: {restored:?}"
+    );
+    let said = String::from_utf8_lossy(&restored.stderr);
+    assert!(
+        !said.trim().is_empty(),
+        "the refusal says why, on the error stream: {restored:?}"
     );
 }
 

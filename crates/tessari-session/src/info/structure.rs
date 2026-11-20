@@ -6,8 +6,8 @@ use std::collections::BTreeMap;
 
 use tessari_encoding::FormatVersion;
 use tessari_ql::{Name, Span, TableRef};
-use tessari_storage::{Catalog, ConsumerDefinition, GEO_FIELD, TableKind, Transaction};
-use tessari_types::{Number, Value};
+use tessari_storage::{Catalog, ConsumerDefinition, GEO_FIELD, Reach, TableKind, Transaction};
+use tessari_types::{Number, Sequence, Value};
 
 use crate::describe;
 use crate::error::{Error, Result};
@@ -191,6 +191,58 @@ impl Session<'_> {
             .await?
             .map(|definition| definition.params)
             .unwrap_or_default();
+        // The two numbers the seed procedure is written from: where this
+        // database's history still begins and where it ends, so a `SEED AT
+        // <position>` can be named by hand. The log is looked for in the order
+        // the machinery itself prefers: the line's once it holds records, this
+        // node's own before any leadership — and a copy restored from a
+        // snapshot holds its history under the writer that made it, which is
+        // neither, so the furthest other log of this home answers when both
+        // are empty. A home with nothing anywhere is empty, and says so with
+        // two zeros. An unpruned log reports one past zero rather than zero:
+        // the stored floor's absence means *whole*, and a whole log begins at
+        // its first record, not before it.
+        let home = Reach::Database(context.namespace, context.database);
+        let line = self.store.line_log(home).await?;
+        let own = self.store.own_log(home).await?;
+        let mut held: Option<(tessari_encoding::LogId, Sequence)> = None;
+        for candidate in [line, own] {
+            let tail = self.store.committed_tail(candidate).await?;
+            if tail > Sequence::ZERO {
+                held = Some((candidate, tail));
+                break;
+            }
+        }
+        if held.is_none() {
+            // The restored-copy case: history made by another node, filed
+            // under that node's writer, which this node's line and own are
+            // not. The furthest such log is the extent the snapshot carried.
+            for log in self.store.logs_of(home).await? {
+                let tail = self.store.committed_tail(log).await?;
+                held = Some(match held {
+                    Some((kept, at)) if at >= tail => (kept, at),
+                    _ => (log, tail),
+                });
+            }
+        }
+        let (start, tail) = match held {
+            Some((log, tail)) => {
+                // The stored floor's absence means *whole*, and a whole log
+                // begins at its first record, not before it. A state restore
+                // finishes by recording the resume one past the tail
+                // (`finish_state`'s contract), so an empty restored log
+                // reports its resume point and the data's extent both,
+                // without a special case here.
+                let floor = self.store.log_start(log).await?;
+                (floor.max(Sequence::new(1)), tail)
+            }
+            None => (Sequence::ZERO, Sequence::ZERO),
+        };
+        let position = |held: Sequence| {
+            Value::Number(Number::Integer(
+                i64::try_from(held.get()).unwrap_or(i64::MAX),
+            ))
+        };
         Ok(BTreeMap::from([
             ("params".to_owned(), Value::Object(params)),
             ("tables".to_owned(), by_name(names)),
@@ -199,6 +251,13 @@ impl Session<'_> {
             (
                 "searches".to_owned(),
                 by_name(searches.into_iter().collect()),
+            ),
+            (
+                "log".to_owned(),
+                Value::Object(BTreeMap::from([
+                    ("start".to_owned(), position(start)),
+                    ("tail".to_owned(), position(tail)),
+                ])),
             ),
         ]))
     }

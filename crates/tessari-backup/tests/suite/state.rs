@@ -494,3 +494,49 @@ fn a_topic_emptied_by_retention_carries_on_numbering_after_a_restore() {
         "the restored topic started numbering again"
     );
 }
+
+#[test]
+fn a_state_restored_database_names_where_its_log_resumes() {
+    // A state snapshot restores the data whole and the positions, but no log
+    // records. The database report's log group names the log's truth: the
+    // tail stands where the snapshot took it, the log is empty and resumes
+    // where the tail does. The pair is what a reseed reads its seed number
+    // from — the tail — and the resume point is what the link is served from.
+    let (_, source) = store();
+    {
+        let mut session = Session::new(&source);
+        session
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                 USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                 CREATE orders:1 = { item: 'book' }; \
+                 CREATE orders:2 = { item: 'map' }; \
+                 CREATE orders:3 = { item: 'atlas' };",
+            )
+            .unwrap();
+    }
+    let taken = snapshot(&source);
+    let (_, restored) = restored(&taken);
+    let mut session = Session::new(&restored);
+    let outcomes = session
+        .run_now("USE NAMESPACE prod DATABASE shop; INFO FOR DATABASE;")
+        .unwrap();
+    let Some(tessari_session::Outcome::Value(tessari_types::Value::Object(report))) =
+        outcomes.last()
+    else {
+        panic!("expected a database report, got {outcomes:?}");
+    };
+    let Some(tessari_types::Value::Object(log)) = report.get("log") else {
+        panic!("expected a log group in {report:?}");
+    };
+    assert_eq!(
+        log.get("start"),
+        Some(&tessari_types::Value::from(4)),
+        "an empty log resumes where the tail does"
+    );
+    assert_eq!(
+        log.get("tail"),
+        Some(&tessari_types::Value::from(3)),
+        "the tail stands where the snapshot took it"
+    );
+}
