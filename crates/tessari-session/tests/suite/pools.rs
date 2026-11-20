@@ -221,6 +221,75 @@ fn info_for_pool_reports_the_catalog_row_with_this_nodes_counters() {
 }
 
 #[test]
+fn the_noisy_tenant_exercise_bounds_one_tenant_and_counts_it() {
+    // C2's evidence: two tenants on one pooled store, one of them noisy. The
+    // noisy tenant runs every read it likes and is never counted, because no
+    // declared pool matches it — the default pool names no limit. The bounded
+    // tenant's bound holds while the noise runs around her: her in-flight
+    // read (stood on the guard's own seam, the way W3's rows do) occupies the
+    // pool's only slot, so her next read is refused `PoolAtCapacity` while
+    // the noisy tenant's burst is admitted beside it. The instrumentation
+    // the feature lands is the other half of the claim: the counters name
+    // the bounded tenant's running and refused counts, and the noisy tenant
+    // has no row at all.
+    let store = store();
+    let mut root = owned(&store);
+    root.run_now("DEFINE USER noisy ON prod.work ROLE viewer PASSWORD 'correct horse battery';")
+        .unwrap();
+    root.run_now("DEFINE POOL web WITH MAX CONCURRENT 1 FOR USER ada FOR READS;")
+        .unwrap();
+    root.run_now("CREATE orders:1 = { placed: true }; CREATE orders:2 = { placed: true };")
+        .unwrap();
+    let mut noisy = Session::new(&store);
+    noisy.sign_in("noisy", PASSWORD).now().unwrap();
+    noisy
+        .run_now("USE NAMESPACE prod; USE DATABASE work;")
+        .unwrap();
+    let mut ada = ada(&store);
+
+    // The bounded tenant's in-flight read stands on the guard's own seam —
+    // taking the load the guard exists to refuse would run the attack.
+    let held = store
+        .pool_take("prod", "web", 1)
+        .expect("the pool's only slot");
+
+    // The noise: twenty-five reads, every one admitted — the default pool
+    // names no limit — while the bounded tenant is refused beside them.
+    for at in 0..25 {
+        noisy
+            .run_now("SELECT * FROM orders;")
+            .unwrap_or_else(|why| panic!("the noisy tenant's read {at} was refused: {why}"));
+    }
+    match ada.run_now("SELECT * FROM orders;") {
+        Err(tessari_session::Error::PoolAtCapacity { pool, .. }) => {
+            assert_eq!(pool, "prod:web");
+        }
+        other => panic!("the bounded tenant's read held its bound: {other:?}"),
+    }
+
+    // The counters the feature lands: the bounded pool names one running and
+    // one refused; the noisy tenant has no row, because no pool counts it.
+    let report = root.run_now("INFO FOR POOL web;").unwrap();
+    let [tessari_session::Outcome::Value(value)] = report.as_slice() else {
+        panic!("INFO FOR POOL did not answer one value: {report:?}");
+    };
+    let fields = object(value);
+    assert!(integer(fields, "running") >= 1, "the held slot is counted");
+    assert!(integer(fields, "refused") >= 1, "the refusal is counted");
+    assert!(
+        store
+            .pool_counters()
+            .iter()
+            .all(|held| held.namespace == "prod" && held.pool == "web"),
+        "the noisy tenant has a pool row: {:?}",
+        store.pool_counters()
+    );
+
+    drop(held);
+    ada.run_now("SELECT * FROM orders;").unwrap();
+}
+
+#[test]
 fn info_for_pools_lists_what_the_namespace_holds_and_bounds_who_asks() {
     let store = store();
     let mut root = owned(&store);
