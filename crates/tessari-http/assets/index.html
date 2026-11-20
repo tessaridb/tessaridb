@@ -409,13 +409,19 @@
               </div>
               <div id="replication-part"><span id="replication-status" class="status" role="status"></span></div>
               <div id="replication-facts"></div>
+              <div id="pools-part"><span id="pools-status" class="status" role="status"></span></div>
+              <div id="pools-facts"></div>
+              <details class="tucked">
+                <summary>What a pool is</summary>
+                <p class="note">A pool bounds how much of this node one tenant's statements may take at once: a classifier over the database, the user and the kind of statement, and a ceiling on how many the gate admits together. DEFINE POOL names the bound — prod:web FOR DATABASE prod MAX 8 CONCURRENT, for example — and a statement the bound refuses answers PoolAtCapacity, naming the pool, the conflict class, retryable. The statement is the control, run from the query tab.</p>
+              </details>
               <details class="tucked">
                 <summary>The answer this was drawn from</summary>
                 <div id="cluster-facts" class="answer small" aria-live="polite"></div>
               </details>
               <details class="tucked">
                 <summary>What a replication link is</summary>
-                <p class="note">One named database, shipped to another cluster, declared on each side. TO names the outbound half — this cluster serves the link; FROM names the receiving half, and the copy is read-only by declaration: a write into it is refused with a named class. The stream is at-least-once with idempotent application, and ALTER REPLICATION … PAUSED | RESUMED holds and restarts it — the statement is the control, run from the query tab.</p>
+                <p class="note">One named database, shipped to another cluster, declared on each side. TO names the outbound half — this cluster serves the link; FROM names the receiving half, and the copy is read-only by declaration: a write into it is refused with a named class. The stream is at-least-once with idempotent application, and ALTER REPLICATION … PAUSED | RESUMED holds and restarts it. A link declared SEED AT a position lives a lifecycle the state on its row names: seeding while the snapshot's tail is caught up, standby once it is, active when the operator promotes it — ALTER REPLICATION … ACTIVE is the early-promote spelling, and it refuses while the copy runs behind, naming the lag. The statements are the controls, run from the query tab.</p>
               </details>
             </div>
             <dialog id="form-dialog" class="dialog" aria-labelledby="form-dialog-title">
@@ -591,6 +597,11 @@
               <details class="tucked">
                 <summary>Which statements change them</summary>
                 <p class="note">ALTER TABLE … SPLIT AT and MERGE SHARD change the map in place, and SPLIT AUTOMATICALLY lets the store's leader do it by size and load: MIN and MAX SHARDS bound how few or many it may hold, and a shard split for its load is cut where its recent traffic says the mass sits. IDENTITY uuid SPREAD spreads new records over the shards, PARTITION BY gives each region its shard. ALTER REPLICA … LEADS moves a placement, LEADS NONE gives a range back to the store line, PREFERRED names the candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS evens out who leads what.</p>
+              </details>
+              <p class="note"><strong>A declared balancer watches measured load and re-homes work by itself.</strong> Drain re-places what a leaving node led, with no balance statement.</p>
+              <details class="tucked">
+                <summary>Which statements run it</summary>
+                <p class="note">DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 10s SPACING 1s declares the load pass: when this node's load runs above the margin inside the window, the pass sheds a placement to an idle voter, never twice within the spacing. Draining a node is ALTER REPLICA &lt;name&gt; ROLES NONE on its membership row — the pass then moves what it led. The row above reads back from INFO FOR NODE's cluster.balancer, and the move counters live beside /metrics. Both are store-line writes, so the statements are the controls, run on the store's leader from the query tab.</p>
               </details>
               <p class="note"><strong>Lag is per follower, and leadership is what the log recorded.</strong></p>
               <details class="tucked">

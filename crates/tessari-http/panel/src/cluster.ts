@@ -120,6 +120,23 @@ export const cluster = (): Node =>
             // Filled by the read, like `cluster-facts` above: an empty
             // container here, a `facts()` call there.
             el("div", { id: "replication-facts" }),
+            // Workload pools are the cluster's admission governance: who may
+            // take how much of this node, declared in the catalog and counted
+            // by the gate this process runs.
+            el("div", { id: "pools-part" }, status("pools-status")),
+            el("div", { id: "pools-facts" }),
+            behindDisclosure(
+                "What a pool is",
+                note(
+                    "A pool bounds how much of this node one tenant's statements may take " +
+                        "at once: a classifier over the database, the user and the kind of " +
+                        "statement, and a ceiling on how many the gate admits together. " +
+                        "DEFINE POOL names the bound — prod:web FOR DATABASE prod " +
+                        "MAX 8 CONCURRENT, for example — and a statement the bound refuses " +
+                        "answers PoolAtCapacity, naming the pool, the conflict class, " +
+                        "retryable. The statement is the control, run from the query tab.",
+                ),
+            ),
             behindDisclosure(
                 "The answer this was drawn from",
                 answer("cluster-facts", "small"),
@@ -133,8 +150,13 @@ export const cluster = (): Node =>
                         "copy is read-only by declaration: a write into it is " +
                         "refused with a named class. The stream is at-least-once " +
                         "with idempotent application, and ALTER REPLICATION … " +
-                        "PAUSED | RESUMED holds and restarts it — the statement " +
-                        "is the control, run from the query tab.",
+                        "PAUSED | RESUMED holds and restarts it. A link declared " +
+                        "SEED AT a position lives a lifecycle the state on its row " +
+                        "names: seeding while the snapshot's tail is caught up, " +
+                        "standby once it is, active when the operator promotes it — " +
+                        "ALTER REPLICATION … ACTIVE is the early-promote spelling, " +
+                        "and it refuses while the copy runs behind, naming the lag. " +
+                        "The statements are the controls, run from the query tab.",
                 ),
             ),
         ),
@@ -257,6 +279,28 @@ export const cluster = (): Node =>
                         "LEADS NONE gives a range back to the store line, PREFERRED names the " +
                         "candidate that should lead it, and DEFINE FAILOVER … BALANCE LEADERSHIPS " +
                         "evens out who leads what.",
+                ),
+            ),
+            note(
+                el(
+                    "strong",
+                    {},
+                    "A declared balancer watches measured load and re-homes work by itself.",
+                ),
+                " Drain re-places what a leaving node led, with no balance statement.",
+            ),
+            behindDisclosure(
+                "Which statements run it",
+                note(
+                    "DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 10s SPACING 1s declares the " +
+                        "load pass: when this node's load runs above the margin inside the " +
+                        "window, the pass sheds a placement to an idle voter, never twice " +
+                        "within the spacing. Draining a node is ALTER REPLICA <name> ROLES " +
+                        "NONE on its membership row — the pass then moves what it led. The " +
+                        "row above reads back from INFO FOR NODE's cluster.balancer, and the " +
+                        "move counters live beside /metrics. Both are store-line writes, so " +
+                        "the statements are the controls, run on the store's leader from the " +
+                        "query tab.",
                 ),
             ),
             note(
