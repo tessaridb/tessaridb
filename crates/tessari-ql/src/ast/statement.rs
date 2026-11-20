@@ -52,6 +52,44 @@ pub struct ConflictUpdate {
     pub condition: Option<Expr>,
 }
 
+/// A load margin as hundredths of one (150 is 1.5), the fixed-point spelling
+/// a ratio takes in the statement tree: the kind derives `Eq`, and a float
+/// field would take that away from every match over statements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Ratio(u64);
+
+impl Ratio {
+    /// The stored hundredths, for the catalog row, the render, and every
+    /// comparison: hundredths is the ratio's only spelling — a float would
+    /// re-introduce the precision question the fixed-point spelling exists
+    /// to close, and nothing here needs one.
+    pub fn hundredths(self) -> u64 {
+        self.0
+    }
+
+    /// The margin as hundredths, refused when it is not above one by at least
+    /// a hundredth, or past a ceiling where a ratio is a typo rather than a
+    /// policy.
+    pub fn of_hundredths(hundredths: u64) -> Option<Self> {
+        (101..=1_000_000_000)
+            .contains(&hundredths)
+            .then_some(Self(hundredths))
+    }
+
+    /// The nearest hundredths to `times`, when it is a finite margin in the
+    /// range [`Self::of_hundredths`] admits.
+    pub fn nearest(times: f64) -> Option<Self> {
+        let hundredths = times * 100.0;
+        if !hundredths.is_finite() || !(101.0..=1_000_000_000.0).contains(&hundredths) {
+            return None;
+        }
+        // Range-checked above to a figure `u64` holds with room, and `std`
+        // offers no fallible float-to-int conversion to take instead of this:
+        // round-tripping the decimal spelling is the `as`-free way to land it.
+        Self::of_hundredths(hundredths.round().to_string().parse::<u64>().ok()?)
+    }
+}
+
 /// The statement forms this milestone accepts.
 ///
 /// Flat rather than grouped by family: execution matches on it once, and a
@@ -828,6 +866,34 @@ pub enum StatementKind {
         /// write. Absent means the structure is declared with no claim made.
         survives_realm_loss: bool,
     },
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>`
+    /// — the policy under which the store line's leader moves a placement
+    /// because of measured load or a drained node, not only because one node
+    /// leads more lines than another (the count pass,
+    /// [`Self::DefineFailover`]'s `BALANCE LEADERSHIPS`).
+    ///
+    /// **Every clause is required, in this order, and one per store line** —
+    /// the set is checked against itself, so a partial statement could only
+    /// mix new values with old under a single version, and a second `DEFINE`
+    /// replaces the policy whole. The relations (`ABOVE` above 1, `SPACING`
+    /// at least one lease period, `WITHIN` at least the round's cadence) are
+    /// checked where the policy is built, the way `Failover::stated` checks
+    /// the failover relations — the refusal names the direction the value is
+    /// wrong in, and there is exactly one place that knows those directions.
+    DefineBalancer {
+        /// The load margin a move waits for: the busiest measured range's
+        /// rate must exceed the quietest eligible voter's by this factor
+        /// before the pass moves anything. A value of 1 would move on any
+        /// noise, and is refused as not above 1.
+        above: Ratio,
+        /// The window the rates are measured over.
+        within: Duration,
+        /// How little time must pass before a range the pass moved may be
+        /// considered again — the anti-flapping bound, at least one lease
+        /// period so a move is never re-examined while the election it
+        /// provoked may still be settling.
+        spacing: Duration,
+    },
     /// `ALTER TOPOLOGY main ADD REALM 'dc-d' [DOMAIN 'az-1', …]` ·
     /// `ALTER TOPOLOGY main DROP REALM 'dc-c'` — one realm of the scheme per
     /// statement, amended in place for [`ReplicaChange`]'s reason.
@@ -844,6 +910,12 @@ pub enum StatementKind {
         /// The scheme to drop.
         name: Name,
     },
+    /// `DROP BALANCER` — the load policy whole, and the store line returns to
+    /// count-only balancing. The balancer's acts are OFF until a statement
+    /// turns them on, the way every automatic mechanism here is, so removing
+    /// the policy is the off-switch — there is no smaller truthful spelling
+    /// of "balance by count again".
+    DropBalancer,
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
     /// node from the moment the catalog reaches it (ADR-0108 D6).
     RevokeCertificate {

@@ -1729,6 +1729,81 @@ fn failover_is_a_contextual_word_and_still_names_a_table() {
 }
 
 #[test]
+fn a_balancer_policy_is_a_ratio_a_window_and_a_spacing() {
+    // `docs/tessariql.md` § Moving work by load, copied from the specification
+    // as every statement in this file is. Every clause is required, in this
+    // order, for the reason `DEFINE FAILOVER`'s five are: the set is checked
+    // against itself, and a partial statement could only mix new values with
+    // old ones under a single version.
+    let StatementKind::DefineBalancer {
+        above,
+        within,
+        spacing,
+    } = one("DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;")
+    else {
+        panic!("DEFINE BALANCER did not parse as DEFINE BALANCER");
+    };
+    assert_eq!(above.hundredths(), 150);
+    assert_eq!(within.seconds(), 30);
+    assert_eq!(spacing.seconds(), 60);
+}
+
+#[test]
+fn a_balancer_statement_missing_a_clause_is_refused_and_says_which_one() {
+    // The refusal names the CLAUSE, for the reason the failover refusal does:
+    // three clauses in a fixed order means the mistake is almost always which
+    // one is missing, and an error that cannot say leaves the operator
+    // recounting what they typed.
+    for (statement, missing) in [
+        ("DEFINE BALANCER LOAD ABOVE 1.5 SPACING 60s;", "`WITHIN`"),
+        ("DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s;", "`SPACING`"),
+    ] {
+        let refused = parse(statement).expect_err("an incomplete balancer parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains(missing.trim_matches('`')),
+            "the refusal did not name the missing clause {missing}: {said}"
+        );
+    }
+}
+
+#[test]
+fn a_balancer_ratio_of_no_size_is_refused_where_the_number_is() {
+    // Caught at the statement rather than at the policy's build, for the
+    // reason a zero period is: it is a mistake in what was typed, and a ratio
+    // is the one figure here that can be meaningless without being unlexable.
+    for statement in [
+        "DEFINE BALANCER LOAD ABOVE 0 WITHIN 30s SPACING 60s;",
+        "DEFINE BALANCER LOAD ABOVE -1.5 WITHIN 30s SPACING 60s;",
+    ] {
+        let refused = parse(statement).expect_err("a ratio of no size parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("not above 1"),
+            "refused, but not as a ratio: {said}"
+        );
+    }
+}
+
+#[test]
+fn balancer_is_a_contextual_word_and_still_names_a_table() {
+    // `failover` and `topology` are read the same way: special after `DEFINE`,
+    // an ordinary identifier everywhere else.
+    assert!(matches!(
+        one("SELECT * FROM balancer;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
+fn a_balancer_may_be_dropped() {
+    // `DROP BALANCER` returns the store line to count-only balancing — the
+    // shipped behavior — because the statement replaces the set and the set
+    // has no smaller truthful off-switch than removing it.
+    assert!(matches!(one("DROP BALANCER;"), StatementKind::DropBalancer));
+}
+
+#[test]
 fn a_topology_declares_its_realms_and_the_optional_claim() {
     // `docs/tessariql.md` § The layout a cluster is arranged over, copied from
     // the specification as every statement in this file is. One REALM clause

@@ -58,8 +58,8 @@ pub(crate) use cluster::{described_readings, readings_stale_after};
 pub(crate) use consumers::{described_consumer, guarantees, running_state};
 pub(crate) use measures::{refining, reported};
 pub(crate) use replicas::{
-    described_failover, described_follower, described_leaders, described_replica,
-    described_replication, spelled_reach,
+    described_balancer, described_failover, described_follower, described_leaders,
+    described_replica, described_replication, spelled_reach,
 };
 pub(crate) use shapes::{
     described_expiry, described_field, described_field_statistics, described_index,

@@ -10,7 +10,7 @@ use tessari_types::{
 };
 
 use crate::ast::{
-    ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange, TopologyRealm,
+    Ratio, ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange, TopologyRealm,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -303,6 +303,72 @@ impl Parser<'_> {
             lease,
             balance_leaderships,
         })
+    }
+
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>`
+    ///
+    /// In this order, and all three. The relations between them (`ABOVE`
+    /// above 1, `SPACING` at least one lease period, `WITHIN` at least the
+    /// round's cadence) are checked where the policy is built, for the reason
+    /// [`Self::define_failover`] keeps for the failover policy's relations:
+    /// exactly one place knows the directions, and a copy in the parser would
+    /// be a second answer that drifts. The one check that stays here is the
+    /// ratio's size — a value not above 1 is a mistake in what was typed, and
+    /// the statement is where the number is.
+    pub(super) fn define_balancer(&mut self) -> Result<StatementKind> {
+        self.expect_word("load", "`LOAD` after `BALANCER`")?;
+        self.expect_word("above", "`ABOVE` and the load margin")?;
+        let above = self.ratio()?;
+        // `expect_word` rather than `period` for the clause names: the
+        // refusal for a missing clause names the clause, the way the failover
+        // statement's do, and a shared helper's fallback message would name
+        // another clause's words instead.
+        self.expect_word("within", "`WITHIN` and the window the rates span")?;
+        let within = self.length("within")?;
+        self.expect_word(
+            "spacing",
+            "`SPACING` and how soon a moved range may move again",
+        )?;
+        let spacing = self.length("spacing")?;
+        Ok(StatementKind::DefineBalancer {
+            above,
+            within,
+            spacing,
+        })
+    }
+
+    /// The ratio after `ABOVE`, refused where the number is when it is not
+    /// above 1 — a margin of one would move a placement on any noise, and a
+    /// statement that asked for it could only be a half-written one.
+    fn ratio(&mut self) -> Result<Ratio> {
+        // The integer spelling lands as hundredths by integer multiplication —
+        // no float is ever constructed for it, so the conversion question the
+        // fixed-point spelling exists to close never arises.
+        if let Some(Token::Number(Number::Integer(written))) = self.peek() {
+            let scaled = written
+                .checked_mul(100)
+                .and_then(|scaled| u64::try_from(scaled).ok())
+                .and_then(Ratio::of_hundredths);
+            let Some(above) = scaled else {
+                return Err(self
+                    .error_here("a ratio above 1, like `1.5` — what stands here is not above 1"));
+            };
+            self.advance();
+            return Ok(above);
+        }
+        let times = match self.peek() {
+            Some(Token::Number(Number::Float(written))) => *written,
+            _ => {
+                return Err(self.error_here(
+                    "`ABOVE` takes a ratio above 1, like `1.5` — what stands here is not above 1",
+                ));
+            }
+        };
+        let Some(above) = Ratio::nearest(times) else {
+            return Err(self.error_here("a ratio above 1 — what was written is not above 1"));
+        };
+        self.advance();
+        Ok(above)
     }
 
     /// `DEFINE TOPOLOGY main REALM 'dc-a' [DOMAIN 'az-1', …] … [SURVIVES REALM LOSS]`

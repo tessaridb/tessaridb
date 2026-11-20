@@ -28,6 +28,7 @@ mod across_model;
 mod adjacency;
 mod attempts;
 mod audit;
+mod balancer;
 mod bounded;
 mod cardinality;
 mod catalog;
@@ -94,12 +95,12 @@ mod vault;
 mod views;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, AutoSplit, AutoSplitSetting, CLAIMED_BY_CONSUMER,
-    CLAIMED_BY_INSTANCE, Catalog, ConsumerDefinition, DatabaseDefinition, EDGE_IN, EDGE_OUT,
-    EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember, EventDeclaration,
-    Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration, FieldDefinition,
-    FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition, Greeter,
-    GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
+    AnalyzerDefinition, Authority, AutoSplit, AutoSplitSetting, BalancerDefinition,
+    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog, ConsumerDefinition, DatabaseDefinition,
+    EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember,
+    EventDeclaration, Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration,
+    FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
+    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
     IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
     MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
     PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
@@ -137,6 +138,7 @@ pub use audit::{
     Administered, AuditDevice, AuditTrail, DeviceRefused, VaultRead, administered,
     entries as audit_entries, reads_by,
 };
+pub use balancer::Balancer;
 pub use error::{ConflictWith, Error, Result};
 pub use failover::Failover;
 pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscription, Watch};

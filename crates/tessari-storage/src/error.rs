@@ -229,6 +229,55 @@ pub enum Error {
         floor: std::time::Duration,
     },
 
+    /// A stated load-balancing margin is at or below one.
+    ///
+    /// A margin of one is not a margin: it moves a placement on any noise, and
+    /// the anti-flapping bound exists precisely so that does not happen.
+    #[error(
+        "a balancer's `ABOVE` is {stated} hundredths, and the margin a move \
+         waits for must be above 1 — 150 hundredths is 1.5. What was stated \
+         is not above 1"
+    )]
+    BalancerMarginNotAboveOne {
+        /// The margin that was stated, as hundredths of one.
+        stated: u64,
+    },
+
+    /// A stated balancer spacing is shorter than one lease period of the
+    /// failover policy the pass runs beside.
+    ///
+    /// The **too small** direction. A move re-examined while the election it
+    /// provoked may still be settling is how a range flaps, so the spacing is
+    /// never shorter than the lease the election settles inside.
+    #[error(
+        "a balancer's `SPACING` is {spacing:?}, and it must be at least one \
+         `LEASE` period of the failover policy it runs beside — here {lease:?}. \
+         A move re-examined while its election settles is how a range flaps"
+    )]
+    BalancerSpacingBelowLease {
+        /// The spacing that was stated.
+        spacing: std::time::Duration,
+        /// The lease period it must not be below.
+        lease: std::time::Duration,
+    },
+
+    /// A stated measurement window is shorter than the round's cadence.
+    ///
+    /// The **too small** direction. The pass fills the window from the log
+    /// once per cadence; a window briefer than that holds one pass's records
+    /// at most and measures nothing the next pass could act on.
+    #[error(
+        "a balancer's `WITHIN` is {within:?}, and the window the rates are \
+         measured over must be at least the round's cadence — here {cadence:?}. \
+         A briefer window holds one pass's records at most and measures nothing"
+    )]
+    BalancerWithinBelowCadence {
+        /// The window that was stated.
+        within: std::time::Duration,
+        /// The cadence it must not be below.
+        cadence: std::time::Duration,
+    },
+
     /// A stated collection period is at or above the staleness floor the same
     /// policy publishes.
     ///
@@ -1583,6 +1632,9 @@ impl Error {
             | Self::FailoverCampaignOutpaced { .. }
             | Self::FailoverLeaseTooShort { .. }
             | Self::FailoverCollectionAboveFloor { .. }
+            | Self::BalancerMarginNotAboveOne { .. }
+            | Self::BalancerSpacingBelowLease { .. }
+            | Self::BalancerWithinBelowCadence { .. }
             | Self::TopologyNeedsARealm
             | Self::TopologyRealmNamedTwice { .. }
             | Self::TopologyDomainNamedTwice { .. }

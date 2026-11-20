@@ -318,6 +318,8 @@ fn erase_statement(statement: &mut Statement) {
         StatementKind::DefineTopology { name, .. } => erase_name(name),
         StatementKind::AlterTopology { name, .. } => erase_name(name),
         StatementKind::DropTopology { name } => erase_name(name),
+        StatementKind::DefineBalancer { .. } => {}
+        StatementKind::DropBalancer => {}
         StatementKind::FinalizeFormat => {}
         // A fingerprint is not a name.
         StatementKind::RevokeCertificate { .. } => {}

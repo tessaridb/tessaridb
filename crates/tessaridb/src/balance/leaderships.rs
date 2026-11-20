@@ -31,12 +31,15 @@ use crate::{Db, Result};
 /// [`crate::ShardSamples`] is: one balancer runs per process.
 #[derive(Debug, Default)]
 pub struct LeadershipMoves {
-    last: Option<Instant>,
+    /// `pub(crate)` because the load act ([`crate::balance::load`]) shares the
+    /// guard: one spacing clock for every move the process makes, whichever
+    /// act made it.
+    pub(crate) last: Option<Instant>,
 }
 
 impl LeadershipMoves {
     /// Whether the last move was less than `spacing` ago.
-    fn waits(&self, spacing: std::time::Duration) -> bool {
+    pub(crate) fn waits(&self, spacing: std::time::Duration) -> bool {
         self.last.is_some_and(|last| last.elapsed() < spacing)
     }
 }
@@ -52,7 +55,7 @@ pub struct Moved {
     pub to: String,
 }
 
-type Line = (Reach, Option<[u8; NODE_ID_LEN]>);
+pub(crate) type Line = (Reach, Option<[u8; NODE_ID_LEN]>);
 
 impl Db {
     /// Move one placement when the failover policy asks for balanced

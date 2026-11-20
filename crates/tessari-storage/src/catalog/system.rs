@@ -235,6 +235,11 @@ pub const REPLICATIONS: TableId = TableId::new(32);
 /// against the membership, so it travels in the log and survives a restore.
 pub const TOPOLOGY: TableId = TableId::new(33);
 
+/// The load-balancing policy, beside [`FAILOVER`]: the margins decide when
+/// serving work moves between nodes, a cluster-wide fact every node must
+/// agree about, so it travels in the log the same way.
+pub const BALANCER: TableId = TableId::new(34);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -271,6 +276,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (FEED_SCAN_STATES, "FEED_SCAN_STATES"),
     (REPLICATIONS, "REPLICATIONS"),
     (TOPOLOGY, "TOPOLOGY"),
+    (BALANCER, "BALANCER"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.
@@ -444,6 +450,7 @@ mod tests {
             VIEW_MEMBERS,
             ROLLUP_STATES,
             KAFKA_QUARANTINE,
+            BALANCER,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

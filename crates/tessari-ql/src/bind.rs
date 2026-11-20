@@ -673,6 +673,12 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         | StatementKind::DefineTopology { .. }
         | StatementKind::AlterTopology { .. }
         | StatementKind::DropTopology { .. }
+        // The margins and periods are written where they stand, for the
+        // parameter-reason the failover policy gives: a balancer aimed by a
+        // caller's values would be a placement policy arranged by whatever
+        // the caller happened to supply.
+        | StatementKind::DefineBalancer { .. }
+        | StatementKind::DropBalancer
         // A fingerprint is written where it stands: a revocation aimed by a
         // parameter would refuse whichever peer the caller happened to name.
         | StatementKind::RevokeCertificate { .. }

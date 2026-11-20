@@ -1,5 +1,7 @@
 //! Declaring nodes, failover, replicas and stream consumers.
 
+use std::time::Duration as Elapsed;
+
 use tessari_encoding::Roles;
 use tessari_ql::{Name, Span, TopologyChange, TopologyRealm};
 use tessari_storage::{
@@ -128,6 +130,71 @@ impl Session<'_> {
         // single-node deployment unable to configure itself.
         let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
         catalog.set_failover(policy, epoch, version, balance_leaderships)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE BALANCER LOAD ABOVE <ratio> WITHIN <period> SPACING <period>` —
+    /// the margins under which the store line's leader moves a placement for
+    /// measured load or a drained node, as a log record beside the failover
+    /// policy, for that policy's reason: when serving work may move is a
+    /// cluster-wide fact every node must agree about.
+    ///
+    /// # The checks that run here
+    ///
+    /// The margin-against-one check ran at the statement; the relations
+    /// against the failover policy (`SPACING` at least one `LEASE` period,
+    /// `WITHIN` at least the round's cadence) are [`tessari_storage::Balancer`]'s
+    /// own, run through `Balancer::stated`, for [`Self::define_failover`]'s
+    /// reason: one place knows the directions. The failover policy the
+    /// relations are judged against is the one this catalog holds — the same
+    /// row the pass will read when it acts.
+    pub(super) async fn define_balancer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        above_hundredths: u64,
+        within: Elapsed,
+        spacing: Elapsed,
+        span: Span,
+    ) -> Result<Outcome> {
+        let mut catalog = Catalog::new(transaction);
+        let failover = catalog
+            .failover()
+            .await?
+            .map_or(tessari_storage::Failover::DEFAULT, |held| held.policy);
+        let policy =
+            tessari_storage::Balancer::stated(above_hundredths, within, spacing, &failover)
+                .map_err(|why| Error::BalancerRefused {
+                    reason: why.to_string(),
+                    span,
+                })?;
+        // `None` means nobody has ever set one, and the first policy is
+        // version zero rather than one, for the failover row's reason: the
+        // number counts settings under a leadership, and this is the first.
+        let version = catalog
+            .balancer()
+            .await?
+            .map_or(0, |held| held.version.saturating_add(1));
+        let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
+        catalog.set_balancer(policy, epoch, version)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP BALANCER` — the load policy whole. The store line returns to
+    /// count-only balancing: the acts are OFF until a statement turns them
+    /// on, so removing the row is the off-switch.
+    pub(super) async fn drop_balancer(
+        &self,
+        transaction: &mut Transaction<'_>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let removed = Catalog::new(transaction).drop_balancer().await?;
+        if !removed {
+            return Err(Error::Unknown {
+                entity: "balancer",
+                name: "policy".to_owned(),
+                span,
+            });
+        }
         Ok(Outcome::Done)
     }
 

@@ -7,7 +7,7 @@
 //! that took it would be a claim nobody can check.
 
 use dashmap::DashMap;
-use tessari_types::{ShardId, TableId};
+use tessari_types::{DatabaseId, NamespaceId, ShardId, TableId};
 
 /// One shard as the last pass found it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -28,6 +28,12 @@ pub struct SampledShard {
 pub struct SampledTable {
     /// The table as an operator names it, `namespace.database.table`.
     pub name: String,
+    /// The namespace the table belongs to — beside the name, so a reader can
+    /// address the table's shards as lines (`Reach::Shard`) without parsing
+    /// a display string back into identity.
+    pub namespace: NamespaceId,
+    /// The database the table belongs to, for the same reason.
+    pub database: DatabaseId,
     /// Each live shard, in map order.
     pub shards: Vec<SampledShard>,
     /// What the balancer last did to the table, if anything since this
@@ -77,11 +83,13 @@ mod tests {
     #![allow(clippy::unwrap_used)]
 
     use super::{SampledShard, SampledShards, SampledTable};
-    use tessari_types::{ShardId, TableId};
+    use tessari_types::{DatabaseId, NamespaceId, ShardId, TableId};
 
     fn table(last_act: Option<&str>) -> SampledTable {
         SampledTable {
             name: "prod.shop.orders".to_owned(),
+            namespace: NamespaceId::new(1),
+            database: DatabaseId::new(1),
             shards: vec![SampledShard {
                 shard: ShardId::new(1),
                 records: 3,

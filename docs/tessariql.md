@@ -11058,6 +11058,63 @@ placement of …`) and a change to the peer rows `INFO FOR NODE` reports as
 without the clause turns the balancer off; `cluster.failover.balance_leaderships`
 says which.
 
+### Moving work by measured load — `DEFINE BALANCER`
+
+`BALANCE LEADERSHIPS` evens out the *count* of what each node leads. What it
+deliberately does not read is how *busy* each leadership is — a node can lead
+one line and be saturated, and another lead its share and idle. The load
+balancer is the second policy, declared in the catalog the way the failover
+policy is:
+
+```
+DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;
+```
+
+All three clauses, in this order, and one policy per store line — a second
+`DEFINE BALANCER` replaces the first, and `DROP BALANCER` returns the line to
+count-only balancing. The clauses:
+
+- `LOAD ABOVE <ratio>` — the margin a move waits for: the busiest measured
+  range's rate must exceed the quietest eligible voter's by this factor before
+  the pass moves anything. A ratio of 1 would move on any noise, and is
+  refused where the number is as not above 1.
+- `WITHIN <period>` — the window the rates are measured over.
+- `SPACING <period>` — how little time must pass before a range the pass moved
+  may be considered again, at least one `LEASE` period of the failover policy
+  it runs beside, so a move is never re-examined while the election it
+  provoked may still be settling. A shorter spacing is refused naming the
+  direction, at the policy's build, the way the failover relations are.
+
+The relations between the clauses are checked where the policy is built, not
+in the statement: `SPACING` below one lease period, or `WITHIN` below the
+round's cadence, is refused naming which and in which direction.
+
+**What the pass reads, it can verify.** The store line's leader measures each
+range's rate from the log records the shard walk already reads — the records
+name the shard each write was filed in — and reads peer load only from the
+resource samples every node publishes over the build-gated greeting, aged and
+verdicted `stale` the way `INFO FOR NODE` reports them. A figure the committer
+cannot re-derive is not a signal the balancer consumes.
+
+**A drained node empties.** A node whose roles the membership row cleared (see
+*Draining this node*) leads nothing new: its ranges are move candidates on the
+next passes regardless of load, in rate order, onto voters eligible the way
+`BALANCE LEADERSHIPS` requires. Where the drained node is the only voter a
+line has, the line stays — the refusal is quiet and the leadership remains,
+because a balancer that moved it would move it nowhere.
+
+**Off until declared, like every automatic machinery here.** No `DEFINE
+BALANCER` row, no load pass — the round keeps doing what it has always done.
+Dropping the policy returns the line to count-only balancing:
+
+```
+DROP BALANCER;
+```
+
+Each move lands in the store leader's log beside the count balancer's and in
+`/metrics` as `tessari_balancer_load_moves_total`, beside the count pass's
+`tessari_balancer_moves_total`.
+
 
 ### The layout a cluster is arranged over
 

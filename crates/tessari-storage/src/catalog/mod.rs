@@ -29,6 +29,7 @@ mod consumer;
 // count with the same `count`/`count_of` pair the record sequence uses, so the
 // two per-table numbers are written and read one way rather than two.
 mod allocation;
+mod balancer;
 mod creating;
 mod decoded;
 pub(crate) mod definition;
@@ -67,6 +68,7 @@ use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 pub(crate) use allocation::{Allocated, maintain as maintain_allocators};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};
+pub use balancer::BalancerDefinition;
 pub(crate) use carried::{carried_to, home_of};
 pub(crate) use change::{CatalogChange, catalog_change, defined_analyzer, defined_index};
 pub use consumer::{ConsumerDefinition, Feed, Mapped, OnFailure};

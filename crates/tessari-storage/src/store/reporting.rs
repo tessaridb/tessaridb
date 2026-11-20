@@ -71,12 +71,19 @@ impl Store {
             across_pending,
             across_with_intents,
             balancer_moves: self.tally.balancer_moves(),
+            balancer_load_moves: self.tally.balancer_load_moves(),
         })
     }
 
     /// Record one placement the leadership balancer moved (ADR-0113 D3).
     pub fn leadership_moved(&self) {
         self.tally.moved();
+    }
+
+    /// Record one placement the load balancer moved — beside
+    /// [`Self::leadership_moved`], on its own counter.
+    pub fn leadership_moved_by_load(&self) {
+        self.tally.moved_by_load();
     }
 
     /// Publish what the balancing pass measured of every balanced table's

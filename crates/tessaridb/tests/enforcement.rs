@@ -1179,7 +1179,14 @@ const TABLES: &[Table] = &[
         // becoming reachable from a surface that does not ask who is asking
         // first, or becoming persistent — either one moves them from
         // diagnostics to data and re-opens the classification.
-        expected: 91,
+        //
+        // 92 since the load balancer (the balancer policy's act): one more
+        // `Store::leadership_moved_by_load`, a counter bump on the cluster
+        // counters' exact ground — the load pass's twin of
+        // `leadership_moved`, writing nothing but a process-memory tally the
+        // reports read, with the same re-classification trigger as the 72
+        // row it joins.
+        expected: 92,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1469,7 +1476,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 180 since `Store::readings_sampled` and `Store::readings_heard` — the
     // two recorders of the same surface, classified above with their table.
-    assert_eq!(total, 182, "the counted tables no longer sum to 182");
+    //
+    // 183 since `Store::leadership_moved_by_load` — the load pass's counter
+    // bump, classified above on the cluster counters' ground.
+    assert_eq!(total, 183, "the counted tables no longer sum to 183");
 }
 
 /// Every `.rs` file under a directory.

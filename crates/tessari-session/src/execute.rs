@@ -652,6 +652,30 @@ impl Session<'_> {
             StatementKind::DropTopology { name } => {
                 self.drop_topology(transaction, name, span).await
             }
+            StatementKind::DefineBalancer {
+                above,
+                within,
+                spacing,
+            } => {
+                // The parser kept the margin as hundredths so the statement
+                // tree stays `Eq`; the store's spelling is the same
+                // fixed-point count, so the conversion names no unit.
+                self.define_balancer(
+                    transaction,
+                    above.hundredths(),
+                    std::time::Duration::new(
+                        u64::try_from(within.seconds()).unwrap_or(0),
+                        within.nanos(),
+                    ),
+                    std::time::Duration::new(
+                        u64::try_from(spacing.seconds()).unwrap_or(0),
+                        spacing.nanos(),
+                    ),
+                    span,
+                )
+                .await
+            }
+            StatementKind::DropBalancer => self.drop_balancer(transaction, span).await,
             StatementKind::DefineConsumer {
                 name,
                 source,

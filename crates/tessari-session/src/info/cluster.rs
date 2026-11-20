@@ -11,8 +11,8 @@ use crate::outcome::Outcome;
 use crate::session::Session;
 
 use super::{
-    by_name, described_consumer, described_failover, described_follower, described_leaders,
-    described_replica, described_replication, guarantees, running_state,
+    by_name, described_balancer, described_consumer, described_failover, described_follower,
+    described_leaders, described_replica, described_replication, guarantees, running_state,
 };
 
 impl Session<'_> {
@@ -133,6 +133,14 @@ impl Session<'_> {
         let failover = match Catalog::new(transaction).failover().await? {
             None => Value::Null,
             Some(held) => described_failover(&held),
+        };
+        // Beside the failover row: the margins the load pass acts under, or
+        // `null` while nobody has set them — which is a real answer, the way
+        // the failover row's absence is: the acts are OFF until a statement
+        // turns them on.
+        let balancer = match Catalog::new(transaction).balancer().await? {
+            None => Value::Null,
+            Some(held) => described_balancer(&held),
         };
         let upstream = self.store.upstream().map_or(Value::Null, |held| {
             Value::Object(BTreeMap::from([
@@ -308,6 +316,11 @@ impl Session<'_> {
                     // measured against: a lease counting down says how long,
                     // and this says how long it was ever meant to be.
                     ("failover".to_owned(), failover),
+                    // The load-balancing policy beside it: the margins the
+                    // balancing pass waits for before it moves a placement
+                    // for measured load or a drained node, `null` while the
+                    // acts are off.
+                    ("balancer".to_owned(), balancer),
                     // Each balanced table's shards as this node's balancing
                     // pass last counted them (ADR-0113 D4) — empty on every
                     // node but the store line's leader, which is the one that

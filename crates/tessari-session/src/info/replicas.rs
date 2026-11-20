@@ -242,6 +242,36 @@ pub(crate) fn described_failover(held: &tessari_storage::FailoverDefinition) -> 
     ]))
 }
 
+/// The load-balancing policy beside [`described_failover`], reported in the
+/// same fixed-point spelling the row stores: `above` is hundredths of one,
+/// and a reader divides by a hundred rather than the report guessing at a
+/// float it cannot spell exactly.
+pub(crate) fn described_balancer(held: &tessari_storage::BalancerDefinition) -> Value {
+    let period = |span: std::time::Duration| {
+        tessari_types::Duration::new(
+            i64::try_from(span.as_secs()).unwrap_or(i64::MAX),
+            span.subsec_nanos(),
+        )
+        .map_or(Value::Null, Value::Duration)
+    };
+    Value::Object(BTreeMap::from([
+        (
+            "above".to_owned(),
+            Value::from(i64::try_from(held.policy.above_hundredths()).unwrap_or(i64::MAX)),
+        ),
+        ("within".to_owned(), period(held.policy.within())),
+        ("spacing".to_owned(), period(held.policy.spacing())),
+        (
+            "epoch".to_owned(),
+            Value::from(i64::try_from(held.epoch.get()).unwrap_or(i64::MAX)),
+        ),
+        (
+            "version".to_owned(),
+            Value::from(i64::try_from(held.version).unwrap_or(i64::MAX)),
+        ),
+    ]))
+}
+
 /// One outbound replication, as the catalog holds it.
 ///
 /// The declaration only: there is no running state to report until a driver

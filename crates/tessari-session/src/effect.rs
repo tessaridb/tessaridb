@@ -263,6 +263,11 @@ impl Effect {
             StatementKind::DefineTopology { .. }
             | StatementKind::AlterTopology { .. }
             | StatementKind::DropTopology { .. } => Self::Write,
+            // The load policy is a write for the failover policy's reason:
+            // when serving work may move is a cluster-wide fact, and a row
+            // that reached one node and not the rest would be a balancing act
+            // half the cluster runs and half does not.
+            StatementKind::DefineBalancer { .. } | StatementKind::DropBalancer => Self::Write,
             // A catalog record every replica applies by raising its own stamp
             // (ADR-0118), for the reason a failover policy is a write.
             StatementKind::FinalizeFormat => Self::Write,

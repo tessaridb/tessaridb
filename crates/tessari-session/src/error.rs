@@ -92,6 +92,22 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `DEFINE BALANCER` names margins that do not hold together with the
+    /// failover policy the pass runs beside.
+    ///
+    /// The store owns the relations and the direction each one fails in, so
+    /// the reason is carried through verbatim rather than restated, for
+    /// [`FailoverRefused`]'s reason: a second copy of the relation but not
+    /// the statement would send an operator looking through a script for
+    /// which of three clauses it meant.
+    #[error("{reason} (at {span})")]
+    BalancerRefused {
+        /// The store's own words for which relation broke and in which direction.
+        reason: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `DEFINE`/`ALTER TOPOLOGY` names realms and domains that do not hold
     /// together.
     ///

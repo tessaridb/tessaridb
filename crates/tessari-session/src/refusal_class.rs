@@ -95,6 +95,10 @@ impl Error {
             | Self::Thrown { .. }
             | Self::JsonTextRefused { .. }
             | Self::FailoverRefused { .. }
+            // The load policy's margins are a request to fix, exactly the
+            // policy's class: the relations are the operator's own statement
+            // being wrong about the store, not the store being broken.
+            | Self::BalancerRefused { .. }
             // A scheme that does not hold together is a request to fix, the
             // policy's class; one that would replace a held scheme is the
             // same — drop or amend first, then the statement runs.

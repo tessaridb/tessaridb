@@ -177,6 +177,30 @@ DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 0s CAMPAIGN 1s LEASE 30s;
 DEFINE FAILOVER AWARENESS 10s COLLECTION 10s ROUND 1s CAMPAIGN 9s LEASE 30s;
 --- expect: error FailoverRefused
 
+--- case: the load balancer is a ratio, a window, and a spacing
+DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 60s;
+--- expect: ok
+
+--- case: every clause is required, the way the failover periods are
+DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s;
+--- expect: error UnexpectedToken
+
+--- case: a margin of one is not a margin
+DEFINE BALANCER LOAD ABOVE 1 WITHIN 30s SPACING 60s;
+--- expect: error UnexpectedToken
+
+--- case: a spacing below the lease beside it is refused with the direction
+DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 30s SPACING 1ms;
+--- expect: error BalancerRefused
+
+--- case: dropping the policy returns the line to count-only balancing
+DROP BALANCER;
+--- expect: ok
+
+--- case: dropping what is not held is the refusal the scheme's drop gives
+DROP BALANCER;
+--- expect: error Unknown
+
 # The format a store holds lags the one its build writes until an operator
 # finalizes it, so the build before can still open the store (ADR-0118). A
 # store this build created already holds its format, so there is nothing to

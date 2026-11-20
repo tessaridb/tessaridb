@@ -164,6 +164,10 @@ pub struct Health {
     /// Placements the leadership balancer moved since this process opened the
     /// store (ADR-0113 D3, D4).
     pub balancer_moves: u64,
+    /// Placements the load balancer moved since this process opened the
+    /// store — beside the leadership counter so a reader tells the two
+    /// triggers apart without the log.
+    pub balancer_load_moves: u64,
 }
 
 impl Health {

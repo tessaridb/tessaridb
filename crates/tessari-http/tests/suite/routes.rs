@@ -1125,6 +1125,8 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         tessari_types::TableId::new(9),
         tessari_storage::SampledTable {
             name: "prod.shop.orders".to_owned(),
+            namespace: tessari_types::NamespaceId::new(1),
+            database: tessari_types::DatabaseId::new(1),
             shards: vec![tessari_storage::SampledShard {
                 shard: tessari_types::ShardId::new(1),
                 records: 3,

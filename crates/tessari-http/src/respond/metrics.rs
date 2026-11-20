@@ -310,6 +310,14 @@ async fn balancing(out: &mut String, db: &Db) {
             "tessari_balancer_moves_total {}\n",
             held.balancer_moves
         ));
+        out.push_str(
+            "# HELP tessari_balancer_load_moves_total Placements the load balancer moved.\n",
+        );
+        out.push_str("# TYPE tessari_balancer_load_moves_total counter\n");
+        out.push_str(&format!(
+            "tessari_balancer_load_moves_total {}\n",
+            held.balancer_load_moves
+        ));
     }
 }
 
