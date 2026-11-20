@@ -662,22 +662,21 @@ impl Session<'_> {
         Ok(Outcome::Done)
     }
 
-    /// The committed tail of the log whose home is `reach` — how far the
-    /// copy this cluster holds has caught up. `None` answers when the
-    /// reach names no log here yet, read as *nothing caught up*.
+    /// The committed tail of the log a link's position counts in at this
+    /// reach — how far the copy this cluster holds has caught up. `None`
+    /// answers when the reach names no log here yet, read as *nothing caught
+    /// up*. The answer is the one log the position surface names seeds
+    /// from ([`tessari_storage::Store::answering_log`]), never a maximum
+    /// across the home's logs: positions count in one log, and a survivor's
+    /// received sibling runs ahead on an unrelated counter — its larger tail
+    /// is a number nobody stands at, and measuring lag against it refuses a
+    /// caught-up link forever.
     async fn link_log_tail(
         &self,
         reach: tessari_storage::Reach,
     ) -> Result<Option<tessari_types::Sequence>> {
-        let mut best = None;
-        for log in self.store.logs().await? {
-            if log.home != reach {
-                continue;
-            }
-            let tail = self.store.committed_tail(log).await?;
-            best = Some(best.map_or(tail, |held: tessari_types::Sequence| held.max(tail)));
-        }
-        Ok(best)
+        let log = self.store.answering_log(reach).await?;
+        Ok(Some(self.store.committed_tail(log).await?))
     }
 
     /// `ALTER REPLICATION east AT '…'` · `… AS '…'` · `… PAUSED` · `… RESUMED`
@@ -765,7 +764,7 @@ impl Session<'_> {
                         .await?
                         .unwrap_or(tessari_types::Sequence::new(0))
                 } else {
-                    self.confirmed_floor(&row).await
+                    self.confirmed_floor(&row).await?
                 };
                 return Err(Error::Seeding {
                     name: name.text.clone(),
@@ -780,7 +779,7 @@ impl Session<'_> {
                         .link_log_tail(row.database)
                         .await?
                         .unwrap_or(tessari_types::Sequence::new(0));
-                    let confirmed = self.confirmed_floor(&row).await;
+                    let confirmed = self.confirmed_floor(&row).await?;
                     if tail > confirmed {
                         return Err(Error::LinkBehind {
                             name: name.text.clone(),
@@ -800,18 +799,21 @@ impl Session<'_> {
     /// How far the far side has confirmed, on an outbound row: the seed
     /// floor the far side's snapshot declares it holds, the cursor the row
     /// persisted, and the live registry floor this process holds — whichever
-    /// stands furthest along.
+    /// stands furthest along. All three count in the one log the seed names
+    /// ([`tessari_storage::Store::answering_log`]); a sibling log of the same
+    /// home is on an unrelated counter and never answers the comparison.
     async fn confirmed_floor(
         &self,
         row: &tessari_storage::ReplicationDefinition,
-    ) -> tessari_types::Sequence {
+    ) -> Result<tessari_types::Sequence> {
+        let answerer = self.store.answering_log(row.database).await?;
         let mut best = row.position.max(row.seed_at);
         for (log, at) in self.store.links().floors(&row.name) {
-            if log.home == row.database {
+            if log == answerer {
                 best = Some(best.map_or(at, |held| held.max(at)));
             }
         }
-        best.unwrap_or(tessari_types::Sequence::new(0))
+        Ok(best.unwrap_or(tessari_types::Sequence::new(0)))
     }
 
     /// `DROP REPLICATION east` — stops shipping a database to another cluster.

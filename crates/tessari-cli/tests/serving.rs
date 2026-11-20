@@ -2317,9 +2317,11 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
 
 /// The seeding lifecycle's pair. The write-through pair sits at
 /// 48068/48069 and the 2-DC bands at 48071-48082, so the lifecycle owns the
-/// next two doors.
+/// next two doors; the reverse exercise owns the two after it.
 const SEED_PRIMARY: &str = "127.0.0.1:48083";
 const SEED_DR: &str = "127.0.0.1:48084";
+const REV_PRIMARY: &str = "127.0.0.1:48085";
+const REV_DR: &str = "127.0.0.1:48086";
 
 /// Start the shipped binary serving `store` on `door`, stderr at `log`, the
 /// link tokens in its environment. A fresh process per call, because an
@@ -2612,6 +2614,340 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
     assert!(
         converged,
         "the write through the active pair reached the copy"
+    );
+}
+
+#[test]
+fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
+    // The reverse direction, live, on its own pair of doors: the primary dies, the copy survives it,
+    // and the survivor becomes the source that reseeds the lost primary.
+    // The survivor holds two logs of the home — the received one and its own —
+    // and the seed is named from its own log's tail, the number its position
+    // report carries; the serve reads that log alone (the received log's
+    // effects are inside the far side's snapshot by the seed's declaration)
+    // and the promote guard measures the same log, never the sibling whose
+    // tail runs ahead. The procedure is the forward's mirror: a snapshot from
+    // the survivor, the lost primary's store wiped and restored from it, the
+    // seed declared from the tail the report named, the operator's promote.
+    let directory = tempfile::tempdir().unwrap();
+    let primary_store = directory.path().join("primary/store");
+    let dr_store = directory.path().join("dr/store");
+    std::fs::create_dir_all(primary_store.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(dr_store.parent().unwrap()).unwrap();
+    let signed = Some(("operator", SECRET));
+
+    // The forward base, taken to the active pair: the schema, five records,
+    // the snapshot, the copy restored from it, the link up both ways at the
+    // snapshot's end.
+    let schema = "DEFINE NAMESPACE prod; USE NAMESPACE prod; DEFINE DATABASE shop; \
+                  USE DATABASE shop; DEFINE TABLE orders SCHEMALESS; \
+                  CREATE orders:1 = { item: 'book' }; \
+                  CREATE orders:2 = { item: 'map' }; \
+                  CREATE orders:3 = { item: 'atlas' }; \
+                  CREATE orders:4 = { item: 'globe' }; \
+                  CREATE orders:5 = { item: 'almanac' }; \
+                  USE NAMESPACE prod DATABASE shop; \
+                  DEFINE REPLICATION east TO '127.0.0.1:48086' FOR DATABASE prod.shop SEED AT 5; \
+                  DEFINE USER operator ROLE owner PASSWORD 'a long enough password';";
+    let db = tessaridb::Db::open(&primary_store).now().unwrap();
+    db.session()
+        .run_now(schema)
+        .unwrap_or_else(|why| panic!("the primary's schema: {why}\n{schema}"));
+    db.close().now().unwrap();
+    let backup = directory.path().join("backup.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--backup")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the backup: {taken:?}");
+    let restored = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--restore")
+        .arg(&backup)
+        .output()
+        .unwrap();
+    assert!(restored.status.success(), "the restore: {restored:?}");
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let seed = database_log_at(REV_DR, signed)
+        .expect("the restored edge")
+        .1;
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DROP REPLICATION east; \
+                     DEFINE REPLICATION west FROM '{REV_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the copy's half of the link: {why}"));
+    }
+    let token = {
+        let mut client = Client::connect(REV_DR).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(dr);
+    let _primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_EAST", token.as_str())],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
+            signed,
+        )
+        .unwrap();
+    let forward_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(REV_PRIMARY, "east", signed).is_ok_and(|state| state == "standby")
+            && link_state_at(REV_DR, "west", signed).is_ok_and(|state| state == "standby")
+            && order_count_at(REV_DR).is_ok_and(|count| count == 6)
+    });
+    assert!(
+        forward_ready,
+        "the forward link did not reach standby with count 6\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION east ACTIVE;", signed)
+        .unwrap();
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run("ALTER REPLICATION west ACTIVE;", signed)
+        .unwrap();
+
+    // The primary dies. The survivor drops the dead link, and the drop lifts
+    // the read-only gate: its own history begins — one record in its own log,
+    // the post-loss history the lost primary lacks.
+    drop(_primary);
+    drop(_dr);
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run("DROP REPLICATION west;", signed)
+            .unwrap_or_else(|why| panic!("dropping the dead link: {why}"));
+        client
+            .run(
+                "USE NAMESPACE prod DATABASE shop; CREATE orders:9 = { item: 'compass' };",
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the survivor's own write: {why}"));
+    }
+    assert_eq!(
+        database_log_at(REV_DR, signed),
+        Ok((1, 1)),
+        "the survivor's edge names its own log's tail — the reverse seed"
+    );
+    let reverse_seed = database_log_at(REV_DR, signed)
+        .expect("the survivor's edge")
+        .1;
+    drop(dr);
+
+    // The snapshot from the survivor; the lost primary's store wiped and
+    // restored from it — the ordinary procedure run from the survivor's side.
+    let reverse_backup = directory.path().join("reverse.bin");
+    let taken = Command::new(TESSARIDB)
+        .arg(&dr_store)
+        .arg("--backup")
+        .arg(&reverse_backup)
+        .output()
+        .unwrap();
+    assert!(taken.status.success(), "the survivor's backup: {taken:?}");
+    std::fs::remove_dir_all(&primary_store).unwrap();
+    std::fs::create_dir_all(&primary_store).unwrap();
+    let restored = Command::new(TESSARIDB)
+        .arg(&primary_store)
+        .arg("--restore")
+        .arg(&reverse_backup)
+        .output()
+        .unwrap();
+    assert!(
+        restored.status.success(),
+        "the lost primary's restore: {:?}",
+        String::from_utf8_lossy(&restored.stderr)
+    );
+
+    // The lost primary, live again: its copy holds the survivor's snapshot's
+    // end, so the inbound half declares straight into standby at the seed the
+    // survivor's report named; it also mints the token the survivor's outbound
+    // half will offer.
+    let primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        client
+            .run(
+                &format!(
+                    "DEFINE REPLICATION north FROM '{REV_DR}' FOR DATABASE prod.shop \
+                     SEED AT {reverse_seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the restored primary's half: {why}"));
+    }
+    assert_eq!(
+        link_state_at(REV_PRIMARY, "north", signed),
+        Ok("standby".to_owned()),
+        "the restored primary holds its snapshot's end at the declaration"
+    );
+    let reverse_token = {
+        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        match client
+            .run(
+                "CREATE LINK TOKEN FOR REPLICATION north EXPIRES 10m;",
+                signed,
+            )
+            .unwrap()
+            .last()
+        {
+            Some(Answer::Value { value, .. }) => match value {
+                tessaridb::Value::String(held) => held.clone(),
+                other => panic!("the token is a string: {other:?}"),
+            },
+            other => panic!("the token statement answered: {other:?}"),
+        }
+    };
+    drop(primary);
+    let dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[],
+    );
+    {
+        let mut client = Client::connect(REV_DR).unwrap();
+        client
+            .run(
+                &format!(
+                    "DEFINE REPLICATION south TO '{REV_PRIMARY}' FOR DATABASE prod.shop \
+                     SEED AT {reverse_seed};"
+                ),
+                signed,
+            )
+            .unwrap_or_else(|why| panic!("the survivor's outbound half: {why}"));
+    }
+    drop(dr);
+
+    // Both live, the token in the survivor's environment. The survivor's next
+    // write ships over its own log alone; the received log's records are
+    // already inside the restored primary's snapshot — re-serving them would
+    // be a shipment the far side cannot apply below its snapshot-restored
+    // start.
+    let _primary = serving_with(
+        &primary_store,
+        REV_PRIMARY,
+        &directory.path().join("primary/node.log"),
+        &[],
+    );
+    let _dr = serving_with(
+        &dr_store,
+        REV_DR,
+        &directory.path().join("dr/node.log"),
+        &[("TESSARIDB_LINK_TOKEN_SOUTH", reverse_token.as_str())],
+    );
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:10 = { item: 'lantern' };",
+            signed,
+        )
+        .unwrap();
+    let reverse_ready = paced_until(Duration::from_secs(30), SIGNED_POLL, || {
+        link_state_at(REV_DR, "south", signed).is_ok_and(|state| state == "standby")
+            && link_state_at(REV_PRIMARY, "north", signed).is_ok_and(|state| state == "standby")
+            && order_count_at(REV_PRIMARY).is_ok_and(|count| count == 8)
+    });
+    assert!(
+        reverse_ready,
+        "south: {:?}, north: {:?}, count at the restored primary: {:?}\n\
+         primary log:\n{}\n\
+         dr log:\n{}",
+        link_state_at(REV_DR, "south", signed),
+        link_state_at(REV_PRIMARY, "north", signed),
+        order_count_at(REV_PRIMARY),
+        std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
+        std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
+    );
+
+    // The operator's promote on both halves. The guard measures the seed's
+    // log — the survivor's own — not the received sibling whose tail stands
+    // further along; under the shipped cross-log arithmetic this refusal
+    // named a lag the link could never close.
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run("ALTER REPLICATION south ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the survivor's promote: {why}"));
+    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    client
+        .run("ALTER REPLICATION north ACTIVE;", signed)
+        .unwrap_or_else(|why| panic!("the restored primary's promote: {why}"));
+    assert_eq!(
+        link_state_at(REV_DR, "south", signed),
+        Ok("active".to_owned())
+    );
+    assert_eq!(
+        link_state_at(REV_PRIMARY, "north", signed),
+        Ok("active".to_owned())
+    );
+
+    // A write through the reversed active pair lands on the restored primary.
+    let mut client = Client::connect(REV_DR).unwrap();
+    client
+        .run(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:11 = { item: 'beacon' };",
+            signed,
+        )
+        .unwrap();
+    let converged = paced_until(Duration::from_secs(30), POLL, || {
+        order_count_at(REV_PRIMARY).is_ok_and(|count| count == 9)
+    });
+    assert!(
+        converged,
+        "the write through the reversed pair reached the restored primary"
     );
 }
 #[test]

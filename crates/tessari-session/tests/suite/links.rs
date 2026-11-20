@@ -1473,6 +1473,95 @@ fn the_plural_lists_every_link_for_the_manager_that_has_no_name_yet() {
 }
 
 #[test]
+fn a_seeded_link_serves_only_the_log_its_seed_names() {
+    // The survivor shape: this cluster holds two logs of one home — the one it
+    // received (the dead primary's) and its own, the history it now originates.
+    // A seeded link names one position, and positions count in one log, so the
+    // serve reads the log the seed names — the same log the position surface
+    // names — and never the received one: the far side's snapshot already
+    // holds every effect the received log carries, and shipping it re-sends
+    // state the far side cannot apply below its snapshot-restored start.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let shipped = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &shipped, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let envelopes = sink.drain();
+
+    // The survivor: it received the primary's log, then the primary died.
+    let survivor = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &envelopes {
+        intake(&survivor, envelope.clone()).now().unwrap();
+    }
+    let received = survivor
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == shipped.database)
+        .expect("the received log");
+    // One more record the survivor received: the received log's tail now runs
+    // past the seed floor the survivor's own log will name — the shape that
+    // distinguishes *serving the received log* from *serving nothing*.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &shipped, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    for (_, envelope) in &sink.drain() {
+        intake(&survivor, envelope.clone()).now().unwrap();
+    }
+    // Before any inbound declaration the copy is writable: its own history
+    // begins — one record in its own log.
+    let mut local = Session::new(&survivor);
+    local
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:9 = { item: 'atlas' };")
+        .unwrap();
+    let own = survivor.own_log(shipped.database).now().unwrap();
+    assert_ne!(
+        received, own,
+        "the survivor holds two logs of the home, the received one and its own"
+    );
+    // The dead link is gone; the survivor turns source, seeded from its own
+    // log's tail — the position its position report names.
+    let floor = survivor.committed_tail(own).now().unwrap();
+    local
+        .run_now(&format!(
+            "DEFINE REPLICATION south TO 'cluster-c:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &survivor,
+        &definition(&survivor, "south"),
+        survivor.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    let served = sink.drain();
+    assert!(
+        served.iter().all(|(_, envelope)| envelope.log != received),
+        "the received log does not cross: {served:?}"
+    );
+    assert!(
+        served
+            .iter()
+            .filter(|(_, envelope)| envelope.log.home == shipped.database)
+            .all(|(_, envelope)| envelope.log == own),
+        "the home's served envelopes name the seed's log alone: {served:?}"
+    );
+}
+
+#[test]
 fn an_inbound_link_survives_a_store_reopen() {
     // The receiver's registry is derived from the log records the link's
     // declarations wrote, and a fresh open used to start it empty: nothing

@@ -165,7 +165,23 @@ pub async fn serve_once(
 ) -> Result<usize> {
     let origin = store.node_identity().await?.id;
     let mut shipped = 0_usize;
+    // A seeded link names one position, and positions count in one log: the
+    // home's served log is the one the seed names — the answerer the position
+    // surface reports — and a sibling of the same home (a survivor's received
+    // log) never serves. The far side's snapshot already holds every effect
+    // the sibling carries, by the seed's own declaration, and shipping it
+    // re-sends state the far side cannot apply below its snapshot-restored
+    // start — a permanent wedge at the apply. The unseeded link serves every
+    // log of the home, as before.
+    let answerer = if definition.seed_at.is_some() {
+        Some(store.answering_log(definition.database).await?)
+    } else {
+        None
+    };
     for (log, _) in logs_of(store, definition.database).await? {
+        if answerer.is_some_and(|held| log.home == definition.database && log != held) {
+            continue;
+        }
         let start = store.log_start(log).await?;
         // The resume point, chosen per log. A served link resumes one past
         // what the far side has confirmed; a seeded link that has not
@@ -608,9 +624,8 @@ async fn seed_from_rows(store: &Store) -> Result<()> {
         let Some(floor) = definition.position.max(definition.seed_at) else {
             continue;
         };
-        if let Some(log) = own_log(store, definition.database).await? {
-            store.links().advance(&definition.name, log, floor);
-        }
+        let log = store.answering_log(definition.database).await?;
+        store.links().advance(&definition.name, log, floor);
     }
     Ok(())
 }
@@ -624,9 +639,7 @@ async fn persist_floors(store: &Store) -> Result<()> {
         Catalog::new(&mut reading).replications().await?
     };
     for definition in links.iter().filter(|held| !held.inbound) {
-        let Some(log) = own_log(store, definition.database).await? else {
-            continue;
-        };
+        let log = store.answering_log(definition.database).await?;
         if !store
             .links()
             .floors(&definition.name)
@@ -650,15 +663,4 @@ async fn persist_floors(store: &Store) -> Result<()> {
         }
     }
     Ok(())
-}
-
-/// The one log whose home is the reach itself — the log a link's position
-/// counts in, beside the parent logs whose records the reach filter empties
-/// but whose positions still ride the stream.
-async fn own_log(store: &Store, reach: Reach) -> Result<Option<LogId>> {
-    Ok(logs_of(store, reach)
-        .await?
-        .into_iter()
-        .map(|(log, _)| log)
-        .find(|log| log.home == reach))
 }

@@ -11839,8 +11839,19 @@ database when a restored snapshot holds history under the writer that made
 it. On a copy restored from a state snapshot the log is empty by design — the
 snapshot carries the data whole and the positions, and records the resume one
 past the tail — so the group reads `(tail+1, tail)`; the seed is named from
-the tail, which is where the snapshot ends. A link declared without `SEED AT`
-is `active` from birth; the lifecycle is a seeded link's story, not a tax on
+the tail, which is where the snapshot ends. The same log the report names is
+the log a seeded link serves and is promoted by — one rule everywhere, because
+positions count in one log and a home can hold several. That is the reverse
+direction's whole story: when a cluster survives its source and becomes the
+source, it holds two logs of the home — the received one and its own — and a
+seeded link serves only the log its seed names (the survivor's own, the one
+the report carries), never the received sibling: the far side's snapshot
+already holds every effect that log carries, and the seed position is a
+number in one log, not a claim over the home. The promote guard measures the
+same log — a standby link refuses `ACTIVE` only while that log's tail runs
+ahead of what the far side confirmed, and a sibling log's further-along tail
+is an unrelated counter, not lag. A link declared without `SEED AT` is
+`active` from birth; the lifecycle is a seeded link's story, not a tax on
 every link.
 
 **The seed's two halves refuse dishonesty rather than converging over it.** A

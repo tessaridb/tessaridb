@@ -1207,7 +1207,20 @@ const TABLES: &[Table] = &[
         // without the gate — a slot taken or released outside `admit_pool`
         // would be a count an alert fires on without the admission it
         // reports.
-        expected: 94,
+        //
+        // 95 since the link's one log: `Store::answering_log` names the log a
+        // home's positions count in — the line's once it holds records, then
+        // own, then the furthest other — the selector `INFO FOR DATABASE`'s
+        // log group, the seeded link's serve and the promote guard all read.
+        // Classified **exempt on `own_log` / `line_log`'s ground** (the 91
+        // row above): it takes a store and a reach, no identity, answers a
+        // fact about the store's own shape — which log exists and how far
+        // each reaches — and writes nothing. Every caller reaches it through
+        // a statement (`INFO`, `DEFINE`/`ALTER REPLICATION`, whose authority
+        // is the statement's) or the link serve, which is driven by catalog
+        // rows the statement wrote; none lets a caller name a home the
+        // session has not already resolved.
+        expected: 95,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1504,7 +1517,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 185 since `Store::pool_take` and `Store::pool_counters` — the pool
     // gate's take and the tally's read-back, classified above on the cluster
     // counters' ground.
-    assert_eq!(total, 185, "the counted tables no longer sum to 185");
+    //
+    // 186 since `Store::answering_log` — the link's one log, classified above
+    // on `own_log` / `line_log`'s ground.
+    assert_eq!(total, 186, "the counted tables no longer sum to 186");
 }
 
 /// Every `.rs` file under a directory.
