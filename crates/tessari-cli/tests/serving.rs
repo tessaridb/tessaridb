@@ -2950,6 +2950,347 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         "the write through the reversed pair reached the restored primary"
     );
 }
+
+/// The columnar × cluster exercise's band — three nodes, clear of the
+/// lifecycle bands above (G093 SG7).
+const COLUMNAR: Band = [
+    ("127.0.0.1:48087", "127.0.0.1:48088"),
+    ("127.0.0.1:48089", "127.0.0.1:48090"),
+    ("127.0.0.1:48091", "127.0.0.1:48092"),
+];
+
+/// The analytics schema both of the exercise's tables need, declared on every
+/// node before the membership so the per-shard subscriptions resolve in the
+/// declaring transaction (the G032/G033 discipline): `events` is a plain
+/// columnar table; `readings` is born split, the catalog filing 'g' and 'p'
+/// on a STORE COLUMN table.
+const COLUMNAR_PLACED: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+                      DEFINE DATABASE analytics; USE DATABASE analytics; \
+                      DEFINE TABLE events (kind string, n int) STORE COLUMN; \
+                      DEFINE TABLE readings (kind string, n int) STORE COLUMN IDENTITY uuid \
+                      SPLIT AT 'g', 'p';";
+
+/// A write into `readings` at `key`, which names its shard by its letters.
+fn into_readings(key: &str, n: i64) -> String {
+    format!(
+        "USE NAMESPACE prod DATABASE analytics; CREATE readings:'{key}' = {{ kind: '{key}', n: {n} }};"
+    )
+}
+
+/// Keep writing `key`-prefixed readings through `surface` until one is taken,
+/// and answer how long that took — or the last refusal, after `patience`.
+fn until_reading_taken(
+    surface: &str,
+    key: &str,
+    n: i64,
+    patience: Duration,
+) -> Result<Duration, String> {
+    let began = Instant::now();
+    let mut last = String::from("never connected");
+    let mut attempt = 0_u32;
+    while began.elapsed() < patience {
+        attempt = attempt.saturating_add(1);
+        if let Ok(mut client) = Client::connect(surface) {
+            let answered = client.run(&into_readings(&format!("{key}{attempt}"), n), None);
+            if landed(&answered) {
+                return Ok(began.elapsed());
+            }
+            if let Err(why) = answered {
+                last = why.to_string();
+            }
+        }
+        std::thread::sleep(POLL);
+    }
+    Err(last)
+}
+
+/// A read in the analytics database at `surface`, answered as the records'
+/// identities — or the refusal.
+fn analytics_at(surface: &str, read: &str) -> Result<Vec<String>, String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let script = format!("USE NAMESPACE prod; USE DATABASE analytics; {read}");
+    match client.run(&script, None) {
+        Ok(answers) => match answers.last() {
+            Some(Answer::Records { records, .. }) => Ok(records
+                .iter()
+                .map(|(id, _)| id.trim_matches('\'').to_owned())
+                .collect()),
+            other => Err(format!("{other:?}")),
+        },
+        Err(why) => Err(why.to_string()),
+    }
+}
+
+#[test]
+fn a_store_column_table_on_a_cluster_splits_end_to_end() {
+    // G093 SG7 / U5 (the SG1 dossier §D): the whole columnar module has no
+    // shard awareness and the split pass counts row-store records, so a split
+    // over a STORE COLUMN table was expected to be unfiled-by-design at best.
+    // Measured at the shipped build, three nodes: both ALTER spellings on a
+    // plain columnar table refuse with the GENERIC not-a-split-table refusal
+    // (nothing column-kind-aware in the message), and the born-split declare
+    // — STORE COLUMN IDENTITY uuid SPLIT AT — is ACCEPTED. So the catalog
+    // files the cuts, and the act below holds the columnar machinery to them
+    // in the only shape where gathered reads actually happen: node 2 holds
+    // shard 3 alone, so its reads of the whole table must gather shards 1
+    // and 2 from their leaders — and answer exactly.
+    let leads = |shard: u32| {
+        format!(
+            "ROLES serving, writable, coordinating REPLICATES STORE \
+             LEADS SHARD prod.analytics.readings {shard}"
+        )
+    };
+    let cluster = a_cluster_of_rows(
+        &COLUMNAR,
+        COLUMNAR_PLACED,
+        [
+            leads(1),
+            leads(2),
+            "ROLES serving REPLICATES SHARD prod.analytics.readings 3".to_owned(),
+        ],
+    );
+    let logs = cluster.logs.clone();
+    // The born split stands: the definition renders the cuts.
+    let split_stands = until(Duration::from_secs(90), || {
+        says(
+            COLUMNAR[0].0,
+            None,
+            "USE NAMESPACE prod DATABASE analytics; INFO FOR TABLE readings;",
+            "SPLIT AT 'g', 'p'",
+        )
+    });
+    assert!(
+        split_stands,
+        "the born-split readings table never reported its cuts{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // One record per prefix, the letters naming the shard each files into:
+    // 'aa','ap' below 'g' (shard 1, led on node 0), 'h','m' at 'g'..'p'
+    // (shard 2, led on node 1), 'x' at 'p' and after (shard 3 — placed on
+    // nobody, so the store line's, taken through whichever store node leads).
+    // The n values sum to 15.
+    for (index, key, n) in [(0_usize, "aa", 1_i64), (0, "ap", 2)] {
+        if let Err(last) = until_reading_taken(COLUMNAR[index].0, key, n, Duration::from_secs(120))
+        {
+            panic!(
+                "node {index} never took a '{key}' reading; last: {last}{}",
+                what_the_nodes_said(&COLUMNAR, &logs)
+            );
+        }
+    }
+    for (index, key, n) in [(1_usize, "h", 3_i64), (1, "m", 4)] {
+        if let Err(last) = until_reading_taken(COLUMNAR[index].0, key, n, Duration::from_secs(120))
+        {
+            panic!(
+                "node {index} never took a '{key}' reading; last: {last}{}",
+                what_the_nodes_said(&COLUMNAR, &logs)
+            );
+        }
+    }
+    let began = Instant::now();
+    while [0_usize, 1].iter().all(|index| {
+        until_reading_taken(COLUMNAR[*index].0, "x", 5, Duration::from_millis(1)).is_err()
+    }) {
+        assert!(
+            began.elapsed() < Duration::from_secs(120),
+            "neither store node took an 'x' reading{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        );
+        std::thread::sleep(POLL);
+    }
+    // Node 2 collects shard 3: its own record reads back first.
+    let collected = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;")
+            .is_ok_and(|ids| ids.iter().any(|id| id.starts_with('x')))
+    });
+    assert!(
+        collected,
+        "node 2 never collected shard 3{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // The partial holder answers the WHOLE table: shards 1 and 2 gathered
+    // from their leaders, exact — five records in key order, the fold 15/5.
+    // If the columnar scan is shard-blind (B9's hypothesis), node 2 answers
+    // from its local chunks alone: a plausible, wrong number, which is the
+    // gap the exercise exists to measure.
+    let whole = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;").is_ok_and(|ids| ids.len() == 5)
+    });
+    assert!(
+        whole,
+        "node 2 never answered the whole readings table{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    let ids = analytics_at(COLUMNAR[2].0, "SELECT * FROM readings;").unwrap_or_default();
+    let first: Vec<char> = ids.iter().filter_map(|id| id.chars().next()).collect();
+    assert_eq!(
+        first,
+        ['a', 'a', 'h', 'm', 'x'],
+        "five records, in key order: {ids:?}"
+    );
+    let (fold, gathered) = fold_at(
+        COLUMNAR[2].0,
+        "USE NAMESPACE prod DATABASE analytics; SELECT sum(n) AS total, count(*) AS n FROM readings;",
+    )
+    .unwrap_or_else(|why| {
+        panic!(
+            "node 2 refused the gathered fold: {why}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        )
+    });
+    assert!(
+        fold.contains("Integer(15)") && fold.contains("Integer(5)"),
+        "node 2 gathered the wrong fold: {fold}"
+    );
+    // The gather names itself: the read crossed leaders, and the answer says
+    // so — the same note a row-store gathered read carries.
+    assert!(
+        gathered,
+        "node 2's gathered fold carried no gathered note: {fold}"
+    );
+    // The leader holding the store answers the same fold: one answer however
+    // the shards are held. Its copy of the shard logs levels on the
+    // collection cadence, so the whole read converges before the fold asks.
+    let store_converged = until(Duration::from_secs(90), || {
+        analytics_at(COLUMNAR[0].0, "SELECT * FROM readings;").is_ok_and(|ids| ids.len() == 5)
+    });
+    assert!(
+        store_converged,
+        "node 0's store copy never leveled{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    let (whole_fold, _) = fold_at(
+        COLUMNAR[0].0,
+        "USE NAMESPACE prod DATABASE analytics; SELECT sum(n) AS total, count(*) AS n FROM readings;",
+    )
+    .unwrap_or_else(|why| {
+        panic!(
+            "node 0 refused its own fold: {why}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        )
+    });
+    assert!(
+        whole_fold.contains("Integer(15)") && whole_fold.contains("Integer(5)"),
+        "node 0 folded the wrong answer: {whole_fold}"
+    );
+    // U5's first measured fact, on the same cluster: both ALTER spellings on
+    // the plain columnar table refuse with the generic not-a-split-table
+    // refusal — the same name a row-store table answers, nothing
+    // column-kind-aware in the message.
+    // The last spelling of the matrix comes after the events act because the
+    // default it names would re-shape tables born under it: measured above,
+    // the table grammar speaks SPLIT AT only — `DEFINE TABLE … SPLIT
+    // AUTOMATICALLY` refuses at the parser ("expected `AT` … found the name
+    // `AUTOMATICALLY`"). Auto-split arrives as the namespace default a table
+    // inherits (G085, ADR-0095), and a columnar table takes the inheritance
+    // like any other.
+    // both, one record at a time — a script is not a transaction, and an
+    // "already exists" on the first record must not stop the second. Named
+    // keys make retries idempotent, and the store line's honest ack refusal
+    // ("committed on this node … may not survive a failover") still means the
+    // record landed — that is what `landed` counts.
+    let mut last = String::new();
+    let load_events = until(Duration::from_secs(60), || {
+        [("apple", 1_i64), ("hat", 2)].iter().all(|(kind, n)| {
+            [0_usize, 1].iter().any(|index| {
+                match asked(
+                    COLUMNAR[*index].0,
+                    &format!(
+                        "USE NAMESPACE prod DATABASE analytics; \
+                         CREATE events:'{kind}' = {{ kind: '{kind}', n: {n} }};"
+                    ),
+                    None,
+                ) {
+                    Ok(_) => true,
+                    Err(why) => {
+                        let why = why.to_string();
+                        last = format!("node {index}: {why}");
+                        why.contains("already exists") || why.contains("is committed on this node")
+                    }
+                }
+            })
+        })
+    });
+    assert!(
+        load_events,
+        "neither store node took the events load; last: {last}{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    for spelling in [
+        "ALTER TABLE events SPLIT AT 'g', 'p';",
+        "ALTER TABLE events SPLIT AUTOMATICALLY;",
+    ] {
+        // The refusal is the store line's answer too, so try both nodes and
+        // take the one that NAMES the refusal — a redirect is not it.
+        let answers: Vec<_> = [0_usize, 1]
+            .iter()
+            .map(|index| {
+                asked(
+                    COLUMNAR[*index].0,
+                    &format!("USE NAMESPACE prod DATABASE analytics; {spelling}"),
+                    None,
+                )
+            })
+            .collect();
+        let refused = answers.iter().find_map(|answered| {
+            answered
+                .as_ref()
+                .err()
+                .filter(|why| why.contains("is not split"))
+        });
+        assert!(
+            refused.is_some(),
+            "measured {spelling}: {answers:?}{}",
+            what_the_nodes_said(&COLUMNAR, &logs)
+        );
+    }
+    // The refused table stays whole and readable: nothing was filed silently
+    // by the attempt. Node 0's copy of the store may lag the commit, so the
+    // read polls.
+    let events = until(Duration::from_secs(60), || {
+        analytics_at(COLUMNAR[0].0, "SELECT * FROM events;").is_ok_and(|rows| rows.len() == 2)
+    });
+    assert!(
+        events,
+        "node 0 lost events to the refused split{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+    // The last spelling of the matrix: SPLIT AUTOMATICALLY at the table
+    // define. Measured: the table grammar speaks SPLIT AT only — the parser
+    // refuses ("expected `AT` … found the name `AUTOMATICALLY`"), a local
+    // answer that needs no leadership, so one node names it. The
+    // auto-split default a table inherits is namespace machinery (G085,
+    // ADR-0095) proven kind-agnostic at the session level; the exercise
+    // does not re-measure it on a cluster.
+    let automatic_define = asked(
+        COLUMNAR[0].0,
+        "USE NAMESPACE prod DATABASE analytics; \
+         DEFINE TABLE autos (kind string, n int) STORE COLUMN IDENTITY uuid \
+         SPLIT AUTOMATICALLY;",
+        None,
+    );
+    assert!(
+        automatic_define
+            .as_ref()
+            .is_err_and(|why| why.contains("expected `AT`")),
+        "measured DEFINE TABLE ... SPLIT AUTOMATICALLY: {automatic_define:?}{}",
+        what_the_nodes_said(&COLUMNAR, &logs)
+    );
+}
+
+/// Run the fold at `surface` and answer its rendered record and whether a
+/// note says the read was gathered.
+fn fold_at(surface: &str, read: &str) -> Result<(String, bool), String> {
+    let mut client = Client::connect(surface).map_err(|why| why.to_string())?;
+    let answers = client.run(read, None).map_err(|why| why.to_string())?;
+    match answers.last() {
+        Some(Answer::Records { records, notes, .. }) => {
+            let gathered = notes.iter().any(|note| note.kind == "gathered");
+            Ok((format!("{records:?}"), gathered))
+        }
+        other => Err(format!("{other:?}")),
+    }
+}
 #[test]
 fn a_truncated_seed_transfer_is_refused_at_the_restore() {
     // The seed's snapshot half, live: a backup file cut mid-record is not a

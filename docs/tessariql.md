@@ -3854,6 +3854,24 @@ key folds each partition's lanes and merges the partials.
   columnar projection of the points the same way — the series read shapes
   (windows, `FILL`, `LATEST BY`, `ASOF JOIN`, counter folds) answer exactly
   what the row series answers.
+- **A columnar table on a cluster splits and gathers like any record table.**
+  The born-split spelling is the one that files the cuts —
+  `DEFINE TABLE events (seq int, kind string) STORE COLUMN IDENTITY uuid
+  SPLIT AT 'g', 'p'` — and from there the shard map, per-shard leadership
+  and gathered reads are the record table's own machinery: the row stays
+  the authority (above), rows file into shards the way rows do, and the
+  projection is a per-node derivation of the rows a node holds, so chunks
+  never cross nodes on their own. A node holding one shard of a split
+  columnar table answers a read of the whole table by gathering the rest
+  from their leaders — records in key order, pushed folds exact, the
+  `gathered` note naming how. `ALTER TABLE … SPLIT AT` on an unsplit
+  columnar table refuses `NotASplitTable`, the same generic refusal an
+  unsplit row table answers — nothing column-kind-aware in the message,
+  and the migration to a split shape is the kind's own `DROP` and
+  `DEFINE` over a snapshot. `SPLIT AUTOMATICALLY` at the table define
+  refuses at the parser (`expected 'AT'` — the table clause speaks
+  `SPLIT AT` only); the auto-split default is the namespace's, and a
+  columnar table inherits it like any other.
 
 The stated limits of a columnar table at this milestone, each honest rather
 than implicit:
