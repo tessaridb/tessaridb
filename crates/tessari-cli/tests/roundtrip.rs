@@ -162,6 +162,7 @@ const RELEASED: &[&str] = &[
 const RELEASED_ON_TESSARIKV: &[&str] = &[
     "0.36.0", "0.36.1", "0.36.2", "0.37.0", "0.37.1", "0.38.4", "0.39.0", "0.39.1", "0.39.2",
     "0.40.0", "0.41.0", "0.42.0", "0.43.0", "0.44.0", "0.45.0", "0.46.0", "0.47.0", "0.48.0",
+    "0.49.2",
 ];
 
 /// The binary this crate builds, which is the one an operator upgrades to.
