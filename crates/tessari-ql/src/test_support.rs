@@ -214,7 +214,8 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::Seal(None)
             | InfoSubject::Consumers
             | InfoSubject::Replications
-            | InfoSubject::Topologies => {}
+            | InfoSubject::Topologies
+            | InfoSubject::Pools => {}
             InfoSubject::Seal(Some(vault)) => erase_name(vault),
             InfoSubject::Table(table) | InfoSubject::Access(table) => erase_table(table),
             InfoSubject::Recipients(target)
@@ -234,6 +235,7 @@ fn erase_statement(statement: &mut Statement) {
             | InfoSubject::TopicConsumer(name)
             | InfoSubject::Replication(name)
             | InfoSubject::Topology(name)
+            | InfoSubject::Pool(name)
             | InfoSubject::Graph(name)
             | InfoSubject::Vector(name)
             | InfoSubject::Search(name)

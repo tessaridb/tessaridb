@@ -282,6 +282,9 @@ pub struct Store {
     /// `NotHeldHere` answers and majority waits since this process opened the
     /// store, shared with every handle for the reason the counters above are.
     tally: Arc<crate::tally::ClusterTally>,
+    /// Per-pool running and refused counts this process counted at the
+    /// admission gate, shared with every handle like the tally beside it.
+    pool_tally: Arc<crate::pool_tally::PoolTally>,
     /// What the balancing pass last measured of each balanced table's shards
     /// (ADR-0113 D4), shared with every handle like the tally beside it.
     sampled: Arc<crate::sampled_shards::SampledShards>,

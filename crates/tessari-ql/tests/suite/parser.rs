@@ -1991,6 +1991,34 @@ fn the_scheme_is_asked_about_by_name_and_in_the_plural() {
 }
 
 #[test]
+fn a_pool_is_asked_about_by_name_and_in_the_plural() {
+    // `docs/tessariql.md` § Bounding a tenant's work. The plural is read
+    // first, as with `TOPOLOGIES`, so no subject is half-eaten, and the
+    // whole-answer error line lists both beside the subjects beside them.
+    let StatementKind::Info {
+        subject: tessari_ql::InfoSubject::Pool(name),
+    } = one("INFO FOR POOL web;")
+    else {
+        panic!("INFO FOR POOL did not parse as INFO FOR POOL");
+    };
+    assert_eq!(name.text, "web");
+    assert!(matches!(
+        one("INFO FOR POOLS;"),
+        StatementKind::Info {
+            subject: tessari_ql::InfoSubject::Pools,
+        }
+    ));
+    // The subject takes a name; `INFO FOR POOL` alone is not a question.
+    assert!(parse("INFO FOR POOL;").is_err());
+    // `pool` is contextual like `topology`: a table called `pool` keeps its
+    // name everywhere but directly after `INFO FOR`.
+    assert!(matches!(
+        one("SELECT * FROM pool;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
 fn a_member_row_names_its_domain_within_its_region() {
     // The DOMAIN clause on a member row: optional, last — every declaration
     // written before it reads as it did — and a position within the region,

@@ -86,6 +86,27 @@ impl Store {
         self.tally.moved_by_load();
     }
 
+    /// Take one slot of a named pool at the admission gate; `None` at
+    /// capacity, with the refusal counted. The session gate and the suite
+    /// both call here — the suite to stand a concurrent in-flight script on
+    /// the guard's own seam rather than generating the load the guard exists
+    /// to refuse.
+    pub fn pool_take(
+        &self,
+        namespace: &str,
+        pool: &str,
+        max_concurrent: u64,
+    ) -> Option<crate::PoolSlot> {
+        self.pool_tally.take(namespace, pool, max_concurrent)
+    }
+
+    /// Every pool's counts this process holds, sorted by (namespace, pool) —
+    /// what `INFO FOR POOL[S]` reports and the `/metrics` series render.
+    #[must_use]
+    pub fn pool_counters(&self) -> Vec<crate::PoolReading> {
+        self.pool_tally.entries()
+    }
+
     /// Publish what the balancing pass measured of every balanced table's
     /// shards (ADR-0113 D4); a table left out is no longer balanced and drops.
     pub fn shards_measured(&self, tables: Vec<(TableId, crate::SampledTable)>) {

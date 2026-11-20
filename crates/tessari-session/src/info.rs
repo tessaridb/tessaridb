@@ -74,6 +74,7 @@ mod cluster;
 mod consumers;
 mod measures;
 mod parked;
+mod pools;
 mod records;
 mod replicas;
 mod shapes;
@@ -98,6 +99,11 @@ impl Session<'_> {
         // never arrived. The arm bypasses the object wrap below.
         if let InfoSubject::Topology(name) = subject {
             return self.info_topology(transaction, name, span).await;
+        }
+        // The plural answers an array, not an object, so — as `Topology`
+        // above — it bypasses the wrap below rather than forcing a shape.
+        if let InfoSubject::Pools = subject {
+            return self.info_pools(transaction, span).await;
         }
         let report = match subject {
             InfoSubject::Store => self.info_store(transaction).await?,
@@ -146,7 +152,10 @@ impl Session<'_> {
             InfoSubject::Topologies => self.info_topologies(transaction).await?,
             // Handled above the match: the unset answer is `null`, not an
             // empty report, and the wrap below would force an object.
-            InfoSubject::Topology(_) => unreachable!("handled above the match"),
+            InfoSubject::Topology(_) | InfoSubject::Pools => {
+                unreachable!("handled above the match")
+            }
+            InfoSubject::Pool(name) => self.info_pool(transaction, name, span).await?,
         };
         Ok(Outcome::Value(Value::Object(report)))
     }

@@ -69,6 +69,7 @@ mod now;
 mod ordering;
 mod owned;
 mod pool;
+mod pool_tally;
 mod pruning;
 mod quarantine;
 mod readings;
@@ -101,12 +102,12 @@ pub use catalog::{
     EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember,
     EventDeclaration, Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration,
     FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
-    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, PoolDefinition, Held, InFlight,
+    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
     IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
     MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
-    PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
-    RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role, RollupCompute,
-    RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
+    PoolDefinition, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
+    QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition, Role,
+    RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE, SYSTEM_NAMESPACE, SearchCosts,
     SeriesDeclaration, ShardMap, ShardSpan, SpaceDeclaration, SpaceLimit, StorageKind, StoredKind,
     TableDefinition, TableExpiry, TableKind, TableShape, TopicDeclaration, TopologyDefinition,
     UNIT_WEIGHT, UserDefinition, VECTOR_FIELD, VaultCustody, VaultDeclaration, VectorDeclaration,
@@ -151,6 +152,7 @@ pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 pub use now::{Now, now};
 pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
 pub use pool::Pool;
+pub use pool_tally::{PoolReading, PoolSlot, PoolTally};
 pub use pruning::{Pruned, Trimmed};
 pub use readings::{HeardReadings, Readings};
 pub use reclaim::Reclaimed;

@@ -105,6 +105,20 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A matching pool is at capacity; the refusal names the pool.
+    ///
+    /// The conflict class, as the spec section states — and retryable the
+    /// way `CommitContention` is: the limit is an admission decision, not a
+    /// sentence. What a pool never does is wait, because a queue a caller
+    /// cannot see the depth of is a latency lie.
+    #[error("pool '{pool}' is at capacity (at {span})")]
+    PoolAtCapacity {
+        /// The pool, `namespace:name`.
+        pool: String,
+        /// Where the script begins.
+        span: tessari_ql::Span,
+    },
+
     /// A `DEFINE BALANCER` names margins that do not hold together with the
     /// failover policy the pass runs beside.
     ///

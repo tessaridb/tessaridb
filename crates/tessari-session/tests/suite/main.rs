@@ -140,6 +140,7 @@ mod phrase;
 mod plan_invariance;
 mod planner_statistics;
 mod pooled_tenancy;
+mod pools;
 mod prefix;
 mod pruned_ranking;
 mod queue_claims;

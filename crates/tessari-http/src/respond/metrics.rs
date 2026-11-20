@@ -319,6 +319,30 @@ async fn balancing(out: &mut String, db: &Db) {
             held.balancer_load_moves
         ));
     }
+    // The pools the gate has counted on this process — absent until one
+    // has, because an always-empty series trains whoever watches it to
+    // ignore the one reading that matters (the lease series' reason).
+    let counted = store.pool_counters();
+    if !counted.is_empty() {
+        out.push_str("# HELP tessari_pool_running Matching scripts running right now, by pool.\n");
+        out.push_str("# TYPE tessari_pool_running gauge\n");
+        for held in &counted {
+            out.push_str(&format!(
+                "tessari_pool_running{{pool=\"{}:{}\"}} {}\n",
+                held.namespace, held.pool, held.running
+            ));
+        }
+        out.push_str(
+            "# HELP tessari_pool_refused_total Matching scripts the pool gate refused, by pool.\n",
+        );
+        out.push_str("# TYPE tessari_pool_refused_total counter\n");
+        for held in &counted {
+            out.push_str(&format!(
+                "tessari_pool_refused_total{{pool=\"{}:{}\"}} {}\n",
+                held.namespace, held.pool, held.refused
+            ));
+        }
+    }
 }
 
 async fn replication(out: &mut String, db: &Db) {

@@ -245,7 +245,7 @@ is refused by an older build at open (format 13).
   positions. The link's own definition never crosses the seam — it is this
   cluster's topology, the way a peer row is.
 - Format 13: the catalog gains the `REPLICATIONS` system table.
-- **1764 conformance cases** define the language and run in the build.
+- **1766 conformance cases** define the language and run in the build.
 
 ## 0.41.0 — 2026-11-16
 
@@ -391,7 +391,7 @@ Supersedes 0.39.4, which is withdrawn: use 0.39.5. 0.39.3 and 0.39.5 open each o
   `scores::between`, `scores::union` and `scores::intersect` read and combine rankings. A combination's answer can
   be written back with `SET`, so `SET k = set::intersect(GET a, GET b)` stores a set of members and
   `SET k = scores::union(GET a, GET b)` a ranking.
-- **1764 conformance cases** define the language and run in the build.
+- **1766 conformance cases** define the language and run in the build.
 
 ## 0.38.4 — 2026-10-25
 

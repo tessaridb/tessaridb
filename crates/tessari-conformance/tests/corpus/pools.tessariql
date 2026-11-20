@@ -1,0 +1,20 @@
+# Workload pools: an admission limit on the statements a classifier names.
+#
+# A pool is its limit — `WITH MAX CONCURRENT n` is the one required clause —
+# narrowed by at most one database, one user, and a kind set. The report
+# reads the declaration back from the catalog with this node's running and
+# refused counts; the counts are process-local and stated as such.
+#
+# A corpus file is one session against one store, so these run in order.
+
+--- case: a pool is declared in the namespace the session stands in
+DEFINE NAMESPACE prod;
+USE NAMESPACE prod;
+DEFINE DATABASE work;
+USE DATABASE work;
+DEFINE POOL web WITH MAX CONCURRENT 2 FOR READS, WRITES;
+--- expect: ok
+
+--- case: the report carries the declaration and this node's counts — the asking read matches the pool, so it counts itself
+INFO FOR POOL web;
+--- expect: value { name: 'web', max_concurrent: 2, database: NULL, user: NULL, reads: true, writes: true, definitions: false, running: 1, refused: 0 }

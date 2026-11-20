@@ -1186,7 +1186,28 @@ const TABLES: &[Table] = &[
         // `leadership_moved`, writing nothing but a process-memory tally the
         // reports read, with the same re-classification trigger as the 72
         // row it joins.
-        expected: 92,
+        //
+        // 94 since the workload pools: `Store::pool_take` and
+        // `Store::pool_counters`. The first **is the admission gate's own
+        // mechanism, not a data path**: it takes or refuses a slot in a
+        // process-memory tally, reads and writes no record, catalog entry or
+        // grant, and the limit it enforces is the catalog's own declaration
+        // — the authority question was answered where the pool row was
+        // written, and this method is how a matching script is counted
+        // against it. Its callers are `Session::admit_pool`, which resolves
+        // the namespace's pools through the catalog before it asks, and the
+        // suite, standing a concurrent in-flight script on the guard's own
+        // seam. The second is **not a data path, on `follower_lag`'s
+        // ground**: it reads the tally back for `INFO FOR POOL` (which owes
+        // `Manage` on the namespace, classified at its own subject) and the
+        // `/metrics` series (the owner-only cluster section), and discloses
+        // no store content — two counts per pool, nothing else.
+        // Re-classification trigger, for both: a caller reachable from a
+        // statement or a route that could move what an operator reads
+        // without the gate — a slot taken or released outside `admit_pool`
+        // would be a count an alert fires on without the admission it
+        // reports.
+        expected: 94,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1479,7 +1500,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 183 since `Store::leadership_moved_by_load` — the load pass's counter
     // bump, classified above on the cluster counters' ground.
-    assert_eq!(total, 183, "the counted tables no longer sum to 183");
+    //
+    // 185 since `Store::pool_take` and `Store::pool_counters` — the pool
+    // gate's take and the tally's read-back, classified above on the cluster
+    // counters' ground.
+    assert_eq!(total, 185, "the counted tables no longer sum to 185");
 }
 
 /// Every `.rs` file under a directory.

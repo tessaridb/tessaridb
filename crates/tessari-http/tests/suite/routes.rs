@@ -1123,6 +1123,16 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
     // The load act's counter, beside the count pass's — one move recorded so
     // the scrape shows the line a real move would.
     db.store().leadership_moved_by_load();
+    // The pool series beside the balancer's: a held slot and a counted
+    // refusal, labelled by the namespace:pool key the gate reports.
+    let _held = db
+        .store()
+        .pool_take("prod", "web", 1)
+        .expect("the pool's slot");
+    assert!(
+        db.store().pool_take("prod", "web", 1).is_none(),
+        "the second take at capacity held"
+    );
     // ADR-0113 D4: a balanced table's shards as a pass measured them.
     db.store().shards_measured(vec![(
         tessari_types::TableId::new(9),
@@ -1140,7 +1150,7 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         },
     )]);
 
-    const CLUSTER: [&str; 15] = [
+    const CLUSTER: [&str; 17] = [
         "tessari_follower_behind_records",
         "tessari_replica_state",
         "tessari_replica_copied_records",
@@ -1156,6 +1166,8 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         "tessari_shard_records{table=\"prod.shop.orders\",shard=\"1\"} 3",
         "tessari_balancer_moves_total",
         "tessari_balancer_load_moves_total 1",
+        "tessari_pool_running{pool=\"prod:web\"} 1",
+        "tessari_pool_refused_total{pool=\"prod:web\"} 1",
     ];
     for (who, credential) in [("a stranger", None), ("a viewer", Some(GRACE))] {
         let (status, _, scrape) = send(&address, "GET", "/metrics", "", credential);

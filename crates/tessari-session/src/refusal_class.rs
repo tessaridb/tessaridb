@@ -76,7 +76,11 @@ impl Error {
             | Self::GroupExists { .. }
             // A row another open transaction claims: the contender is told,
             // the way the committer beside it is (the claims design, §2).
-            | Self::ClaimedByAnother { .. } => RefusalClass::Conflict,
+            | Self::ClaimedByAnother { .. }
+            // A pool's gate turned a matching script away: named, transient,
+            // and retryable the way CommitContention is — the spec section's
+            // conflict class, with the remedy the sentence beside it states.
+            | Self::PoolAtCapacity { .. } => RefusalClass::Conflict,
             Self::NoBackupFolder
             | Self::FormatPeerTooOld { .. }
             | Self::NotWritable { .. }

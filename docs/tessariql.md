@@ -11170,6 +11170,30 @@ gate the per-surface running ceiling already keeps, and composes with it:
 the pool limit is consulted beside the ceiling, never instead of it, and the
 tighter of the two answers.
 
+**The families the kinds clause names.** A script belongs to exactly one
+family — the strongest present — so one script is never counted in two
+pools. A script that defines, alters or drops a catalog object is a
+`DEFINITIONS` script no matter what else it holds: tables, fields, indexes,
+analyzers, users, grants and the authority statements, the cluster rows,
+and the pools themselves. Else a script that writes is a `WRITES` script:
+the record verbs, `TRUNCATE`, `REBUILD INDEX`, a vault's passphrase change.
+Else it reads. Two borderlines are stated rather than left to a reading:
+a vault's `SEAL` and `UNSEAL` move only the process's hold on the master
+key and ride the engine's read routing, and `ANALYZE TABLE` with
+`CHECK TABLE` read, routed as reads for the reason their section gives.
+The catalog is the authority at the gate as everywhere else: each matching
+script costs one bounded read-only pass over the namespace's pool rows, and
+the pass is never cached away — a pool declared a second ago bounds the
+next script, not the next interval. `INFO FOR POOL web` reads one pool's
+declaration back with this node's running and refused counts — the counts
+are process-local and stated as such, the declaration follows a backup the
+way every catalog row does — and `INFO FOR POOLS` lists what the selected
+namespace holds, both answered to the namespace's administrator. `/metrics`
+carries the same two counts per pool as `tessari_pool_running` and
+`tessari_pool_refused_total`, absent until a pool has been counted at all,
+because an always-empty series trains whoever watches it to ignore the one
+reading that matters.
+
 
 ### The layout a cluster is arranged over
 

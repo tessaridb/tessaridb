@@ -329,15 +329,18 @@ impl Session<'_> {
     /// Run one statement that was built rather than read.
     async fn built(&mut self, kind: StatementKind) -> Result<Vec<Outcome>> {
         let span = Span::new(0, 0);
-        self.run_script(Script {
-            statements: vec![Statement {
-                kind,
+        self.run_script(
+            Script {
+                statements: vec![Statement {
+                    kind,
+                    span,
+                    acknowledge: None,
+                    across: false,
+                }],
                 span,
-                acknowledge: None,
-                across: false,
-            }],
-            span,
-        })
+            },
+            None,
+        )
         .await
     }
 }

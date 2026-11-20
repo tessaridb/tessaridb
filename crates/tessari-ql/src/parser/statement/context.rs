@@ -91,6 +91,11 @@ impl Parser<'_> {
             // whole so no subject is half-eaten.
             _ if self.eat_word("topologies") => InfoSubject::Topologies,
             _ if self.eat_word("topology") => InfoSubject::Topology(self.name()?),
+            // Plural first, as with `TOPOLOGIES` above: the pool is asked
+            // about by the same operator who declares it, and read whole so
+            // no subject is half-eaten.
+            _ if self.eat_word("pools") => InfoSubject::Pools,
+            _ if self.eat_word("pool") => InfoSubject::Pool(self.name()?),
             // Plural first, as with `USERS` above, so that reading this arm in
             // order tells you which of the two a bare word reaches.
             _ if self.eat_word("kafka") => {
@@ -163,7 +168,7 @@ impl Parser<'_> {
                 // list wrong is worse than one that lists none, because a caller
                 // reads it as the whole truth and stops looking.
                 return Err(self.error_here(
-                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `TOPIC`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF`, `AUDIT` or `SEAL`",
+                    "`STORE`, `NAMESPACE`, `DATABASE`, `TABLE`, `GRAPH`, `BUCKET`, `USER`, `USERS`, `ACCESS`, `NODE`, `KAFKA CONSUMER`, `KAFKA CONSUMERS`, `VECTOR`, `GEO`, `VAULT`, `TOPIC`, `RECIPIENTS OF`, `VERSIONS OF`, `HISTORY OF`, `AUDIT`, `SEAL`, `REPLICATION`, `REPLICATIONS`, `TOPOLOGY`, `TOPOLOGIES`, `POOL` or `POOLS`",
                 ));
             }
         };

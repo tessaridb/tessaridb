@@ -332,7 +332,7 @@ impl<'a> Session<'a> {
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
         let script = self.bind_script(parse(source)?, parameters).await?;
-        self.run_script(script).await
+        self.run_script(script, None).await
     }
 
     /// [`Session::run_with`] for a surface that holds a transaction across
