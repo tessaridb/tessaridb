@@ -44,6 +44,7 @@ mod group;
 mod indexes;
 mod leadership;
 mod params;
+mod pool;
 mod position;
 mod qualified;
 mod renaming;
@@ -92,6 +93,7 @@ pub use group::{GroupDeclaration, GroupMemberState, GroupState, InFlight};
 pub use leadership::LeadershipDefinition;
 pub(crate) use leadership::covering;
 pub use leadership::governing;
+pub use pool::PoolDefinition;
 pub use replica::{
     Greeter, JoinTicket, ReplicaDefinition, another_node_may_write, names_a_peer,
     the_row_a_greeting_binds,

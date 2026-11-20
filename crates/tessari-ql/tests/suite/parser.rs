@@ -1804,6 +1804,93 @@ fn a_balancer_may_be_dropped() {
 }
 
 #[test]
+fn a_pool_limits_concurrency_and_names_its_classifier() {
+    // `docs/tessariql.md` § Bounding a tenant's work, copied from the
+    // specification as every statement in this file is. `MAX CONCURRENT` is
+    // the one required clause — a pool is its admission limit, and a name
+    // with no limit would be a wish. The classifier clauses narrow which
+    // work counts: at most one database, at most one user, and a kind list
+    // that defaults to every kind the session runs.
+    let StatementKind::DefinePool {
+        name,
+        max_concurrent,
+        database,
+        user,
+        kinds,
+    } = one("DEFINE POOL web WITH MAX CONCURRENT 10 FOR DATABASE shop FOR READS, WRITES;")
+    else {
+        panic!("DEFINE POOL did not parse as DEFINE POOL");
+    };
+    assert_eq!(name.text, "web");
+    assert_eq!(max_concurrent, 10);
+    assert_eq!(database.map(|held| held.text).as_deref(), Some("shop"));
+    assert_eq!(user.map(|held| held.text).as_deref(), None);
+    assert!(kinds.reads && kinds.writes && !kinds.definitions);
+    let StatementKind::DefinePool { user, kinds, .. } =
+        one("DEFINE POOL etl WITH MAX CONCURRENT 2 FOR USER loader;")
+    else {
+        panic!("DEFINE POOL did not parse as DEFINE POOL");
+    };
+    assert_eq!(user.map(|held| held.text).as_deref(), Some("loader"));
+    assert!(
+        kinds.reads && kinds.writes && kinds.definitions,
+        "a pool without a kind clause bounds every kind"
+    );
+}
+
+#[test]
+fn a_pool_without_its_limit_is_refused_and_says_which_clause() {
+    // The limit is what a pool IS; the refusal names the missing clause for
+    // the reason the balancer's does — a fixed order means the mistake is
+    // almost always which one was left out.
+    let refused = parse("DEFINE POOL web FOR READS;").expect_err("a pool with no limit parsed");
+    let said = refused.to_string();
+    assert!(
+        said.contains("MAX CONCURRENT"),
+        "the refusal did not name the missing clause: {said}"
+    );
+}
+
+#[test]
+fn a_pool_limit_of_no_size_is_refused_where_the_number_is() {
+    // Zero is not a bound: it would refuse every statement the classifier
+    // matches, which is a deny-list wearing a pool's clothes. Refused at the
+    // statement, the way the balancer's margin is — it is a mistake in what
+    // was typed, not in the catalog.
+    for statement in [
+        "DEFINE POOL web WITH MAX CONCURRENT 0;",
+        "DEFINE POOL web WITH MAX CONCURRENT -1;",
+    ] {
+        let refused = parse(statement).expect_err("a limit of no size parsed");
+        let said = refused.to_string();
+        assert!(
+            said.contains("not a limit"),
+            "refused, but not as a limit: {said}"
+        );
+    }
+}
+
+#[test]
+fn pool_is_a_contextual_word_and_still_names_a_table() {
+    // `balancer` and `failover` are read the same way: special after
+    // `DEFINE`/`DROP`, an ordinary identifier everywhere else.
+    assert!(matches!(
+        one("SELECT * FROM pool;"),
+        StatementKind::Select(_)
+    ));
+}
+
+#[test]
+fn a_pool_may_be_dropped() {
+    // Dropping returns the namespace to its default pool — no limits — the
+    // way `DROP BALANCER` returns the line to count-only balancing.
+    let StatementKind::DropPool { name } = one("DROP POOL web;") else {
+        panic!("DROP POOL did not parse as DROP POOL");
+    };
+    assert_eq!(name.text, "web");
+}
+
+#[test]
 fn a_topology_declares_its_realms_and_the_optional_claim() {
     // `docs/tessariql.md` § The layout a cluster is arranged over, copied from
     // the specification as every statement in this file is. One REALM clause

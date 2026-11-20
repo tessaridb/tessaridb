@@ -68,6 +68,7 @@ mod node;
 mod now;
 mod ordering;
 mod owned;
+mod pool;
 mod pruning;
 mod quarantine;
 mod readings;
@@ -100,7 +101,7 @@ pub use catalog::{
     EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember,
     EventDeclaration, Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration,
     FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
-    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
+    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, PoolDefinition, Held, InFlight,
     IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
     MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
     PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL, QueueDeclaration,
@@ -149,6 +150,7 @@ pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 #[cfg(feature = "test-support")]
 pub use now::{Now, now};
 pub use ordering::{Horizon, MergedHistory, Page, in_writer_order};
+pub use pool::Pool;
 pub use pruning::{Pruned, Trimmed};
 pub use readings::{HeardReadings, Readings};
 pub use reclaim::Reclaimed;

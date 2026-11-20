@@ -202,6 +202,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::ReplicationUnstated { .. } => "ReplicationUnstated",
         Error::FailoverRefused { .. } => "FailoverRefused",
         Error::BalancerRefused { .. } => "BalancerRefused",
+        Error::PoolRefused { .. } => "PoolRefused",
         Error::TopologyRefused { .. } => "TopologyRefused",
         Error::TopologyAlreadyDeclared { .. } => "TopologyAlreadyDeclared",
         Error::AcknowledgeBelowNamespace { .. } => "AcknowledgeBelowNamespace",

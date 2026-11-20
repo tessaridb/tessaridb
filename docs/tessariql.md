@@ -11126,6 +11126,51 @@ Each move lands in the store leader's log beside the count balancer's and in
 `tessari_balancer_moves_total`.
 
 
+### Bounding a tenant's work — `DEFINE POOL`
+
+A pool is an admission limit on the statements a classifier names, declared
+in the namespace the statement runs in:
+
+```
+DEFINE POOL web WITH MAX CONCURRENT 10 FOR DATABASE shop FOR READS, WRITES;
+```
+
+`WITH MAX CONCURRENT n` is the one required clause — a pool is its limit,
+and a name with no bound would be a wish. A limit of zero is refused where
+the number is: it would refuse everything the classifier names, a deny-list
+wearing a pool's clothes. The classifier clauses narrow what counts, in any
+order and at most one of each: `FOR DATABASE d` (only statements in that
+database), `FOR USER u` (only statements authenticated as that user), and
+`FOR READS, WRITES, DEFINITIONS` (the statement kinds — absent means every
+kind, so a plain limit bounds the whole tenant). A statement that matches no
+declared pool runs in the namespace's default pool, which names no limit and
+admits anything. Dropping returns the namespace to that default:
+
+```
+DROP POOL web;
+```
+
+A pool at capacity refuses the next matching statement `PoolAtCapacity`,
+naming the pool — a refusal of the conflict class, so a client may retry it
+the way it retries `CommitContention`: the limit is an admission decision,
+not a sentence. What a pool never does is wait: nothing queues at the gate,
+because a queue a caller cannot see the depth of is a latency lie.
+
+**The pool is a catalog row, for the failover policy's reason.** Whose
+statement may run is a cluster-wide fact: a pool that reached one node and
+not the rest would refuse on half the cluster, and the noisy-tenant bounding
+the feature exists for would be an accident of which node a client reached.
+The limit and the classifier travel in the log the way a peer row does, and
+`INFO FOR POOL web` / `INFO FOR POOLS` read back what the namespace holds,
+with `/metrics` carrying the per-pool running and refused counts beside the
+node's own.
+
+**Counted where the gate already stands.** The check runs at the admission
+gate the per-surface running ceiling already keeps, and composes with it:
+the pool limit is consulted beside the ceiling, never instead of it, and the
+tighter of the two answers.
+
+
 ### The layout a cluster is arranged over
 
 A `REGION` on a member row is a free-text label — an acknowledge level counts

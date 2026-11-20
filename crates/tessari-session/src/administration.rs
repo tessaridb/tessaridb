@@ -44,6 +44,10 @@ pub(crate) fn administered(kind: &StatementKind) -> Option<(&'static str, &str)>
         // row's does.
         StatementKind::DefineBalancer { .. } => ("DEFINE BALANCER", "the store"),
         StatementKind::DropBalancer => ("DROP BALANCER", "the store"),
+        // Namespace-scoped admission governance, named so the trail says
+        // which pool a statement touched.
+        StatementKind::DefinePool { name, .. } => ("DEFINE POOL", name.text.as_str()),
+        StatementKind::DropPool { name } => ("DROP POOL", name.text.as_str()),
         StatementKind::FinalizeFormat => ("ALTER STORE FINALIZE FORMAT", "the store"),
         StatementKind::RevokeCertificate { fingerprint } => {
             ("REVOKE CERTIFICATE", fingerprint.as_str())

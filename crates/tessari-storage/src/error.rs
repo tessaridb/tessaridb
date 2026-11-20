@@ -261,6 +261,15 @@ pub enum Error {
         lease: std::time::Duration,
     },
 
+    /// A stated pool limit is zero.
+    ///
+    /// Zero is not a bound: it would refuse every statement the classifier
+    /// matches, a deny-list wearing a pool's clothes.
+    #[error(
+        "a pool's `MAX CONCURRENT` is 0, and a limit must be positive — what was stated refuses everything the classifier names"
+    )]
+    PoolLimitNotPositive,
+
     /// A stated measurement window is shorter than the round's cadence.
     ///
     /// The **too small** direction. The pass fills the window from the log
@@ -1633,6 +1642,7 @@ impl Error {
             | Self::FailoverLeaseTooShort { .. }
             | Self::FailoverCollectionAboveFloor { .. }
             | Self::BalancerMarginNotAboveOne { .. }
+            | Self::PoolLimitNotPositive
             | Self::BalancerSpacingBelowLease { .. }
             | Self::BalancerWithinBelowCadence { .. }
             | Self::TopologyNeedsARealm

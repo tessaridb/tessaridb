@@ -268,6 +268,10 @@ impl Effect {
             // that reached one node and not the rest would be a balancing act
             // half the cluster runs and half does not.
             StatementKind::DefineBalancer { .. } | StatementKind::DropBalancer => Self::Write,
+            // A pool is a namespace-scoped catalog row, a write for the
+            // balancer policy's reason: an admission limit that reached one
+            // node and not the rest would refuse on half the cluster.
+            StatementKind::DefinePool { .. } | StatementKind::DropPool { .. } => Self::Write,
             // A catalog record every replica applies by raising its own stamp
             // (ADR-0118), for the reason a failover policy is a write.
             StatementKind::FinalizeFormat => Self::Write,

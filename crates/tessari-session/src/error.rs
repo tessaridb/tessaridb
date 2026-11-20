@@ -92,6 +92,19 @@ pub enum Error {
         span: tessari_ql::Span,
     },
 
+    /// A `DEFINE POOL` names a limit the catalog's check refuses.
+    ///
+    /// The store owns the relations and the direction each one fails in, so
+    /// the reason is carried through verbatim, for [`FailoverRefused`]'s
+    /// reason.
+    #[error("{reason} (at {span})")]
+    PoolRefused {
+        /// The store's own words for which relation broke and in which direction.
+        reason: String,
+        /// Where the statement is.
+        span: tessari_ql::Span,
+    },
+
     /// A `DEFINE BALANCER` names margins that do not hold together with the
     /// failover policy the pass runs beside.
     ///

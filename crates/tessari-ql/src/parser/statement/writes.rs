@@ -197,6 +197,10 @@ impl Parser<'_> {
             // takes no name — the way `DROP BALANCER`'s whole shape promises.
             _ if self.eat_word("balancer") => Ok(StatementKind::DropBalancer),
             // Contextual, as the word is everywhere else it appears.
+            _ if self.eat_word("pool") => Ok(StatementKind::DropPool {
+                name: self.dropped_name()?,
+            }),
+            // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
                 name: self.dropped_name()?,
             }),

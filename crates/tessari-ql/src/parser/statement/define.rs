@@ -321,6 +321,9 @@ impl Parser<'_> {
             // And a fifth, on the same reasoning: `balancer` is a name data
             // already uses, and nothing but a subject can stand after `DEFINE`.
             _ if self.eat_word("balancer") => self.define_balancer(),
+            // And a sixth, on the same reasoning: `pool` is a name data
+            // already uses, and nothing but a subject can stand after `DEFINE`.
+            _ if self.eat_word("pool") => self.define_pool(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called

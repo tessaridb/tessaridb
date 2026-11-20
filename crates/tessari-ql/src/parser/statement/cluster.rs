@@ -10,7 +10,8 @@ use tessari_types::{
 };
 
 use crate::ast::{
-    Ratio, ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange, TopologyRealm,
+    PoolKinds, Ratio, ReachRef, ReplicaChange, ReplicationChange, StatementKind, TopologyChange,
+    TopologyRealm,
 };
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
@@ -369,6 +370,103 @@ impl Parser<'_> {
         };
         self.advance();
         Ok(above)
+    }
+
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit as a namespace-scoped
+    /// catalog row.
+    ///
+    /// `WITH MAX CONCURRENT n` is required: the limit is what a pool is. The
+    /// classifier clauses follow in any order — at most one `FOR DATABASE`,
+    /// at most one `FOR USER`, at most one `FOR` kind list — and the
+    /// relations a misshapen classifier breaks (a limit of zero refuses
+    /// everything the classifier names) are checked here, where the words
+    /// are, the way the balancer's margin is.
+    pub(super) fn define_pool(&mut self) -> Result<StatementKind> {
+        let name = self.name()?;
+        self.expect_word(
+            "with",
+            "`WITH MAX CONCURRENT` and the limit the pool exists for",
+        )?;
+        self.expect_word(
+            "max",
+            "`MAX CONCURRENT` and how much work the pool admits at once",
+        )?;
+        self.expect_word("concurrent", "`CONCURRENT` after `MAX`")?;
+        let max_concurrent = self.pool_limit()?;
+        let mut database = None;
+        let mut user = None;
+        let mut kinds = None;
+        loop {
+            if self.eat_word("for") {
+                if self.eat_keyword(Keyword::Database) {
+                    if database.is_some() {
+                        return Err(
+                            self.error_here("one `FOR DATABASE` — a pool classifies one database")
+                        );
+                    }
+                    database = Some(self.name()?);
+                } else if self.eat_keyword(Keyword::User) {
+                    if user.is_some() {
+                        return Err(self.error_here("one `FOR USER` — a pool classifies one user"));
+                    }
+                    user = Some(self.name()?);
+                } else {
+                    let mut read = PoolKinds {
+                        reads: false,
+                        writes: false,
+                        definitions: false,
+                    };
+                    loop {
+                        if self.eat_word("reads") {
+                            read.reads = true;
+                        } else if self.eat_word("writes") {
+                            read.writes = true;
+                        } else if self.eat_word("definitions") {
+                            read.definitions = true;
+                        } else {
+                            return Err(
+                                self.error_here("`READS`, `WRITES` or `DEFINITIONS` after `FOR`")
+                            );
+                        }
+                        if !self.eat_punct(Punct::Comma) {
+                            break;
+                        }
+                    }
+                    if kinds.is_some() {
+                        return Err(
+                            self.error_here("one `FOR` kind list — the kinds one pool bounds")
+                        );
+                    }
+                    kinds = Some(read);
+                }
+            } else {
+                break;
+            }
+        }
+        Ok(StatementKind::DefinePool {
+            name,
+            max_concurrent,
+            database,
+            user,
+            kinds: kinds.unwrap_or(PoolKinds::ALL),
+        })
+    }
+
+    /// The limit after `MAX CONCURRENT`, refused where the number is when it
+    /// is not a limit — zero or negative would refuse everything the
+    /// classifier names, a deny-list wearing a pool's clothes.
+    fn pool_limit(&mut self) -> Result<u64> {
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a limit, like `10`"));
+        };
+        if *written <= 0 {
+            return Err(self.error_here("a limit — what stands here is not a limit"));
+        }
+        let limit = u64::try_from(*written)
+            .map_err(|_| self.error_here("a limit within what a count of running work holds"))?;
+        self.advance();
+        Ok(limit)
     }
 
     /// `DEFINE TOPOLOGY main REALM 'dc-a' [DOMAIN 'az-1', …] … [SURVIVES REALM LOSS]`

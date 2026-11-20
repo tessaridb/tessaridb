@@ -240,6 +240,11 @@ pub const TOPOLOGY: TableId = TableId::new(33);
 /// agree about, so it travels in the log the same way.
 pub const BALANCER: TableId = TableId::new(34);
 
+/// The workload pools a namespace admits work under, beside [`BALANCER`]:
+/// whose statement may run is a cluster-wide fact every node must agree
+/// about, so a pool travels in the log the same way.
+pub const POOLS: TableId = TableId::new(35);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -277,6 +282,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (REPLICATIONS, "REPLICATIONS"),
     (TOPOLOGY, "TOPOLOGY"),
     (BALANCER, "BALANCER"),
+    (POOLS, "POOLS"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.
@@ -451,6 +457,7 @@ mod tests {
             ROLLUP_STATES,
             KAFKA_QUARANTINE,
             BALANCER,
+            POOLS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

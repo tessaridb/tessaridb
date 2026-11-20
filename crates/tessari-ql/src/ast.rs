@@ -242,6 +242,7 @@ pub use tables::{
     Reference, StoreKind, TableChange, TableExpiry, WriteExpiry,
 };
 pub use tessari_types::BinaryOp;
+pub use tessari_types::PoolKinds;
 pub use users::{Credential, Password, UserChange, UserGrant};
 
 /// A route to a value inside a record, as written.

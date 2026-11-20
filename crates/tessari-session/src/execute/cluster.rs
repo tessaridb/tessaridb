@@ -14,6 +14,20 @@ use crate::session::Session;
 
 use super::{Declared, FORMAT_JSON, Peer, named_roles};
 
+/// The pool clauses a [`Session::define_pool`] states, one bundle so the
+/// signature stays under the argument count the lint keeps — the four travel
+/// together or not at all.
+pub(super) struct StatedPool<'a> {
+    /// `WITH MAX CONCURRENT n`.
+    pub max_concurrent: u64,
+    /// `FOR DATABASE d`.
+    pub database: Option<&'a Name>,
+    /// `FOR USER u`.
+    pub user: Option<&'a Name>,
+    /// `FOR READS, WRITES, …`.
+    pub kinds: tessari_types::PoolKinds,
+}
+
 /// A `DEFINE REPLICATION` statement's parts, as the parser left them — the
 /// shape `DEFINE REPLICA`'s `Peer` takes, so the signature stays a statement
 /// and a transaction however many clauses the grammar grows.
@@ -176,6 +190,80 @@ impl Session<'_> {
             .map_or(0, |held| held.version.saturating_add(1));
         let epoch = self.store.leading().unwrap_or(tessari_types::Epoch::ZERO);
         catalog.set_balancer(policy, epoch, version)?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit as a namespace-scoped
+    /// catalog row, for the failover policy's reason: whose statement may
+    /// run is a cluster-wide fact every node must agree about, and a pool
+    /// that reached one node and not the rest would refuse on half the
+    /// cluster.
+    ///
+    /// # The checks that run here
+    ///
+    /// The limit's positivity is the statement's own check; the relations
+    /// that need the catalog are [`tessari_storage::Pool`]'s own, run
+    /// through `Pool::stated`, for [`Self::define_failover`]'s reason: one
+    /// place knows the directions. The classifier's database resolves in
+    /// the session's namespace and is refused `Unknown` when absent, the
+    /// way a grant's table is.
+    pub(super) async fn define_pool(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        stated: &StatedPool<'_>,
+        span: Span,
+    ) -> Result<Outcome> {
+        let namespace = self.namespace_id(transaction, span).await?;
+        let database = match stated.database {
+            None => None,
+            Some(named) => Some(
+                Catalog::new(transaction)
+                    .database_id(namespace, &named.text)
+                    .await?
+                    .ok_or(Error::Unknown {
+                        entity: "database",
+                        name: named.text.clone(),
+                        span,
+                    })?,
+            ),
+        };
+        let pool = tessari_storage::Pool::stated(
+            stated.max_concurrent,
+            database,
+            stated.user.map(|held| held.text.clone()),
+            stated.kinds,
+        )
+        .map_err(|why| Error::PoolRefused {
+            reason: why.to_string(),
+            span,
+        })?;
+        Catalog::new(transaction)
+            .create_pool(namespace, &name.text, pool)
+            .await?;
+        Ok(Outcome::Done)
+    }
+
+    /// `DROP POOL web` — the pool whole; the namespace returns to its
+    /// default pool, which names no limit.
+    pub(super) async fn drop_pool(
+        &self,
+        transaction: &mut Transaction<'_>,
+        name: &Name,
+        span: Span,
+    ) -> Result<Outcome> {
+        let namespace = self.namespace_id(transaction, span).await?;
+        if !Catalog::new(transaction)
+            .drop_pool(namespace, &name.text)
+            .await?
+        {
+            return Err(Error::Unknown {
+                entity: "pool",
+                name: name.text.clone(),
+                span,
+            });
+        }
         Ok(Outcome::Done)
     }
 

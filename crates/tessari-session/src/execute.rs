@@ -676,6 +676,22 @@ impl Session<'_> {
                 .await
             }
             StatementKind::DropBalancer => self.drop_balancer(transaction, span).await,
+            StatementKind::DefinePool {
+                name,
+                max_concurrent,
+                database,
+                user,
+                kinds,
+            } => {
+                let stated = cluster::StatedPool {
+                    max_concurrent: *max_concurrent,
+                    database: database.as_ref(),
+                    user: user.as_ref(),
+                    kinds: *kinds,
+                };
+                self.define_pool(transaction, name, &stated, span).await
+            }
+            StatementKind::DropPool { name } => self.drop_pool(transaction, name, span).await,
             StatementKind::DefineConsumer {
                 name,
                 source,

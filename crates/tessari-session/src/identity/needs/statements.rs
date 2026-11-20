@@ -261,7 +261,11 @@ impl Needs {
             // beside it is: which nodes hold which work is topology, not
             // anybody's tables.
             | StatementKind::DefineBalancer { .. }
-            | StatementKind::DropBalancer => Self::OPERATE_STORE,
+            | StatementKind::DropBalancer
+            // A pool bounds whose work may run: administering, the way a
+            // grant is — it names no table and writes a namespace row.
+            | StatementKind::DefinePool { .. }
+            | StatementKind::DropPool { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address
             // and a group name to a process that will then write into somebody's

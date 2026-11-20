@@ -10,7 +10,7 @@ use super::{
 use crate::token::Span;
 use tessari_types::{
     Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number,
-    RecordId, Replication, ReplicationClass,
+    PoolKinds, RecordId, Replication, ReplicationClass,
 };
 
 /// `ON CONFLICT [(name, …)] DO …` — the arbiter clause an insert may carry.
@@ -916,6 +916,37 @@ pub enum StatementKind {
     /// the policy is the off-switch — there is no smaller truthful spelling
     /// of "balance by count again".
     DropBalancer,
+    /// `DEFINE POOL web WITH MAX CONCURRENT 10 [FOR DATABASE d] [FOR USER u]
+    /// [FOR READS, WRITES, …]` — an admission limit on the work the classifier
+    /// names, a catalog row in the namespace the statement runs in.
+    ///
+    /// **`MAX CONCURRENT` is the one required clause**, because a pool is its
+    /// limit: a name with no bound would be a wish, not a policy. The
+    /// classifier clauses narrow what counts — at most one database, at most
+    /// one user, and a kind list that names reads / writes / definitions,
+    /// absent meaning every kind. A statement that matches no declared pool
+    /// runs in the namespace's default pool, which names no limit.
+    DefinePool {
+        /// The name the pool is known by, unique within its namespace.
+        name: Name,
+        /// How many statements the classifier may run at once; the next one
+        /// is refused `PoolAtCapacity` naming the pool.
+        max_concurrent: u64,
+        /// `FOR DATABASE d`: only statements in this database classify here.
+        database: Option<Name>,
+        /// `FOR USER u`: only statements authenticated as this user classify
+        /// here.
+        user: Option<Name>,
+        /// `FOR READS, WRITES, …`: the statement kinds the pool bounds.
+        /// Absent is every kind, so a plain limit bounds the whole tenant.
+        kinds: PoolKinds,
+    },
+    /// `DROP POOL web` — the pool whole; the namespace returns to its default
+    /// pool, which names no limit.
+    DropPool {
+        /// The pool to drop.
+        name: Name,
+    },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every
     /// node from the moment the catalog reaches it (ADR-0108 D6).
     RevokeCertificate {

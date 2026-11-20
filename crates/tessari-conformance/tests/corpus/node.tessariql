@@ -253,3 +253,19 @@ ALTER REPLICA drainee ROLES NONE;
 --- case: NONE mixed into a role list is refused in either order
 ALTER REPLICA drainee ROLES NONE, serving;
 --- expect: error UnexpectedToken
+
+--- case: a pool is its limit, and a name without one is refused
+DEFINE POOL web WITH MAX CONCURRENT 10 FOR READS;
+--- expect: ok
+
+--- case: the one required clause named when it is missing
+DEFINE POOL web FOR READS;
+--- expect: error UnexpectedToken
+
+--- case: a limit of zero refuses everything the classifier names
+DEFINE POOL web WITH MAX CONCURRENT 0;
+--- expect: error UnexpectedToken
+
+--- case: dropping a pool that is not held is the usual unknown
+DROP POOL ghost;
+--- expect: error Unknown
