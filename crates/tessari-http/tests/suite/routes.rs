@@ -1120,6 +1120,9 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
     );
     db.store().upstream_is(tessari_storage::Upstream::Copying);
     db.store().across_sampled(0, 0);
+    // The load act's counter, beside the count pass's — one move recorded so
+    // the scrape shows the line a real move would.
+    db.store().leadership_moved_by_load();
     // ADR-0113 D4: a balanced table's shards as a pass measured them.
     db.store().shards_measured(vec![(
         tessari_types::TableId::new(9),
@@ -1137,7 +1140,7 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         },
     )]);
 
-    const CLUSTER: [&str; 14] = [
+    const CLUSTER: [&str; 15] = [
         "tessari_follower_behind_records",
         "tessari_replica_state",
         "tessari_replica_copied_records",
@@ -1152,6 +1155,7 @@ fn a_stranger_scraping_a_closed_store_learns_nothing_about_the_cluster() {
         "tessari_transactions_with_intents",
         "tessari_shard_records{table=\"prod.shop.orders\",shard=\"1\"} 3",
         "tessari_balancer_moves_total",
+        "tessari_balancer_load_moves_total 1",
     ];
     for (who, credential) in [("a stranger", None), ("a viewer", Some(GRACE))] {
         let (status, _, scrape) = send(&address, "GET", "/metrics", "", credential);

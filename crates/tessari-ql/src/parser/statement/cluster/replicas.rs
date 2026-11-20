@@ -223,6 +223,18 @@ impl Parser<'_> {
             return Ok(ReplicaChange::At(self.text("the endpoint, as text")?.0));
         }
         if self.eat_word("roles") {
+            // `NONE` is the whole-answer spelling clearing needs, for the
+            // `DEFINE NODE`'s reason: `ALTER` amends, so an absent clause
+            // leaves the field alone and only an explicit word can clear it.
+            // Read as the empty list, because `named_roles` folds from
+            // `Roles::NONE` and therefore already means exactly this.
+            if self.eat_keyword(Keyword::None) {
+                if self.eat_punct(Punct::Comma) {
+                    return Err(self
+                        .error_here("`NONE` is a whole answer and not a member of the role list"));
+                }
+                return Ok(ReplicaChange::Roles(Vec::new()));
+            }
             let mut named = vec![self.name()?];
             while self.eat_punct(Punct::Comma) {
                 named.push(self.name()?);

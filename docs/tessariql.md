@@ -10480,7 +10480,17 @@ statement is sent rather than after.
 node bound by a membership row it is an override the next open discards — the
 desired role is the shared truth and a local word that outlived it is a
 disagreement nobody can see. To drain a bound node so that it stays drained,
-write the membership row instead.
+clear the roles on its membership row instead:
+
+```
+ALTER REPLICA n1 ROLES NONE;
+```
+
+The row's other clauses — its address, its identity, its subscription, and any
+placement it holds — stand exactly as they were: draining is what the node is
+for, not where its data lives or who leads the ranges it placed. `NONE` is the
+whole-answer spelling, for `DEFINE NODE`'s reason: `ALTER` amends, so a clause
+left out leaves the field alone, and only an explicit word can clear it.
 
 ### What that peer may collect, and the refusal that comes with saying nothing
 

@@ -241,3 +241,15 @@ RETURN type::of(array::last(object::values(session::context())));
 --- case: it takes nothing, because what it answers is the session's
 RETURN session::context(1);
 --- expect: error WrongArity
+
+--- case: a member row is drained by clearing its roles, its other clauses untouched
+DEFINE REPLICA drainee AT 'db-9:9000' ROLES serving, writable;
+--- expect: ok
+
+--- case: NONE is the whole-answer spelling, and a list it leads is refused
+ALTER REPLICA drainee ROLES NONE;
+--- expect: ok
+
+--- case: NONE mixed into a role list is refused in either order
+ALTER REPLICA drainee ROLES NONE, serving;
+--- expect: error UnexpectedToken

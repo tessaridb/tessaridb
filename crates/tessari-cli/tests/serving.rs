@@ -6182,6 +6182,119 @@ fn a_range_given_back_to_the_store_line_keeps_every_write_it_took() {
     }
 }
 
+/// The drain scenario's addresses, its own band (G093 SG2).
+const DRAINING: Band = [
+    ("127.0.0.1:48046", "127.0.0.1:48047"),
+    ("127.0.0.1:48048", "127.0.0.1:48049"),
+    ("127.0.0.1:48050", "127.0.0.1:48051"),
+];
+
+#[test]
+#[ignore = "real cadences across three processes — a drained node's placement \
+            moves only after the store line settles on a survivor and that \
+            leader's next pass. G093 SG2's own validation, run explicitly: \
+            cargo test -p tessari-cli --test serving \
+            a_drained_nodes_placement -- --ignored"]
+fn a_drained_nodes_placement_is_replaced_without_a_balance_statement() {
+    // G093 C1 / U4: with `DEFINE BALANCER` declared and NO `BALANCE
+    // LEADERSHIPS` anywhere, draining the store line's leader — its member
+    // row's roles cleared, the spec's *Draining this node* — moves its placed
+    // range onto an idle voter by the load act's drain branch alone. The
+    // assertion that answers U4: no balance statement appears anywhere below.
+    let cluster = a_cluster_declared(&DRAINING, "", ["", "", ""]);
+    let policy = "DEFINE FAILOVER AWARENESS 1s COLLECTION 1s ROUND 200ms CAMPAIGN 100ms \
+                  LEASE 800ms; \
+                  DEFINE BALANCER LOAD ABOVE 1.5 WITHIN 10s SPACING 1s;";
+    // The store leader is the node that takes a catalog change; the others
+    // redirect, and this client does not follow a redirect.
+    let mut leader = None;
+    let declared = until(Duration::from_secs(90), || {
+        leader = DRAINING
+            .iter()
+            .position(|(surface, _)| asked(surface, &format!("{PLACED} {policy}"), None).is_ok());
+        leader.is_some()
+    });
+    assert!(
+        declared,
+        "the schema and the balancer policy were never declared{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    let crowded = leader.unwrap_or_default();
+    let placed = until(Duration::from_secs(30), || {
+        asked(
+            DRAINING[crowded].0,
+            &format!("ALTER REPLICA n{crowded} LEADS SHARD prod.shop.orders 2;"),
+            None,
+        )
+        .is_ok()
+    });
+    assert!(
+        placed,
+        "the store leader n{crowded} could not be placed on shard 2{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // The imbalance existed: the store leader led shard 2 as well.
+    let crowded_led = until(Duration::from_secs(60), || {
+        !shard_two_epochs(&cluster.logs[crowded]).is_empty()
+    });
+    assert!(
+        crowded_led,
+        "n{crowded} never led shard 2{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // The drain: the roles on the membership row cleared, the spec's
+    // *Draining this node* spelling — a local `DEFINE NODE ROLES NONE` would
+    // be an override this node's next open discards. Everything else on the
+    // row stands: the address, the identity, the subscription, and the
+    // placement this test put on it a moment ago.
+    let drained = format!("ALTER REPLICA n{crowded} ROLES NONE;");
+    let mut last = String::new();
+    let drained_row = until(Duration::from_secs(30), || {
+        match asked(DRAINING[crowded].0, &drained, None) {
+            Ok(_) => true,
+            Err(why) => {
+                last = why;
+                false
+            }
+        }
+    });
+    assert!(
+        drained_row,
+        "the membership row never took the drain: {last}{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    // Re-placed, by the load act's drain branch, onto another node that now
+    // leads it — with no balance statement anywhere in the cluster's log.
+    let mut taker = None;
+    let moved = until(Duration::from_secs(120), || {
+        taker = (0..DRAINING.len())
+            .filter(|other| *other != crowded)
+            .find(|other| !shard_two_epochs(&cluster.logs[*other]).is_empty());
+        taker.is_some()
+            && cluster.logs.iter().any(|log| {
+                std::fs::read_to_string(log)
+                    .is_ok_and(|text| text.contains("balanced load: a placement moved"))
+            })
+    });
+    assert!(
+        moved,
+        "the drained node's placement was never re-placed{}",
+        what_the_nodes_said(&DRAINING, &cluster.logs)
+    );
+    let taker = taker.unwrap_or_default();
+    // The counter's own rendering is asserted where the surface exists, in
+    // the http suite — this harness starts no http surface, and the tally is
+    // process-local on the node that made the move (still the drained node's
+    // process, its local roles unchanged until its next open).
+    if let Err(last) = until_taken(DRAINING[taker].0, "hb", Duration::from_secs(60)) {
+        panic!(
+            "n{taker} never took a write into shard 2; last: {last}{}",
+            what_the_nodes_said(&DRAINING, &cluster.logs)
+        );
+    }
+    eprintln!("DRAIN n{crowded} drained, n{taker} took shard 2 without a balance statement");
+}
+
 /// The candidate-preference scenario's addresses, its own band (G053 SG5b).
 const PREFERRING: Band = [
     ("127.0.0.1:48028", "127.0.0.1:48029"),

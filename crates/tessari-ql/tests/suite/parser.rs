@@ -1983,6 +1983,28 @@ fn none_is_a_whole_answer_and_not_a_member_of_the_role_list() {
 }
 
 #[test]
+fn altering_a_peers_roles_to_none_drains_the_bound_row() {
+    // `docs/tessariql.md` § Draining this node, the membership-row half:
+    // `DEFINE REPLICA` declares rather than amends (a second declare of one
+    // name is `NameTaken`), so a bound row's roles can only move through
+    // `ALTER` — and amending is the one place absence means *leave alone*, so
+    // clearing needs the whole-answer spelling `DEFINE NODE` already keeps.
+    let StatementKind::AlterReplica { name, change } = one("ALTER REPLICA n1 ROLES NONE;") else {
+        panic!("ALTER REPLICA ROLES NONE did not parse as ALTER REPLICA");
+    };
+    assert_eq!(name.text, "n1");
+    let tessari_ql::ReplicaChange::Roles(words) = change else {
+        panic!("ROLES NONE did not parse as a roles change");
+    };
+    assert!(words.is_empty(), "NONE clears rather than names");
+    // The whole-answer rule holds here exactly the way it holds on
+    // `DEFINE NODE`: a list that mixes NONE with a role would have to decide
+    // which one won.
+    assert!(parse("ALTER REPLICA n1 ROLES NONE, serving;").is_err());
+    assert!(parse("ALTER REPLICA n1 ROLES serving, NONE;").is_err());
+}
+
+#[test]
 fn a_peer_keeps_no_second_spelling_for_an_absent_roles_clause() {
     // `DEFINE REPLICA` declares rather than amends, so an absent `ROLES`
     // already means no roles and already drains. Adding `NONE` there would be
