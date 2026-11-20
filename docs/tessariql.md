@@ -8709,9 +8709,18 @@ The rate is counted **in messages, per node, in memory**: a quiet topic takes
 `n` at once and then one every `d / n`. An append past it is refused with
 `topic signups takes at most 60 anonymous messages per 1m on this node`, and an
 `INSERT` of more rows than `n` is always refused. Two things follow from "per
-node, in memory" and are worth sizing for: a cluster of three nodes that all
-accept writes admits three times the rate, and a restarted node has forgotten
-what it counted. A signed-in caller is never rated.
+node, in memory" and are worth sizing for: the allowance is spent on the node
+the append **executes** on, and a restarted node has forgotten what it counted.
+A signed-in caller is never rated.
+
+On a cluster this has a shape the declaration does not state by itself: an
+anonymous append is carried to the range's leader before it runs, and the
+allowance is spent there — so on a cluster whose topic one node leads, every
+door's anonymous appends draw on that one node's bucket, and the rate is the
+leader's, not the cluster's. (Measured on a three-node cluster: three appends
+admitted through one door, then every door refused — one shared bucket.) Size
+`PUBLIC RATE` for the nodes that **lead** the topic, and remember a failover
+moves the bucket: the new leader's memory starts empty.
 
 ### Reading a topic into a table
 

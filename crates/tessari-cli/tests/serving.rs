@@ -2570,6 +2570,32 @@ fn leaders_at(
         .collect()
 }
 
+/// Whether the topic consumer the topics exercise declares is halted, as its
+/// `INFO FOR TOPIC CONSUMER` report answers on `surface`.
+fn consumer_halted_at(surface: &str) -> Option<bool> {
+    let mut client = Client::connect(surface).ok()?;
+    let answers = client
+        .run(
+            "USE NAMESPACE prod; USE DATABASE shop; INFO FOR TOPIC CONSUMER orders_in;",
+            None,
+        )
+        .ok()?;
+    let Some(Answer::Value {
+        value: tessari_types::Value::Object(report),
+        ..
+    }) = answers.last()
+    else {
+        return None;
+    };
+    let Some(tessari_types::Value::Object(running)) = report.get("running") else {
+        return None;
+    };
+    match running.get("halted") {
+        Some(tessari_types::Value::Bool(halted)) => Some(*halted),
+        _ => None,
+    }
+}
+
 /// Which node of `band` leads `range`, or `None` while no majority has
 /// granted the epoch yet. The range is spelled the report spells it — "STORE"
 /// for the store line: prod carries no placement, so its writer is the store
@@ -5857,6 +5883,25 @@ const RESP_CLUSTER: Band = [
 /// The RESP door each node serves for this exercise, node order.
 const RESP_DOORS: [&str; 3] = ["127.0.0.1:48096", "127.0.0.1:48097", "127.0.0.1:48098"];
 
+/// A band for the topics-on-a-cluster exercise (SG5): three nodes on their
+/// own addresses, nothing else there.
+const TOPICS_CLUSTER: Band = [
+    ("127.0.0.1:48100", "127.0.0.1:48103"),
+    ("127.0.0.1:48101", "127.0.0.1:48104"),
+    ("127.0.0.1:48102", "127.0.0.1:48105"),
+];
+
+/// The topic half of the exercise: a split topic, a group, and a topic
+/// consumer, declared on the leader after the election so the definitions
+/// ride the log to every node (the operator path the live study measured) —
+/// each node starts its member within a second of the declaration arriving.
+const TOPICS_DEFINITIONS: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
+     DEFINE DATABASE shop; USE DATABASE shop; \
+     DEFINE TOPIC orders PARTITIONS 2 BY key; DEFINE COLLECTION order_rows; \
+     DEFINE GROUP 'into-rows' ON TOPIC orders ACK DEADLINE 30s IN FLIGHT 16; \
+     DEFINE TOPIC CONSUMER orders_in FROM orders GROUP 'into-rows' INTO order_rows \
+     IDENTITY order_id MAP amount AS total ON FAILURE stop;";
+
 /// A split space, born at the declare (the W2 clause) so each node leads the
 /// shard its letter falls in.
 const SPLIT_SPACE: &str = "DEFINE NAMESPACE prod REPLICATION FACTOR 3; USE NAMESPACE prod; \
@@ -6024,6 +6069,139 @@ fn resp_hides_the_redirect_a_wrong_node_key_is_carried() {
         "the follower never held both keys; it reads {:?}{}",
         read_at(RESP_CLUSTER[2].0, "SELECT id FROM sessions;"),
         what_the_nodes_said(&RESP_CLUSTER, &cluster.logs)
+    );
+}
+
+#[test]
+fn a_topic_consumer_follows_the_leadership_without_a_redeclare() {
+    // Every node runs the declared consumer, the leader applies exactly
+    // once, and a failover MOVES the application to the winner — no operator
+    // re-declare. The shipped hole, measured on a live cluster: followers
+    // halted at declare with the led-elsewhere error and the failover winner
+    // applied nothing until the consumer was dropped and declared again.
+    let mut cluster = a_cluster_declared(&TOPICS_CLUSTER, "", ["", "", ""]);
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None).is_some()
+    });
+    assert!(
+        elected,
+        "no STORE leader at bring-up{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+    let (leader, _) = leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None)
+        .expect("the leader the bring-up election just produced");
+
+    // A write is attempted until it lands — a young cluster answers the
+    // majority-ack window with the committed-but-unconfirmed refusal, which
+    // `landed` reads as the write it is.
+    let write_at = |surface: &str, statement: &str| {
+        let began = Instant::now();
+        loop {
+            if let Ok(mut client) = Client::connect(surface)
+                && landed(&client.run(statement, None))
+            {
+                return;
+            }
+            assert!(
+                began.elapsed() < Duration::from_secs(60),
+                "the write never landed: {statement}{}",
+                what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+            );
+            std::thread::sleep(POLL);
+        }
+    };
+
+    // The definitions ride the log: the leader declares them, every node
+    // starts its member within a second of the declaration arriving.
+    write_at(TOPICS_CLUSTER[leader].0, TOPICS_DEFINITIONS);
+    let definitions_reached = (0..TOPICS_CLUSTER.len()).all(|index| {
+        until(Duration::from_secs(30), || {
+            consumer_halted_at(TOPICS_CLUSTER[index].0).is_some()
+        })
+    });
+    assert!(
+        definitions_reached,
+        "the definitions never reached every node{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // Four keyed messages into the topic: the leader's member applies them
+    // to order_rows exactly once.
+    for (id, key, amount) in [
+        ("o1", "a", 10),
+        ("o2", "b", 20),
+        ("o3", "c", 30),
+        ("o4", "d", 40),
+    ] {
+        write_at(
+            TOPICS_CLUSTER[leader].0,
+            &format!(
+                "USE NAMESPACE prod; USE DATABASE shop; \
+                 CREATE orders:'{id}' = {{ key: '{key}', order_id: '{id}', amount: {amount} }};"
+            ),
+        );
+    }
+    let applied = |count: usize| {
+        until(Duration::from_secs(60), || {
+            read_at(
+                TOPICS_CLUSTER[leader].0,
+                "USE NAMESPACE prod; USE DATABASE shop; SELECT id FROM order_rows;",
+            )
+            .is_ok_and(|ids| ids.len() == count)
+        })
+    };
+    assert!(
+        applied(4),
+        "the leader never applied the four messages{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // The contract the module doc already states (tessari-ingest topic.rs):
+    // a node that may not write WAITS — its member is never halted by the
+    // led-elsewhere refusal. The shipped hole halted it instead; a member
+    // that halts never comes back without a re-declare.
+    let follower = (0..TOPICS_CLUSTER.len())
+        .find(|index| *index != leader)
+        .unwrap();
+    let halted = until(Duration::from_secs(30), || {
+        consumer_halted_at(TOPICS_CLUSTER[follower].0).unwrap_or(false)
+    });
+    assert!(
+        !halted,
+        "the follower's member halted instead of waiting for the leadership{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+
+    // The leader is killed; the survivors elect a new STORE leader, and the
+    // winner's member — declared at bring-up, never re-declared — keeps
+    // applying.
+    cluster.running[leader] = None;
+    let elected = until(Duration::from_secs(90), || {
+        leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None).is_some_and(|(at, _)| at != leader)
+    });
+    assert!(
+        elected,
+        "the survivors elected no new leader{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
+    );
+    let (winner, _) = leader_of(&TOPICS_CLUSTER, &cluster.ids, "STORE", None)
+        .expect("the new leader the election just produced");
+    write_at(
+        TOPICS_CLUSTER[winner].0,
+        "USE NAMESPACE prod; USE DATABASE shop; \
+         CREATE orders:'o5' = { key: 'e', order_id: 'o5', amount: 50 };",
+    );
+    assert!(
+        until(Duration::from_secs(60), || {
+            read_at(
+                TOPICS_CLUSTER[winner].0,
+                "USE NAMESPACE prod; USE DATABASE shop; SELECT id FROM order_rows;",
+            )
+            .is_ok_and(|ids| ids.len() == 5)
+        }),
+        "the failover winner never applied the fifth message without a \
+         re-declare{}",
+        what_the_nodes_said(&TOPICS_CLUSTER, &cluster.logs)
     );
 }
 
