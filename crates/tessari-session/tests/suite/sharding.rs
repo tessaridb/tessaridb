@@ -14,7 +14,7 @@ use tessari_session::RunNow;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Outcome, Session};
 use tessari_storage::Store;
-use tessari_types::Value;
+use tessari_types::{RecordId, Value};
 
 fn store() -> Store {
     Store::open(Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>)
@@ -911,4 +911,119 @@ fn a_split_of_a_table_that_is_not_split_is_refused_by_name() {
         refusal(&mut session, "ALTER TABLE notes SPLIT AT 'm';"),
         tessari_storage::Error::NotASplitTable { .. }
     ));
+}
+
+#[test]
+fn a_space_born_split_with_declared_cuts_reports_them_in_key_order() {
+    // Spaces shard by the caller's text keys, so a space can name its cuts at
+    // the declare — the born-split path a cluster operator writes.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run_now("DEFINE SPACE sessions SPLIT AT 'g', 's';")
+        .unwrap();
+    let described = report(&mut session, "INFO FOR TABLE sessions;");
+    assert_eq!(
+        shards_of(&described).expect("a born-split space reports its shards"),
+        vec![
+            (1, None, Some("'g'".to_owned())),
+            (2, Some("'g'".to_owned()), Some("'s'".to_owned())),
+            (3, Some("'s'".to_owned()), None),
+        ]
+    );
+}
+
+#[test]
+fn a_space_split_point_out_of_order_is_refused_by_position() {
+    let store = store();
+    let mut session = tenancy(&store);
+    let refused = refusal(&mut session, "DEFINE SPACE cache SPLIT AT 's', 'g';");
+    assert!(
+        matches!(
+            refused,
+            tessari_storage::Error::SplitPointsOutOfOrder { position: 2, .. }
+        ),
+        "{refused:?}"
+    );
+    assert!(session.run_now("INFO FOR TABLE cache;").is_err());
+}
+
+#[test]
+fn a_space_under_the_auto_split_default_keeps_its_declared_cuts() {
+    // The namespace default would born the space as one whole shard; a
+    // declared cut wins over the default, exactly as on a table.
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod SPLIT AUTOMATICALLY; USE NAMESPACE prod; \
+             DEFINE DATABASE shop; USE DATABASE shop;",
+        )
+        .unwrap();
+    session
+        .run_now("DEFINE SPACE sessions SPLIT AT 'g';")
+        .unwrap();
+    let described = report(&mut session, "INFO FOR TABLE sessions;");
+    assert_eq!(
+        shards_of(&described).expect("declared cuts win over the default"),
+        vec![
+            (1, None, Some("'g'".to_owned())),
+            (2, Some("'g'".to_owned()), None)
+        ]
+    );
+}
+
+#[test]
+fn the_space_definition_a_report_carries_re_creates_the_same_shards() {
+    // The definition text must round-trip the cuts: a restore that dropped
+    // them would file every key into one shard where the original routed
+    // it to three, and nothing about the restored store would say so.
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run_now("DEFINE SPACE sessions IN MEMORY MAX 500 SPLIT AT 'g', 's';")
+        .unwrap();
+    let described = report(&mut session, "INFO FOR TABLE sessions;");
+    let Value::Object(fields) = &described else {
+        panic!("expected an object, got {described:?}");
+    };
+    let Value::String(definition) = fields.get("definition").unwrap() else {
+        panic!("a definition is text: {described:?}");
+    };
+    session
+        .run_now(&format!("DROP TABLE sessions; {definition}"))
+        .unwrap();
+    let again = report(&mut session, "INFO FOR TABLE sessions;");
+    assert_eq!(
+        shards_of(&again).expect("the re-created space reports its shards"),
+        vec![
+            (1, None, Some("'g'".to_owned())),
+            (2, Some("'g'".to_owned()), Some("'s'".to_owned())),
+            (3, Some("'s'".to_owned()), None),
+        ]
+    );
+}
+
+#[test]
+fn a_space_born_split_serves_writes_and_walks_across_the_cuts() {
+    let store = store();
+    let mut session = tenancy(&store);
+    session
+        .run_now("DEFINE SPACE cache SPLIT AT 'm', 's';")
+        .unwrap();
+    session
+        .run_now("SET cache:'a' = 1; SET cache:'m1' = 2; SET cache:'s1' = 3; SET cache:'z' = 4;")
+        .unwrap();
+    match session.run_now("KEYS FROM cache;").unwrap().last() {
+        Some(Outcome::Keys(keys)) => assert_eq!(
+            keys,
+            &[
+                RecordId::from("a"),
+                RecordId::from("m1"),
+                RecordId::from("s1"),
+                RecordId::from("z")
+            ]
+        ),
+        other => panic!("expected keys, got {other:?}"),
+    }
 }

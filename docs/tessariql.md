@@ -2411,10 +2411,13 @@ re-created from it is split at the same points. A table whose map has been moved
 - Points that do not ascend strictly in key order, or a point written twice. The
   list is refused rather than sorted, because a list sorted for you accepts a
   boundary you wrote in the wrong place and says nothing.
-- `SPLIT AT` on anything but a table declared with `DEFINE TABLE`: a collection,
-  a bucket, an edge table, a vault, a queue, a view, a series, a vector or geo
-  store, and a graph's node table — a walk reaches a node from its neighbours and
-  has no span to confine it to one shard.
+- `SPLIT AT` on anything but a table declared with `DEFINE TABLE` or a space
+  declared with `DEFINE SPACE`: a collection, a bucket, an edge table, a vault,
+  a queue, a view, a series, a vector or geo store, and a graph's node table — a
+  walk reaches a node from its neighbours and has no span to confine it to one
+  shard. A space is the exception for the reason its keys are the caller's: they
+  are never generated, so the counter rule above does not apply to one, and its
+  cuts are text points a cluster operator names at the declare.
 
 **Where generated identities land.** A table declared `IDENTITY uuid` names
 records with UUID v7, whose leading bits are a timestamp — so every record the
@@ -7472,6 +7475,40 @@ DEFINE SPACE hot IN MEMORY MAX 100000;
 - Each held space keeps its keys in a map of its own. `DROP SPACE` frees that
   map as soon as the drop commits — or, when a transaction that began before
   the drop is still open, as soon as the last such transaction ends.
+
+### A space split into shards
+
+```
+DEFINE SPACE sessions SPLIT AT 'user:', 'sess:';
+INFO FOR TABLE sessions;
+```
+
+A space can be **born split** the way a table can: the clause names where each
+shard begins, in the key order a `KEYS` walk takes (text points, since a
+space's keys are text). `INFO FOR TABLE` reports the map the same way it
+reports a table's, and the `definition` it carries re-creates the space split
+at the same points.
+
+On a cluster, a space's keys are filed under the shard their key falls in, and
+a key's write is led by that shard's leader — exactly a table's routing. What
+differs from a table is how a space **gets** its map:
+
+- A space can be born split only **at the declare** (`SPLIT AT` above) or by a
+  namespace that declares `DEFINE NAMESPACE … SPLIT AUTOMATICALLY`, which born
+  every table under it with one whole shard a later `ALTER TABLE … SPLIT AT`
+  refines. A space that was created with neither holds its records in its
+  database's log, and splitting it after it has records is refused: a map
+  cannot retroactively attach to records already filed (see *Splitting and
+  merging a table that holds records*). Plan the cuts before the first key.
+- Every read of a space is a walk of one contiguous stretch of the keyspace —
+  a `KEYS` prefix, range or page — and it answers whole wherever it runs; only
+  writes concentrate on a shard's leader. A hot key (a counter, a lock) is one
+  shard's leader by construction. A hot **range** — sequential ids, timestamps
+  — is the shape identity order cannot spread: the cuts are a static snapshot
+  of a distribution that moves, and the newest shard takes every new write.
+  Name keys so the leading part varies (a tenant, a bucket) and cut on that.
+- A space held `IN MEMORY` composes with the clause the way the section above
+  says: the map routes, the leader holds the keys.
 
 ### Data structures on a space
 

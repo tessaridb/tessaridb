@@ -212,8 +212,34 @@ impl Parser<'_> {
                 self.advance();
                 let if_not_exists = self.eat_if_not_exists()?;
                 let name = self.name()?;
-                let memory = self.space_in_memory()?;
-                let limit = self.space_bound()?;
+                // The clauses compose in any order, as the table's adjectives
+                // do: each arm eats only when its word stands here, and the
+                // loop ends at the first position none of them claimed.
+                let mut memory = false;
+                let mut limit = None;
+                let mut split = None;
+                loop {
+                    let mut claimed = false;
+                    if !memory && self.peek_keyword() == Some(Keyword::In) {
+                        memory = self.space_in_memory()?;
+                        claimed = true;
+                    }
+                    if limit.is_none() && self.peek_word("max") {
+                        limit = self.space_bound()?;
+                        claimed = true;
+                    }
+                    // `SPLIT AT` — contextual words for the reason the table's
+                    // clause gives: `split` and `at` are ordinary English a
+                    // stored script may already use as names.
+                    if split.is_none() && self.eat_word("split") {
+                        self.expect_word("at", "`AT` and the identity a shard begins at")?;
+                        split = Some(self.split_points()?);
+                        claimed = true;
+                    }
+                    if !claimed {
+                        break;
+                    }
+                }
                 if memory && limit.is_none() {
                     return Err(self.error_here(
                         "`MAX n` — a space held in memory states how many keys it may hold",
@@ -224,6 +250,7 @@ impl Parser<'_> {
                     if_not_exists,
                     memory,
                     limit,
+                    split: split.unwrap_or_default(),
                 })
             }
             Some(Keyword::Graph) => {

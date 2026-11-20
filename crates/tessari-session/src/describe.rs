@@ -244,11 +244,9 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 "space `{name}` carries flags its declaring word cannot say"
             )));
         }
-        let _ = writeln!(
-            script,
-            "DEFINE SPACE {name}{};",
-            crate::kv::space_clause(declared)
-        );
+        let mut statement = format!("DEFINE SPACE {name}{}", crate::kv::space_clause(declared));
+        write_split(&mut statement, definition);
+        let _ = writeln!(script, "{statement};");
         return Ok(());
     }
     // A topic the same way, with its clauses .

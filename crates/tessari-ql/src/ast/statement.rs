@@ -295,6 +295,10 @@ pub enum StatementKind {
         memory: bool,
         /// `MAX n [EVICT NONE]` — the most keys the space holds .
         limit: Option<SpaceBound>,
+        /// `SPLIT AT …` — where the space's shards begin, when it is born
+        /// split: a space's keys are named by the caller, so the cuts are
+        /// text points a cluster operator writes at the declare.
+        split: Vec<RecordId>,
     },
     /// `DEFINE TOPIC events RETAIN 7d MAX BYTES 4096 PUBLIC RATE 100 PER 1m` —
     /// an append-only order of messages .

@@ -264,12 +264,14 @@ impl Session<'_> {
                 if_not_exists,
                 memory,
                 limit,
+                split,
             } => {
                 self.define_table(
                     transaction,
                     name,
                     TableShape {
                         kind: TableKind::Space(crate::kv::declared_space(*memory, *limit)),
+                        split: split.clone(),
                         ..TableShape::default()
                     },
                     *if_not_exists,
