@@ -1327,6 +1327,34 @@ pub enum Error {
         start: u64,
     },
 
+    /// A cross-cluster shipment starts at or below the seed position the
+    /// receiving copy declares it holds through.
+    ///
+    /// The seed's tail-half honesty, from the backup's `CutShort` pattern:
+    /// the seed declares the copy already holds everything through
+    /// `seed_at`, so a shipment whose own log starts at or below that floor
+    /// is not a tail — it overlaps the claimed snapshot, which means the
+    /// seed and the source disagree about what the copy holds. Applying it
+    /// would converge silently over a base one of the two sides is wrong
+    /// about, so it is refused naming both numbers: the shipment's start
+    /// and the seed floor. The repair is the seed's procedure again — a
+    /// fresh snapshot at a position both sides name, and a re-declared
+    /// link.
+    #[error(
+        "a shipment for link '{link}' starts at {from}, below the seed \
+         position {seed_at} the copy declares it holds through — the seed \
+         and the source disagree; take a fresh snapshot of the source and \
+         declare the link again"
+    )]
+    TailBelowSeed {
+        /// The link the shipment belongs to.
+        link: String,
+        /// The position the shipment's own log starts at.
+        from: u64,
+        /// The seed position the receiving copy declares it holds through.
+        seed_at: u64,
+    },
+
     /// A read was asked for a point the store has not reached.
     ///
     /// Serving the present instead would let the same query return one answer
@@ -1523,7 +1551,11 @@ impl Error {
             | Self::LogDivergence { .. }
             | Self::ConcurrentVersions { .. }
             | Self::AcrossDecided { .. }
-            | Self::AcrossReadTooOld { .. } => ErrorCategory::Conflict,
+            | Self::AcrossReadTooOld { .. }
+            // A seed and a shipment disagreeing about what the copy holds is
+            // a conflict between two declarations, not a broken store: the
+            // repair is the seed's procedure again, named in the refusal.
+            | Self::TailBelowSeed { .. } => ErrorCategory::Conflict,
             // The request is fine and this node is the wrong place to run it,
             // which is what a client sent to a whole holder fixes.
             Self::AcrossNotHeldHere { .. } => ErrorCategory::Validation,

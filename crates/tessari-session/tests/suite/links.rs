@@ -667,95 +667,6 @@ fn a_seeded_copy_promotes_itself_to_standby_when_it_catches_up() {
 }
 
 #[test]
-fn a_seeded_copy_promotes_at_the_intake_that_catches_it_up() {
-    // The automatic transition, measured at the apply: the declaration
-    // landed while the copy was still short of the seed position (an
-    // operator declared the floor one past what the snapshot held), and the
-    // envelope that closes the gap is the one whose intake promotes the
-    // link.
-    let source = store_with_a_link();
-    let mut writing = Session::new(&source);
-    writing
-        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
-        .unwrap();
-    let shipped = definition(&source, "east");
-    let mut sink = ChannelSink::new();
-    serve_once(&source, &shipped, source.links(), &mut sink)
-        .now()
-        .unwrap();
-    let envelopes = sink.drain();
-
-    let target = Store::open(backend()).now().unwrap();
-    for (_, envelope) in &envelopes {
-        intake(&target, envelope.clone()).now().unwrap();
-    }
-    let log = target
-        .logs()
-        .now()
-        .unwrap()
-        .into_iter()
-        .find(|log| log.home == shipped.database)
-        .expect("the copy's own log");
-    let held = target.committed_tail(log).now().unwrap();
-    // One past what the copy holds: the declaration finds it still seeding.
-    let floor = held
-        .get()
-        .checked_add(1)
-        .map(Sequence::new)
-        .expect("the floor fits");
-    let mut reading = Session::new(&target);
-    reading
-        .run_now(&format!(
-            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
-             SEED AT {floor};"
-        ))
-        .unwrap();
-    let seeding = reading.run_now("INFO FOR REPLICATION west;").unwrap();
-    let Some(tessari_session::Outcome::Value(Value::Object(report))) = seeding.into_iter().next()
-    else {
-        panic!("INFO did not answer with an object");
-    };
-    let Some(Value::Object(progress)) = report.get("progress") else {
-        panic!("no progress group: {report:?}");
-    };
-    assert_eq!(
-        progress.get("state"),
-        Some(&Value::from("seeding")),
-        "the copy is short of the floor at declaration: {progress:?}"
-    );
-    // The source writes the position the floor names; the envelope that
-    // carries it promotes the link at the apply.
-    writing
-        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
-        .unwrap();
-    let mut sink = ChannelSink::new();
-    serve_once(
-        &source,
-        &definition(&source, "east"),
-        source.links(),
-        &mut sink,
-    )
-    .now()
-    .unwrap();
-    for (_, envelope) in &sink.drain() {
-        intake(&target, envelope.clone()).now().unwrap();
-    }
-    let outcomes = reading.run_now("INFO FOR REPLICATION west;").unwrap();
-    let Some(tessari_session::Outcome::Value(Value::Object(report))) = outcomes.into_iter().next()
-    else {
-        panic!("INFO did not answer with an object");
-    };
-    let Some(Value::Object(progress)) = report.get("progress") else {
-        panic!("no progress group: {report:?}");
-    };
-    assert_eq!(
-        progress.get("state"),
-        Some(&Value::from("standby")),
-        "the intake that caught the copy up promoted the link: {progress:?}"
-    );
-}
-
-#[test]
 fn alter_replication_active_promotes_a_caught_up_standby_link() {
     // The operator's promotion: a standby link whose copy has caught up takes
     // `ALTER REPLICATION … ACTIVE` and reports `active` — the ordinary
@@ -956,6 +867,164 @@ fn an_unseeded_link_reads_active_and_the_promote_spelling_is_a_no_op() {
         panic!("no progress group: {report:?}");
     };
     assert_eq!(progress.get("state"), Some(&Value::from("active")));
+}
+
+#[test]
+fn an_own_log_shipment_from_below_the_seed_position_is_refused_and_names_the_floor() {
+    // The seed's tail-half honesty, from §C's CutShort pattern: the copy
+    // declares it holds through the seed position, so a shipment whose own
+    // log starts at or below that floor claims the snapshot the copy never
+    // took — the seed and the source disagree, and the intake refuses
+    // naming both numbers instead of silently converging over a lying base.
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let shipped = definition(&source, "east");
+    let mut sink = ChannelSink::new();
+    serve_once(&source, &shipped, source.links(), &mut sink)
+        .now()
+        .unwrap();
+    let envelopes = sink.drain();
+
+    let target = Store::open(backend()).now().unwrap();
+    for (_, envelope) in &envelopes {
+        intake(&target, envelope.clone()).now().unwrap();
+    }
+    let log = target
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == shipped.database)
+        .expect("the copy's own log");
+    let held = target.committed_tail(log).now().unwrap();
+    // The receiver overclaims: a seed position two past what its copy holds.
+    let floor = held
+        .get()
+        .checked_add(2)
+        .map(Sequence::new)
+        .expect("the floor fits");
+    let mut reading = Session::new(&target);
+    reading
+        .run_now(&format!(
+            "DEFINE REPLICATION west FROM 'cluster-a:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    // The source serves its next record from one past what the copy holds —
+    // below the floor the receiver declared.
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };")
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    let envelopes = sink.drain();
+    let (_, overlap) = envelopes
+        .iter()
+        .find(|(_, envelope)| envelope.log.home == shipped.database)
+        .expect("the source shipped its own log");
+    let refused = intake(&target, overlap.clone()).now().unwrap_err();
+    let text = refused.to_string();
+    let from = overlap.from.get().to_string();
+    let floor = floor.get().to_string();
+    assert!(
+        text.contains(&from) && text.contains(&floor),
+        "the refusal names the shipment's start and the seed floor: {text}"
+    );
+}
+
+#[test]
+fn a_seed_floor_pruned_below_refuses_the_serve_naming_the_log_start() {
+    // The seed's source-half honesty: a seeded link serves the tail from
+    // one past the seed position — and when the source has pruned its log
+    // below that floor, the read refuses BelowLogStart, naming the asked
+    // position and the log's surviving start. The far side's remedy is
+    // written in the refusal: a fresh copy of the state. (The pruner keeps
+    // a live link's confirmed floors by itself, so the disaster shape here
+    // is the honest one: the link was dropped, the log pruned past the old
+    // seed, and the link re-declared at a position the log no longer
+    // holds.)
+    let source = store_with_a_link();
+    let mut writing = Session::new(&source);
+    writing
+        .run_now("USE NAMESPACE prod DATABASE shop; CREATE orders:1 = { item: 'book' };")
+        .unwrap();
+    let held = definition(&source, "east");
+    let log = source
+        .logs()
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|log| log.home == held.database)
+        .expect("the link's own log");
+    let floor = source.committed_tail(log).now().unwrap();
+    writing
+        .run_now(&format!(
+            "DROP REPLICATION east; \
+             DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let mut sink = ChannelSink::new();
+    serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut sink,
+    )
+    .now()
+    .unwrap();
+    sink.drain();
+    // The tail moves twice; then the link is dropped — its confirmed floors
+    // die with it — and the source prunes the two records the far side
+    // never confirmed (the pruner keeps the tail record by itself, so the
+    // prune stops one below it). Re-declaring at the old seed names a floor
+    // the log no longer holds.
+    writing
+        .run_now(
+            "USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' }; \
+             CREATE orders:3 = { item: 'atlas' };",
+        )
+        .unwrap();
+    let tail = source.committed_tail(log).now().unwrap();
+    let upto = Sequence::new(tail.get().saturating_sub(1));
+    source.links().drop_link("east");
+    let pruned = source.prune_log(log, upto).now().expect("the prune lands");
+    writing.run_now("DROP REPLICATION east;").unwrap();
+    writing
+        .run_now(&format!(
+            "DEFINE REPLICATION east TO 'cluster-b:9080' FOR DATABASE prod.shop \
+             SEED AT {floor};"
+        ))
+        .unwrap();
+    let refused = serve_once(
+        &source,
+        &definition(&source, "east"),
+        source.links(),
+        &mut ChannelSink::new(),
+    )
+    .now()
+    .unwrap_err()
+    .to_string();
+    let asked = floor
+        .get()
+        .checked_add(1)
+        .map(|held| held.to_string())
+        .expect("the asked position fits");
+    let start = pruned.start.get().to_string();
+    assert!(
+        refused.contains(&asked) && refused.contains(&start),
+        "the refusal names the asked position and the log's surviving start: {refused}"
+    );
 }
 
 #[test]

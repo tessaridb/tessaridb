@@ -36,7 +36,7 @@ use tessari_encoding::{LogId, LogRecord};
 use tessari_types::Sequence;
 
 use crate::catalog::{Catalog, Reach, ReplicationDefinition};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::store::Store;
 
 /// How many records one read of a link's log asks for.
@@ -167,17 +167,32 @@ pub async fn serve_once(
     let mut shipped = 0_usize;
     for (log, _) in logs_of(store, definition.database).await? {
         let start = store.log_start(log).await?;
-        // A seeded link serves the tail from one past the seed position — in
-        // the log the position counts in, the link's own. The parent logs
-        // the reach reads re-read from their origins: the copy's already-
-        // held positions answer them as no-ops, the at-least-once price the
-        // intake's identity check already pays.
-        let start = match definition.seed_at {
-            Some(floor) if log.home == definition.database => start.max(floor),
-            _ => start,
+        // The resume point, chosen per log. A served link resumes one past
+        // what the far side has confirmed; a seeded link that has not
+        // served yet resumes one past its seed floor — the far side holds
+        // the snapshot by declaration, so the floor, not the log's own
+        // start, is what is owed; an unseeded link ships what exists, from
+        // the log's start. The read is then asked at the resume point and
+        // never past a pruned span: when the source has pruned its log
+        // below what the link still owes, `log_records` refuses
+        // `BelowLogStart`, naming the asked position and the surviving
+        // start, instead of this pass silently shipping around a hole the
+        // far side would read as caught up.
+        let floor = match definition.seed_at {
+            Some(floor) if log.home == definition.database => Some(floor),
+            _ => None,
         };
-        let confirmed = registry.confirmed(&definition.name, log, start);
-        let from = Sequence::new(confirmed.get().max(start.get()).saturating_add(1));
+        let served = registry.confirmed(&definition.name, log, Sequence::new(0));
+        let base = match (served.get() > 0, floor) {
+            (true, _) => served,
+            (false, Some(floor)) => floor,
+            (false, None) => start,
+        };
+        let from = Sequence::new(
+            base.get()
+                .max(floor.map_or(0, tessari_types::Sequence::get))
+                .saturating_add(1),
+        );
         let records = store
             .log_records_within(definition.database, log, from, BATCH)
             .await?;
@@ -408,6 +423,32 @@ impl Replicated {
 /// substrate failure. The source keeps the batch and re-reads it when the
 /// refusal is retryable; a divergence is not, and is the operator's question.
 pub async fn intake(store: &Store, envelope: Envelope) -> Result<Sequence> {
+    // The seed's tail-half honesty, checked before anything is applied: on
+    // the link's own log, a shipment that starts at or below the seed
+    // position claims the snapshot the receiving copy never took — the
+    // copy declares it holds through the seed, so the overlapping half of
+    // the shipment is a disagreement between the seed and the source, not
+    // data. Refused naming both numbers, the way a truncated backup
+    // refuses `CutShort` naming where it stopped and what it promised.
+    if let Reach::Database(namespace, database) = envelope.log.home
+        && let Some(link) = store.replicated().link_over((namespace, database))
+        && let Some(definition) = {
+            let mut reading = store.begin().await?;
+            Catalog::new(&mut reading)
+                .replications()
+                .await?
+                .into_iter()
+                .find(|held| held.name == link)
+        }
+        && let Some(seed_at) = definition.seed_at
+        && envelope.from <= seed_at
+    {
+        return Err(Error::TailBelowSeed {
+            link: definition.name,
+            from: envelope.from.get(),
+            seed_at: seed_at.get(),
+        });
+    }
     let mut applied = envelope.from;
     for (at, record) in envelope.records {
         if record.mutations().is_empty()

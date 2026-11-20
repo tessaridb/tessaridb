@@ -11833,6 +11833,19 @@ absent where it holds none — after a restart, before the first serve. A link
 declared without `SEED AT` is `active` from birth; the lifecycle is a seeded
 link's story, not a tax on every link.
 
+**The seed's two halves refuse dishonesty rather than converging over it.** A
+truncated snapshot is refused where the restore reads it — `CutShort`, naming
+where the file stopped and what it promised. A shipment whose own log starts
+at or below the seed position claims the snapshot the copy never took: the
+seed and the source disagree about what the copy holds, and the intake refuses
+naming the shipment's start and the seed floor — the repair is the seed's
+procedure again, a fresh snapshot and a re-declared link. And a source that
+has pruned its log below what the link still owes refuses the serve with
+`BelowLogStart`, naming the asked position and the surviving start: the far
+side's remedy is state, not more history. The pruner keeps a live link's
+confirmed floors by itself, so the pruned-below shape is the dropped-link
+disaster, not an accident of retention.
+
 `REPLICATION` is read as a contextual word like `REPLICA`, so a table called
 `replication` keeps its name everywhere but directly after `DEFINE`.
 
