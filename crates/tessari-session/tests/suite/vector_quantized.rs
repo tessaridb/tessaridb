@@ -311,3 +311,32 @@ fn a_store_below_format_seventeen_refuses_a_partitioned_index_and_keeps_its_form
         .map(|held| FormatVersion::decode(held.as_slice()).unwrap().get());
     assert_eq!(stamp, Some(16), "a refused define moved the format");
 }
+
+#[test]
+fn effort_names_the_probe_count_on_a_partitioned_read() {
+    // EFFORT is the probe knob (ADR-0141 D4): it names how many partitions a
+    // read probes, clamped to at least the LIMIT. On a corpus whose clusters
+    // sit in separate partitions, one probe still finds the right region —
+    // what is asserted is that the word is honoured, not that one probe is
+    // always enough.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now("DEFINE VECTOR crowd DIMENSION 3 DISTANCE euclidean PARTITIONS 8;")
+        .unwrap();
+    let mut script = String::new();
+    for n in 0..64 {
+        let side = if n % 2 == 0 { 0.0 } else { 500.0 };
+        script.push_str(&format!(
+            "CREATE crowd:{n} = {{ vector: [{side}, {side}, {}] }};\n",
+            f64::from(n % 16) * 0.1
+        ));
+    }
+    session.run_now(&script).unwrap();
+    session.run_now("REBUILD INDEX vector ON crowd;").unwrap();
+    let read = "SELECT * FROM crowd ORDER BY vector::euclidean(vector, [0.0, 0.0, 0.93]) LIMIT 3";
+    let (all, _) = ids_and_path(&mut session, &format!("{read} APPROXIMATE;"));
+    let (one, path) = ids_and_path(&mut session, &format!("{read} APPROXIMATE EFFORT 1;"));
+    assert_eq!(path, AccessPath::Approximate);
+    assert_eq!(one, all, "one probe still answers within the right region");
+}
