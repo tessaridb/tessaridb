@@ -523,17 +523,6 @@ pub enum Error {
         holds: u32,
     },
 
-    /// A partitioned vector index (ADR-0141) declared while the kind's build
-    /// path does not exist yet. The definition is refused rather than stored
-    /// unanswered for: a catalog row promising partitions the index does not
-    /// have would lie to every read that consults it. The refusal is removed
-    /// with the build path it names.
-    #[error(
-        "partitioned vector indexes are not built by this build yet — the kind is frozen (ADR-0141) \
-         and its build path lands in this goal's next wave"
-    )]
-    PartitionsUnbuilt,
-
     /// A finalize refused because a declared replica may not be able to read
     /// the format it would raise (ADR-0118 D3).
     ///

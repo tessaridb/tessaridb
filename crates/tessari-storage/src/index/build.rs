@@ -82,16 +82,64 @@ pub(crate) async fn build(
     }
 
     if let Some(distance) = definition.vector {
+        // The rows the index is built from, id-ordered by construction (the
+        // map above), which is the order training samples and the recall
+        // measurement are a function of.
+        let mut vectors: Vec<(RecordId, Vec<f64>)> = Vec::with_capacity(rows.len());
+        for (id, payload) in &rows {
+            if let Some(held) = projected_vector(definition, &decode_payload(payload)?) {
+                vectors.push((id.clone(), held));
+            }
+        }
+        if let Some(partitions) = definition.partitions {
+            // The partitioned kind (ADR-0141). Trained state and codes are
+            // derived here, where a definition lands and where a rebuild
+            // lands — one path, the graph's own argument: a definition over
+            // a populated table and one over an empty table followed by
+            // writes reach the same state.
+            let stamped = store
+                .backend()
+                .get(FormatVersionKey::keyspace(), &FormatVersionKey.encode())
+                .await?
+                .map(|held| FormatVersion::decode(held.as_slice()))
+                .transpose()?;
+            if stamped.is_none_or(|held| held < FormatVersion::PARTITIONED_INDEX) {
+                batch = batch.put(
+                    FormatVersionKey::keyspace(),
+                    FormatVersionKey.encode(),
+                    FormatVersion::PARTITIONED_INDEX.encode(),
+                );
+            }
+            let Some(trained) =
+                crate::ivf::training::train(&address, partitions, distance, &vectors)
+            else {
+                return Ok(batch);
+            };
+            batch = crate::ivf::write_trained(batch, &address, &trained);
+            for (id, vector) in &vectors {
+                let partition = crate::ivf::assign(&trained, distance, vector);
+                let Some(coded) = crate::ivf::code(&trained, vector) else {
+                    continue;
+                };
+                batch = batch.put(
+                    tessari_encoding::VectorCodeKey::keyspace(),
+                    tessari_encoding::VectorCodeKey::new(address, partition, id.clone()).encode(),
+                    coded.encode(),
+                );
+            }
+            // Measured here and nowhere else, for the reason the graph branch
+            // below states: this is the one place every stored vector is in
+            // hand, and it is reached by applying a log record, so every
+            // replica computes the same figure.
+            return crate::ivf::measure(batch, &address, &trained, distance, &vectors).await;
+        }
         // The graph is built in the commit that defines the index, the same way
         // every other index is — so a definition over a populated table and a
         // definition over an empty one followed by writes reach the same state.
         let mut graph = graph::Graph::empty(distance, definition.quantized);
         let mut written: BTreeMap<RecordId, tessari_encoding::VectorNode> = BTreeMap::new();
-        for (id, payload) in &rows {
-            let Some(held) = projected_vector(definition, &decode_payload(payload)?) else {
-                continue;
-            };
-            written.extend(graph.insert(id, held).await?);
+        for (id, held) in &vectors {
+            written.extend(graph.insert(id, held.clone()).await?);
         }
         // Measured here and nowhere else: this is the one place the whole graph
         // and every stored vector are in hand at once, and it is reached by
@@ -258,6 +306,8 @@ pub(crate) async fn clear(
         KeyKind::UniqueIndex,
         KeyKind::Posting,
         KeyKind::VectorNode,
+        KeyKind::VectorTrained,
+        KeyKind::VectorCodes,
         KeyKind::SearchStatistics,
         KeyKind::SpatialIndex,
         KeyKind::VectorRecall,

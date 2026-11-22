@@ -25,6 +25,7 @@
 
 mod containment;
 mod field_statistics;
+mod partitioned;
 mod posting;
 mod quantized;
 mod retired;
@@ -45,6 +46,7 @@ pub use containment::ContainmentKey;
 pub use field_statistics::{
     FieldAddress, FieldChanges, FieldChangesKey, FieldStatistics, FieldStatisticsKey,
 };
+pub use partitioned::{VectorCodeKey, VectorCodes, VectorTrained, VectorTrainedKey};
 use posting::take_values;
 pub use posting::{Located, Posting};
 pub use quantized::{QuantizedVector, StoredVector};

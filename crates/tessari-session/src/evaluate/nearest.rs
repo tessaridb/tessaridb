@@ -57,8 +57,24 @@ impl Session<'_> {
         else {
             return Ok(Walked::NotServed);
         };
-        let Some(graph) = transaction.vector_graph(&gated.index)? else {
-            return Ok(Walked::NotServed);
+        // The partitioned kind probes where the graph walks; the contract —
+        // laziness, ceiling, a short or cut answer declined to the exact path —
+        // is the same either way. The probe handle is taken before the
+        // admitting borrows the transaction, as the graph was.
+        enum Source {
+            Probe(tessari_storage::VectorPartitioned),
+            Graph(tessari_storage::VectorGraph),
+        }
+        let source = if gated.index.partitions.is_some() {
+            let Some(probe) = transaction.vector_partitioned(&gated.index).await? else {
+                return Ok(Walked::NotServed);
+            };
+            Source::Probe(probe)
+        } else {
+            let Some(graph) = transaction.vector_graph(&gated.index)? else {
+                return Ok(Walked::NotServed);
+            };
+            Source::Graph(graph)
         };
         let mut admitting = Admitting {
             session: self,
@@ -68,14 +84,22 @@ impl Session<'_> {
             testing,
             admitted: BTreeMap::new(),
         };
-        let matched = graph
-            .nearest_matching(
-                &gated.query,
-                plan::walked_for(wanted.wanted, gated.index.quantized),
-                wanted.effort,
-                &mut admitting,
-            )
-            .await?;
+        let window = plan::walked_for(
+            wanted.wanted,
+            gated.index.quantized || gated.index.partitions.is_some(),
+        );
+        let matched = match &source {
+            Source::Probe(probe) => {
+                probe
+                    .nearest_matching(&gated.query, window, wanted.effort, &mut admitting)
+                    .await?
+            }
+            Source::Graph(graph) => {
+                graph
+                    .nearest_matching(&gated.query, window, wanted.effort, &mut admitting)
+                    .await?
+            }
+        };
         let mut admitted = admitting.admitted;
         if matched.cut || matched.ids.len() < wanted.wanted {
             return Ok(Walked::Declined);

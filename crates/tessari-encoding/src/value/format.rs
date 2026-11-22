@@ -114,7 +114,19 @@ impl FormatVersion {
     /// pools in system table `35` (one row per pool, key `namespace:name`).
     /// A store below is opened as is and keeps its stamp, and `DEFINE POOL`
     /// refuses (`FormatNotFinalized`) until the store is finalized.
-    pub const CURRENT: Self = Self(16);
+    ///
+    /// Format 17 is the version-8 shape for the partitioned vector index kinds
+    /// (ADR-0141): key kinds `0x49` (an index's trained centroids and
+    /// codebooks) and `0x4a` (a record's product-quantized codes). An older
+    /// build would neither write them nor read them, so a store holding them
+    /// is one it must not open. A store below keeps its stamp, and a
+    /// partitioned vector index refuses (`FormatNotFinalized`) until the
+    /// store is finalized.
+    pub const CURRENT: Self = Self(17);
+
+    /// The first format whose vector indexes may be partitioned (ADR-0141).
+    /// Named for the reason [`Self::HOMED_LOG`] is.
+    pub const PARTITIONED_INDEX: Self = Self(17);
 
     /// The first format whose tables may be declared columnar (ADR-0137,
     /// ADR-0137). Named for the reason [`Self::HOMED_LOG`] is.
@@ -211,6 +223,7 @@ impl FormatVersion {
             14 => (0, 48),
             15 => (0, 50),
             16 => (0, 50),
+            17 => (0, 52),
             _ => return None,
         };
         Some(crate::NodeVersion {

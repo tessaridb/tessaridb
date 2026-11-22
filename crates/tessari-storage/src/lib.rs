@@ -54,6 +54,7 @@ mod index;
 #[cfg(test)]
 mod index_unchanged_tests;
 mod intents;
+mod ivf;
 mod landed;
 mod lapse;
 mod lease;
@@ -148,6 +149,7 @@ pub use feed::{Change, ChangeKind, Changes, History, Merged, Subject, Subscripti
 pub use feed_scan::{FeedScanState, ScannedBatch};
 pub use followers::FollowerLag;
 pub use graph::{Admit, Graph as VectorGraph, Matched, filtered_ceiling, vector_of};
+pub use ivf::Partitioned as VectorPartitioned;
 pub use lease::{GUARD as LEASE_GUARD, Lease, TTL as LEASE_TTL};
 #[cfg(feature = "test-support")]
 pub use now::{Now, now};

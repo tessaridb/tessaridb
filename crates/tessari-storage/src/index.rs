@@ -154,6 +154,14 @@ pub(crate) struct Pending {
     /// vectors of one transaction came out with no edge between them, and a
     /// later mutation's write of a shared neighbour overwrote an earlier one's.
     graphs: BTreeMap<IndexAddress, graph::Graph>,
+    /// Each partitioned index's trained state as this batch has read it.
+    ///
+    /// One point read per batch rather than per mutation, for the reason the
+    /// graphs above state: assignment is a pure function of the trained state
+    /// and the vector, so the state every mutation of one batch codes against
+    /// is the same value. `Arc` because the state is shared immutable, not
+    /// edited like a graph.
+    trained: BTreeMap<IndexAddress, std::sync::Arc<tessari_encoding::VectorTrained>>,
 }
 
 /// Move each `(surface, term)` pair of one record by `by`.

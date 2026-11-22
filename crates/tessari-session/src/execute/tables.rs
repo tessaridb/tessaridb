@@ -80,12 +80,15 @@ impl Session<'_> {
             )
             .await?;
         }
-        // The partitioned kind is frozen (ADR-0141) but its build path is not
-        // in this tree yet: refuse the definition rather than store a row
-        // whose partitions nothing builds — the refusal names the wave that
-        // removes it.
-        if shape.partitions.is_some() {
-            return Err(Error::PartitionsUnbuilt);
+        // The partitioned vector kind writes key kinds a store below format 17
+        // cannot read or clear (ADR-0141), for the reason the containment gate
+        // above states.
+        if shape.vector.is_some() && shape.partitions.is_some() {
+            self.refuse_a_format_the_store_does_not_hold(
+                "a partitioned vector index",
+                FormatVersion::PARTITIONED_INDEX,
+            )
+            .await?;
         }
         let fields = fields.iter().map(|field| field.path.clone()).collect();
         Catalog::new(transaction)

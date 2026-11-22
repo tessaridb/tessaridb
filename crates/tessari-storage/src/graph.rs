@@ -98,7 +98,7 @@ pub(crate) const GROUND: u8 = 0;
 /// for, and a recall figure describes the answers people take rather than an
 /// abstract one. It is reported beside the figure, since recall@1 and recall@10
 /// are different numbers and a percentage that did not say which is unreadable.
-const MEASURED_AT: usize = 10;
+pub(crate) const MEASURED_AT: usize = 10;
 
 /// How many queries a measurement averages over.
 ///
@@ -106,7 +106,7 @@ const MEASURED_AT: usize = 10;
 /// roughly `records × EXPLORATION`, so thirty-two is a fraction of the statement
 /// it rides on rather than a new expense. Small enough to be free, large enough
 /// that one unlucky query cannot carry the figure.
-const MEASURED_SAMPLE: usize = 32;
+pub(crate) const MEASURED_SAMPLE: usize = 32;
 
 /// The vector a value holds, if it holds one.
 ///
@@ -153,7 +153,7 @@ pub fn vector_of(value: &Value) -> Option<Vec<f64>> {
 /// Mismatched or empty vectors answer `+∞`, the same "infinitely far" the
 /// language's own distances give, so a vector of the wrong shape can never be a
 /// neighbour.
-fn separation(distance: VectorDistance, left: &[f64], right: &[f64]) -> f64 {
+pub(crate) fn separation(distance: VectorDistance, left: &[f64], right: &[f64]) -> f64 {
     if left.len() != right.len() || left.is_empty() {
         return f64::INFINITY;
     }
@@ -334,7 +334,12 @@ fn take_nearest(frontier: &mut Vec<(f64, RecordId)>) -> Option<(f64, RecordId)> 
 }
 
 /// Add a candidate to a sorted list, keeping it at most `cap` long.
-fn insert_sorted(held: &mut Vec<(f64, RecordId)>, distance: f64, id: RecordId, cap: usize) {
+pub(crate) fn insert_sorted(
+    held: &mut Vec<(f64, RecordId)>,
+    distance: f64,
+    id: RecordId,
+    cap: usize,
+) {
     let at = held
         .binary_search_by(|(theirs, other)| {
             theirs.total_cmp(&distance).then_with(|| other.cmp(&id))

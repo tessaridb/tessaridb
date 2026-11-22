@@ -38,8 +38,83 @@ impl Transaction<'_> {
             return Ok(Vec::new());
         };
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        if index.partitions.is_some() {
+            // The partitioned kind (ADR-0141): probe instead of walk. Same
+            // contract — approximate, candidates resolved at the reader's own
+            // snapshot by the caller.
+            let Some(trained) = crate::ivf::read_trained(self.store.backend(), &address).await?
+            else {
+                return Ok(Vec::new());
+            };
+            return crate::ivf::nearest(
+                self.store.backend(),
+                &address,
+                &trained,
+                distance,
+                crate::ivf::Probe {
+                    query,
+                    wanted,
+                    effort,
+                },
+            )
+            .await;
+        }
         let graph = crate::graph::Graph::read(&self.store, &address, distance, index.quantized)?;
         graph.nearest(query, wanted, effort).await
+    }
+
+    /// The probe handle of one partitioned vector index, if it holds any.
+    ///
+    /// What a filtered read drives instead of the graph
+    /// [`Self::vector_graph`] hands over: `None` covers a non-partitioned
+    /// index and one whose build wrote no trained state (an empty table), and
+    /// the session answers those exactly, as it answers a short or cut probe.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub async fn vector_partitioned(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<crate::VectorPartitioned>> {
+        let Some(distance) = index.vector else {
+            return Ok(None);
+        };
+        if index.partitions.is_none() {
+            return Ok(None);
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        let Some(trained) = crate::ivf::read_trained(self.store.backend(), &address).await? else {
+            return Ok(None);
+        };
+        Ok(Some(crate::ivf::Partitioned::new(
+            std::sync::Arc::clone(self.store.engine()),
+            address,
+            trained,
+            distance,
+        )))
+    }
+
+    /// The trained state of one partitioned vector index, if it holds any.
+    ///
+    /// What a filtered probe needs instead of the graph the unfiltered twin
+    /// asks [`Self::vector_graph`] for. `None` covers a non-partitioned index
+    /// and one never built.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the backend fails or the stored value cannot be
+    /// decoded.
+    pub async fn vector_trained(
+        &self,
+        index: &IndexDefinition,
+    ) -> Result<Option<tessari_encoding::VectorTrained>> {
+        if index.vector.is_none() || index.partitions.is_none() {
+            return Ok(None);
+        }
+        let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        crate::ivf::read_trained(self.store.backend(), &address).await
     }
 
     /// The graph a vector index is, read whole, for a walk the caller drives.
@@ -83,6 +158,34 @@ impl Transaction<'_> {
             return Ok(None);
         }
         let address = IndexAddress::new(index.namespace, index.database, index.table, index.id);
+        if index.partitions.is_some() {
+            // The partitioned kind keeps codes where the graph keeps nodes;
+            // the footprint figure is read off the stored values either way.
+            // One index prefix covers every partition's codes.
+            let whole = address.prefix(tessari_encoding::KeyKind::VectorCodes);
+            let request = tessari_kv::ScanRequest {
+                keyspace: tessari_encoding::VectorCodeKey::keyspace(),
+                range: tessari_kv::KeyRange::prefix(&whole),
+                direction: tessari_kv::ScanDirection::Forward,
+                limit: None,
+            };
+            let (mut nodes, mut bytes, mut vector) = (0_u64, 0_u64, 0_u64);
+            for (_, value) in self.store.backend().scan(&request).await? {
+                let _ = tessari_encoding::VectorCodes::decode(value.as_slice())?;
+                nodes = nodes.saturating_add(1);
+                bytes =
+                    bytes.saturating_add(u64::try_from(value.as_slice().len()).unwrap_or(u64::MAX));
+                // The stored value is the codes, header included — the same
+                // "what the encoding costs on disk" the graph's figure states.
+                vector = vector
+                    .saturating_add(u64::try_from(value.as_slice().len()).unwrap_or(u64::MAX));
+            }
+            return Ok(bytes.checked_div(nodes).and_then(|average| {
+                vector
+                    .checked_div(nodes)
+                    .map(|per_vector| (nodes, average, per_vector))
+            }));
+        }
         let prefix = tessari_encoding::VectorNodeKey::level_prefix(&address, crate::graph::GROUND);
         let request = tessari_kv::ScanRequest {
             keyspace: tessari_encoding::VectorNodeKey::keyspace(),

@@ -323,7 +323,13 @@ impl Session<'_> {
             return Ok(None);
         };
         let mut rows = Vec::new();
-        let window = plan::walked_for(wanted.wanted, gated.index.quantized);
+        // Partitioned codes are lossier than per-vector codes; they take the
+        // same rescore window the quantized kind takes (codes choose who is
+        // tried, full vectors decide the order).
+        let window = plan::walked_for(
+            wanted.wanted,
+            gated.index.quantized || gated.index.partitions.is_some(),
+        );
         for id in transaction
             .records_by_vector(&gated.index, &gated.query, window, wanted.effort)
             .await?

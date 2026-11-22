@@ -173,6 +173,12 @@ pub enum KeyKind {
     /// value — what lets reclamation find the versions whose provenance it
     /// folds away with the transaction's markers (ADR-0112, Q-922).
     ResolvedOf,
+    /// The trained state one partitioned vector index derived: its centroids
+    /// and its product-quantizer codebooks (ADR-0141 D1).
+    VectorTrained,
+    /// One record's product-quantized codes, keyed by partition then record,
+    /// so one partition is a prefix range (ADR-0141).
+    VectorCodes,
 }
 
 impl KeyKind {
@@ -230,6 +236,8 @@ impl KeyKind {
         Self::AcrossUnsettled,
         Self::AcrossBarred,
         Self::ResolvedOf,
+        Self::VectorTrained,
+        Self::VectorCodes,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -292,6 +300,8 @@ impl KeyKind {
             Self::AcrossUnsettled => 0x53,
             Self::AcrossBarred => 0x54,
             Self::ResolvedOf => 0x55,
+            Self::VectorTrained => 0x49,
+            Self::VectorCodes => 0x4a,
         }
     }
 
@@ -323,7 +333,9 @@ impl KeyKind {
             | Self::SearchSurface
             | Self::TopicBytes
             | Self::Containment
-            | Self::RetiredIndex => Keyspace::INDEX,
+            | Self::RetiredIndex
+            | Self::VectorTrained
+            | Self::VectorCodes => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -407,6 +419,8 @@ impl KeyKind {
             Self::AcrossUnsettled => "across-unsettled",
             Self::AcrossBarred => "across-barred",
             Self::ResolvedOf => "resolved-of",
+            Self::VectorTrained => "vector-trained",
+            Self::VectorCodes => "vector-codes",
         }
     }
 
@@ -515,6 +529,8 @@ mod tests {
             (KeyKind::AcrossUnsettled, 0x53),
             (KeyKind::AcrossBarred, 0x54),
             (KeyKind::ResolvedOf, 0x55),
+            (KeyKind::VectorTrained, 0x49),
+            (KeyKind::VectorCodes, 0x4a),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

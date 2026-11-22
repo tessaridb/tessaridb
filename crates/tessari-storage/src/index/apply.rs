@@ -17,6 +17,52 @@ pub(super) async fn apply_one(
     );
 
     if let Some(distance) = definition.vector {
+        if definition.partitions.is_some() {
+            // The partitioned kind maintains itself against the trained state
+            // a build stored — it never re-trains (ADR-0141 D1). Assignment is
+            // a pure function of that state and the vector, so both sides of
+            // a change recompute the partition from the vector they hold:
+            // the old side deletes exactly the key the old vector wrote, with
+            // no read back, and the graph's orphan reasoning holds verbatim.
+            let trained = match pending.trained.entry(address) {
+                std::collections::btree_map::Entry::Occupied(held) => {
+                    std::sync::Arc::clone(held.into_mut())
+                }
+                std::collections::btree_map::Entry::Vacant(empty) => {
+                    let Some(held) = crate::ivf::read_trained(store.backend(), &address).await?
+                    else {
+                        // Nothing trained against yet (an index built over an
+                        // empty table codes nothing until its first rebuild),
+                        // so there is nothing to remove either.
+                        return Ok(batch);
+                    };
+                    std::sync::Arc::clone(empty.insert(std::sync::Arc::new(held)))
+                }
+            };
+            if let Some(bytes) = previous
+                && let Some(vector) = projected_vector(definition, &decode_payload(bytes)?)
+            {
+                let partition = crate::ivf::assign(&trained, distance, &vector);
+                batch = batch.delete(
+                    tessari_encoding::VectorCodeKey::keyspace(),
+                    tessari_encoding::VectorCodeKey::new(address, partition, mutation.id.clone())
+                        .encode(),
+                );
+            }
+            if let RecordValue::Present(payload) = mutation.value.value()
+                && let Some(vector) = projected_vector(definition, &decode_payload(payload)?)
+                && let Some(coded) = crate::ivf::code(&trained, &vector)
+            {
+                let partition = crate::ivf::assign(&trained, distance, &vector);
+                batch = batch.put(
+                    tessari_encoding::VectorCodeKey::keyspace(),
+                    tessari_encoding::VectorCodeKey::new(address, partition, mutation.id.clone())
+                        .encode(),
+                    coded.encode(),
+                );
+            }
+            return Ok(batch);
+        }
         // The graph is read from committed state once per batch and edited,
         // then the nodes each edit touched are written; a node touched twice is
         // written twice and the later write, which holds both edits, lands last.
