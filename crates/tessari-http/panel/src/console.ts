@@ -31,6 +31,7 @@ import * as node from "./node.js";
 import * as password from "./password.js";
 import * as query from "./query.js";
 import * as search from "./search.js";
+import * as security from "./security.js";
 import * as session from "./session.js";
 import * as shortcuts from "./shortcuts.js";
 import * as tabs from "./tabs.js";
@@ -74,6 +75,7 @@ shortcuts.wire();
 formation.wire();
 trust.wire();
 grants.wire();
+security.wire();
 drawer.wire();
 detail.wire();
 

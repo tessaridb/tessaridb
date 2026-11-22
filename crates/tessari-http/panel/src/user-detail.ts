@@ -41,7 +41,15 @@ function holdings(one: Record<string, unknown>): Held[] {
     // only an account confined to one database can supply. Anybody else's is
     // offered with the name alone and the dialog asks for the rest.
     const full = namespace !== null && database !== null ? `${namespace}.${database}.${table}` : table;
-    out.push({ kind: "table grant", what: words(fields["verbs"]), on: full, reach: "table" });
+    // A guarded grant says so beside the verbs — the predicate is the half
+    // an operator reading the list is looking for.
+    const guard = typeof fields["guard"] === "string" ? ` WHERE (${fields["guard"]})` : "";
+    out.push({
+      kind: "table grant",
+      what: words(fields["verbs"]) + guard,
+      on: full,
+      reach: "table",
+    });
   }
   for (const authority of Array.isArray(one["authorities"]) ? one["authorities"] : []) {
     if (typeof authority !== "object" || authority === null) continue;

@@ -36,6 +36,7 @@ export const DESTINATIONS: readonly Destination[] = [
   { name: "topics", label: "Topics" },
   { name: "cluster", label: "Cluster" },
   { name: "access", label: "Access" },
+  { name: "security", label: "Security" },
   { name: "this-node", label: "This node" },
   { name: "backup", label: "Backup" },
   { name: "vault", label: "Vault" },

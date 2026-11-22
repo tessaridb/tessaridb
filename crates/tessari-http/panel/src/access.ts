@@ -223,6 +223,11 @@ const grantDialog = (): Node =>
     ),
     row(
       "default",
+      field(
+        "Rows",
+        text("grant-rows", { placeholder: "tenant = 'a' — optional" }),
+        { id: "grant-rows-field", class: "wide" },
+      ),
       field("Why", text("grant-why", { placeholder: "joining the billing rota" }), {
         class: "wide",
       }),

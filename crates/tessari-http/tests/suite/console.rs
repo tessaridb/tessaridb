@@ -1177,7 +1177,7 @@ fn no_screen_but_run_asks_the_operator_to_read_a_statement() {
 
 #[cfg(feature = "console")]
 #[test]
-fn the_eight_destinations_are_named_for_the_jobs_and_there_are_eight() {
+fn the_nine_destinations_are_named_for_the_jobs_and_there_are_nine() {
     // S3.2's own measurement. Renaming the destinations passed every test this
     // suite had, because they all assert that a tab and a pane AGREE — which
     // stays true whatever the tab is called. The labels are the criterion, so
@@ -1189,7 +1189,9 @@ fn the_eight_destinations_are_named_for_the_jobs_and_there_are_eight() {
     // asked for by the owner for G042 and recorded in `destinations.ts` — and the
     // sixth, Backup, was the same trade asked for again (2026-09-30), and the
     // seventh, Vault, once more (G048, 2026-09-30). The eighth, Data, is the trade
-    // made on the owner's G071 request for a page of databases and tables.
+    // made on the owner's G071 request for a page of databases and tables. The
+    // ninth, Security, is the trade asked for again (G094 SG5, 2026-11-22) — the
+    // row-guard surface: which tables enforce, and the switch beside them.
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");
@@ -1212,11 +1214,12 @@ fn the_eight_destinations_are_named_for_the_jobs_and_there_are_eight() {
             "Topics",
             "Cluster",
             "Access",
+            "Security",
             "This node",
             "Backup",
             "Vault"
         ],
-        "the destinations no longer name the jobs, or a ninth has arrived"
+        "the destinations no longer name the jobs, or a tenth has arrived"
     );
 }
 
