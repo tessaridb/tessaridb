@@ -122,6 +122,7 @@ function draw(list: readonly Guarded[]): void {
     grant.dataset["grant"] = one.name;
     actions.appendChild(grant);
   }
+  host.appendChild(table);
 }
 
 /** Read the tables and their guard state, and draw them. */

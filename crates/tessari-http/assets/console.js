@@ -2857,6 +2857,9 @@ Shown once. The node keeps only its digest.`);
     topics: ["M4 6h16", "M4 12h10", "M4 18h13", "M19 10.5l2 1.5-2 1.5"],
     cluster: [ring(6, 7, 2.5), ring(18, 7, 2.5), ring(12, 18, 2.5), "M8.5 7h7", "M7.3 9.2l3.4 6.6", "M16.7 9.2l-3.4 6.6"],
     access: [ring(8, 15, 4), "M10.8 12.2L20 3", "M16 7l3 3", "M18.5 4.5l2 2"],
+    // A shield: row security guards the rows, and the destination's icon says
+    // so before the label is read. Same outline family, 24px grid, stroke 2.
+    security: ["M12 3l7.5 3v5.5c0 4.5-3 8-7.5 9.5-4.5-1.5-7.5-5-7.5-9.5V6z", "M9 12l2.2 2.2L15.5 10"],
     "this-node": [box(3, 4, 18, 7, 2), box(3, 13, 18, 7, 2), "M7 7.5h.01", "M7 16.5h.01"],
     backup: ["M4 7.5l8-4 8 4-8 4z", "M4 12l8 4 8-4", "M4 16.5l8 4 8-4"],
     vault: [box(4, 11, 16, 10, 2), "M8 11V7.5a4 4 0 0 1 8 0V11", "M12 15v2"],
@@ -4516,6 +4519,7 @@ Shown once. The node keeps only its digest.`);
       grant.dataset["grant"] = one2.name;
       actions.appendChild(grant);
     }
+    host.appendChild(table);
   }
   async function read() {
     say("security-status", "asking…");
