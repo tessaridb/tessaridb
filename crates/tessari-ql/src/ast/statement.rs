@@ -1211,6 +1211,13 @@ pub enum StatementKind {
         /// The same rule the grant has one level up: what is named is the whole
         /// story, and naming nothing names no limit.
         fields: Vec<Name>,
+        /// The rows the grant reaches, or `None` for every row the table holds.
+        ///
+        /// A TessariQL predicate over the record's fields (ADR-0140): the grant
+        /// narrows twice, first to a table, then to the rows of it. Kept as the
+        /// source text beside the parsed form, because the catalog stores text
+        /// and the parsed form is what a statement is validated with.
+        guard: Option<RowGuard>,
         /// Who it is for.
         user: Name,
     },
@@ -2643,6 +2650,20 @@ pub struct RollupCompute {
     pub rank: Option<tessari_types::Number>,
     /// The name the value answers under.
     pub name: Name,
+}
+
+/// The rows a [`StatementKind::Grant`] reaches (ADR-0140).
+///
+/// The source text is authoritative — it is what the catalog stores — and the
+/// parsed form is what the granting statement is validated with before the
+/// grant is written. Carrying both saves a second parse at every use and makes
+/// a stored guard answerable byte-for-byte.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowGuard {
+    /// The predicate exactly as written, without the surrounding parentheses.
+    pub text: String,
+    /// Its parsed form over the record's fields.
+    pub predicate: Expr,
 }
 
 /// A 256-bit key presented for a vault in keyed custody (ADR-0136).

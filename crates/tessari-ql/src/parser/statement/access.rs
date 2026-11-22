@@ -4,8 +4,8 @@ use super::Parser;
 use tessari_types::Number;
 
 use crate::ast::{
-    AutoSplit, Credential, Name, NamespaceChange, Password, ReachRef, StatementKind, StoreKind,
-    TableChange, UserChange, UserGrant,
+    AutoSplit, Credential, Name, NamespaceChange, Password, ReachRef, RowGuard, StatementKind,
+    StoreKind, TableChange, UserChange, UserGrant,
 };
 use crate::error::Result;
 use crate::token::{Keyword, Punct, Token};
@@ -163,6 +163,25 @@ impl Parser<'_> {
                 };
                 return Ok(StatementKind::AlterTable { table, change });
             }
+            // ADR-0140. `enable`/`disable` contextual, as every verb here but
+            // `ALTER`; `ROW SECURITY` is the fixed tail, so the shape cannot be
+            // mistaken for a field or shard verb.
+            if self.eat_word("enable") {
+                self.expect_word("row", "`ROW` after `ENABLE`")?;
+                self.expect_word("security", "`SECURITY` after `ENABLE ROW`")?;
+                return Ok(StatementKind::AlterTable {
+                    table,
+                    change: TableChange::EnableRowSecurity,
+                });
+            }
+            if self.eat_word("disable") {
+                self.expect_word("row", "`ROW` after `DISABLE`")?;
+                self.expect_word("security", "`SECURITY` after `DISABLE ROW`")?;
+                return Ok(StatementKind::AlterTable {
+                    table,
+                    change: TableChange::DisableRowSecurity,
+                });
+            }
             // ADR-0095. `split` and `at` contextual, as in `DEFINE TABLE`; a
             // point is a literal for the reason `split_points` gives.
             if self.eat_word("split") {
@@ -308,11 +327,20 @@ impl Parser<'_> {
                     fields.push(self.name()?);
                 }
             }
+            // ADR-0140. `WHERE ( … )` narrows the rows the grant reaches, in
+            // the same position the same clause sits in a read: after what is
+            // being narrowed, before who it is for.
+            let guard = if self.eat_keyword(Keyword::Where) {
+                Some(self.row_guard()?)
+            } else {
+                None
+            };
             self.expect_keyword(Keyword::To, "`TO` and the user")?;
             return Ok(StatementKind::Grant {
                 verbs,
                 table,
                 fields,
+                guard,
                 user: self.name()?,
             });
         }
@@ -322,6 +350,24 @@ impl Parser<'_> {
             table,
             user: self.name()?,
         })
+    }
+
+    /// `WHERE ( <predicate> )` on a grant — the rows it reaches (ADR-0140).
+    ///
+    /// Read as a condition, because a bare name here is a route into the
+    /// record the way it is in a `WHERE` clause, not a table. The text is kept
+    /// beside the parsed form because the catalog stores what the author typed
+    /// (the same contract [`Parser::written_expression`] keeps).
+    fn row_guard(&mut self) -> Result<RowGuard> {
+        self.expect_punct(Punct::ParenOpen, "`(` and the row predicate")?;
+        let predicate = self.condition()?;
+        self.expect_punct(Punct::ParenClose, "`)` — the predicate is one expression")?;
+        let text = self
+            .source
+            .get(predicate.span.start..predicate.span.end)
+            .unwrap_or_default()
+            .to_owned();
+        Ok(RowGuard { text, predicate })
     }
 
     /// A reach, when the next token opens one, and nothing consumed when not.

@@ -767,10 +767,18 @@ impl Session<'_> {
                 verbs,
                 table,
                 fields,
+                guard,
                 user,
             } => {
-                self.grant(transaction, verbs, table, fields, user, span)
-                    .await
+                self.grant(
+                    transaction,
+                    verbs,
+                    table,
+                    (fields, guard.as_ref()),
+                    user,
+                    span,
+                )
+                .await
             }
             StatementKind::Revoke { verbs, table, user } => {
                 self.revoke(transaction, verbs, table, user, span).await
@@ -1104,6 +1112,15 @@ impl Session<'_> {
                     TableChange::SplitManually => {
                         Catalog::new(transaction)
                             .set_auto_split(id, tessari_storage::AutoSplitSetting::Off)
+                            .await?;
+                        return Ok(Outcome::Done);
+                    }
+                    TableChange::EnableRowSecurity | TableChange::DisableRowSecurity => {
+                        // ADR-0140. The switch is the declarative knob; the
+                        // guards themselves are grant rows and live where
+                        // grants live. Flipping it never touches the rows.
+                        Catalog::new(transaction)
+                            .set_row_security(id, matches!(change, TableChange::EnableRowSecurity))
                             .await?;
                         return Ok(Outcome::Done);
                     }

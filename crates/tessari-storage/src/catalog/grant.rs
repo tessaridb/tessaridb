@@ -37,6 +37,7 @@ const FIELD_USER: &str = "user";
 const FIELD_TABLE: &str = "table";
 const FIELD_VERBS: &str = "verbs";
 const FIELD_FIELDS: &str = "fields";
+const FIELD_GUARD: &str = "guard";
 
 const ENTITY: &str = "grant";
 
@@ -57,6 +58,14 @@ pub struct GrantDefinition {
     /// stored set that depends on the order somebody typed it in is two values
     /// for one fact.
     pub fields: Vec<String>,
+    /// The rows the grant reaches, as the predicate text it was granted with
+    /// (ADR-0140), or `None` for every row the table holds.
+    ///
+    /// Absent rather than empty in a store written before guards existed, which
+    /// reads as no row restriction — the same additive contract `fields` keeps.
+    /// The text is the authority; the parsed form lives only in a session's
+    /// compiled-predicate cache.
+    pub guard: Option<String>,
 }
 
 impl GrantDefinition {
@@ -73,7 +82,7 @@ impl GrantDefinition {
     /// The value written to the catalog.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        Value::Object(BTreeMap::from([
+        let mut fields = BTreeMap::from([
             (FIELD_USER.to_owned(), number(self.user)),
             (FIELD_TABLE.to_owned(), number(self.table.get())),
             (
@@ -94,7 +103,11 @@ impl GrantDefinition {
                         .collect(),
                 ),
             ),
-        ]))
+        ]);
+        if let Some(guard) = &self.guard {
+            fields.insert(FIELD_GUARD.to_owned(), Value::from(guard.as_str()));
+        }
+        Value::Object(fields)
     }
 
     /// Read one back.
@@ -139,11 +152,19 @@ impl GrantDefinition {
         }
         fields.sort_unstable();
         fields.dedup();
+        // Absent rather than empty in a store written before guards existed,
+        // which reads as no row restriction — the same contract `fields` keeps.
+        let guard = match fields_in.get(FIELD_GUARD) {
+            Some(Value::String(text)) => Some(text.clone()),
+            Some(_) => return Err(malformed(FIELD_GUARD, "not a string")),
+            None => None,
+        };
         Ok(Self {
             user,
             table,
             verbs,
             fields,
+            guard,
         })
     }
 }
@@ -184,6 +205,7 @@ impl Catalog<'_, '_> {
         table: TableId,
         verbs: &[Verb],
         fields: &[String],
+        guard: Option<&str>,
     ) -> Result<GrantDefinition> {
         let mut verbs = verbs.to_vec();
         verbs.sort_unstable();
@@ -196,6 +218,7 @@ impl Catalog<'_, '_> {
             table,
             verbs,
             fields,
+            guard: guard.map(str::to_owned),
         };
         self.transaction.put(
             system::address(system::GRANTS, GrantDefinition::identity(user, table)),

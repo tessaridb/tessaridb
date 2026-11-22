@@ -38,7 +38,7 @@ pub use ast::{
     Name, NamespaceChange, Neighbour, Nulls, OnConflict, OnDelete, OnFailure, Ordering, Outer,
     ParameterSlot, Password, PathTo, Presence, Projected, Projection, RangeEnd, RangeExpr,
     ReachRef, RecordTarget, Reference, ReplicaChange, ReplicationChange, Retention, RollupCompute,
-    ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
+    RowGuard, ScoreCompare, ScoreRange, Script, SearchAsk, SearchCosts, SearchField, SearchMember,
     SearchOperator, Select, SetBound, SetCondition, SetOperation, Source, SpaceBound, Statement,
     StatementKind, StoreKind, StructureOp, TableChange, TableExpiry, TableRef, Timeout,
     TopicClauses, TopologyChange, TopologyRealm, TrimBound, UserChange, UserGrant, Using, VaultKey,

@@ -581,3 +581,79 @@ fn a_write_only_grant_does_not_answer_or_select_records_through_a_write() {
     let held = root.run_now("SELECT * FROM staff:1;").unwrap();
     assert_eq!(held.last().unwrap().records().unwrap().len(), 1);
 }
+
+/// A grant names the rows it reaches, the table switch turns enforcement on,
+/// and both survive a reopen exactly as written (ADR-0140, SG2: the grammar
+/// and the catalog; enforcement itself is SG3 and not asserted here).
+#[test]
+fn a_guarded_grant_and_the_switch_round_trip() {
+    // The backend is held beside the store so the reopen below can answer
+    // from the same bytes — the catalog, not the session, is the authority.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut root = {
+        let mut setup = Session::new(&store);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 3 };\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+        let mut root = Session::new(&store);
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+            .unwrap();
+        root
+    };
+    // Both spellings parse; the grant stores the predicate text it was given.
+    root.run_now("GRANT read ON orders WHERE (total > 10) TO ada;")
+        .unwrap();
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+
+    let described = root.run_now("INFO FOR USER ada;").unwrap();
+    let text = format!("{described:?}");
+    assert!(text.contains("total > 10"), "guard text lost: {text}");
+
+    let table = root.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(text.contains("row_security"), "switch not reported: {text}");
+    assert!(text.contains("true"), "switch not on: {text}");
+
+    // DISABLE parses and lands too.
+    root.run_now("ALTER TABLE orders DISABLE ROW SECURITY;")
+        .unwrap();
+    let table = root.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(text.contains("false"), "switch not off: {text}");
+
+    // A reopen finds the guard and the switch as written — the catalog is the
+    // authority, memory was never the record.
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+    drop(root);
+    drop(store);
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut again = Session::new(&reopened);
+    again.sign_in("root", PASSWORD).now().unwrap();
+    again
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let table = again.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(
+        text.contains("true"),
+        "switch did not survive reopen: {text}"
+    );
+    let described = again.run_now("INFO FOR USER ada;").unwrap();
+    let text = format!("{described:?}");
+    assert!(
+        text.contains("total > 10"),
+        "guard did not survive reopen: {text}"
+    );
+}

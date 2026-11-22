@@ -5,11 +5,11 @@ use super::{
     EdgeDeclaration, FIELD_AUTO_SPLIT, FIELD_BUCKET, FIELD_CEILING, FIELD_COLLECTION,
     FIELD_CONFLICT, FIELD_DATABASE, FIELD_EDGE, FIELD_ENDPOINTS, FIELD_EVENTS, FIELD_EXPIRE,
     FIELD_FEEDS, FIELD_GEO, FIELD_GRAPH, FIELD_ID, FIELD_IDENTITY, FIELD_NAME, FIELD_NAMESPACE,
-    FIELD_PARTITION, FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_SCHEMAFULL, FIELD_SERIES,
-    FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_STORAGE_KIND, FIELD_TOPIC, FIELD_VAULT,
-    FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration, StoredKind, TableKind,
-    VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration, byte_count, ceiling,
-    field_id, field_name, flag, identity_kind, number, object, storage_kind,
+    FIELD_PARTITION, FIELD_QUEUE, FIELD_REFERENCED_BY, FIELD_ROW_SECURITY, FIELD_SCHEMAFULL,
+    FIELD_SERIES, FIELD_SHARDS, FIELD_SPACE, FIELD_SPREAD, FIELD_STORAGE_KIND, FIELD_TOPIC,
+    FIELD_VAULT, FIELD_VECTOR, FIELD_VIEW, QueueDeclaration, SeriesDeclaration, StoredKind,
+    TableKind, VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration, byte_count,
+    ceiling, field_id, field_name, flag, identity_kind, number, object, storage_kind,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -152,6 +152,10 @@ pub struct TableDefinition {
     /// Whether a generated identity begins with a bucket (`IDENTITY uuid
     /// SPREAD`, ADR-0113 D1); written only when set.
     pub spread: bool,
+    /// Whether row guards are enforced on this table (ADR-0140); written only
+    /// when on, so every entry without the field is the unguarded table it
+    /// always was, byte for byte.
+    pub row_security: bool,
     /// How the table comes by its balancing policy, when it does
     /// (`ALTER TABLE … SPLIT AUTOMATICALLY`, ADR-0113 D2). A policy is
     /// written as its bounds, a stated `SPLIT MANUALLY` as a stored null, and
