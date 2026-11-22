@@ -2742,3 +2742,151 @@ fn catalog_names(store: &Store) -> Vec<String> {
     found.sort();
     found
 }
+
+/// A partitioned vector index's trained state and codes are derived at apply
+/// time, so a replica that replays the log must derive byte-identical state —
+/// G095 C3's parity property. The comparison is raw bytes (the same claim
+/// `replay_into_an_empty_store_reproduces_it_byte_for_byte` makes for every
+/// other derived entry), and the answers a probe serves are compared on top,
+/// which is the property a reader actually meets.
+#[test]
+fn a_partitioned_vector_index_replays_byte_for_byte_and_answers_alike() {
+    use tessari_storage::{IndexShape, VectorDistance};
+
+    let source_backend = backend();
+    let source = store_on(&source_backend);
+    let (_namespace, _database, table, index) = {
+        let mut transaction = source.begin().now().unwrap();
+        let mut catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.create_namespace("prod").now().unwrap();
+        let database = catalog
+            .create_database(namespace.id, "vectors")
+            .now()
+            .unwrap();
+        let table = catalog
+            .create_table(namespace.id, database.id, "corpus", TableShape::default())
+            .now()
+            .unwrap();
+        let index = catalog
+            .create_index(
+                table.id,
+                "by_vector",
+                vec![tessari_types::Path::field("vector")],
+                IndexShape {
+                    vector: Some(VectorDistance::Euclidean),
+                    partitions: Some(8),
+                    ..IndexShape::default()
+                },
+            )
+            .now()
+            .unwrap();
+        transaction.commit().now().unwrap();
+        (namespace.id, database.id, table.id, index)
+    };
+
+    let payload = |at: u32| {
+        let side = if at.is_multiple_of(2) { 0.0 } else { 500.0 };
+        let third = side + f64::from(at % 16) * 0.1;
+        encode_payload(&FieldValue::Object({
+            let mut held = BTreeMap::new();
+            held.insert(
+                "vector".to_owned(),
+                FieldValue::Array(vec![
+                    FieldValue::Number(tessari_types::Number::Float(side)),
+                    FieldValue::Number(tessari_types::Number::Float(third)),
+                ]),
+            );
+            held
+        }))
+        .as_slice()
+        .to_vec()
+    };
+    for n in 0..128 {
+        let mut transaction = source.begin().now().unwrap();
+        transaction.put(at(&format!("r{n}")), payload(n));
+        transaction.commit().now().unwrap();
+    }
+    // Churn after the writes, then the rebuild that trains and measures: a
+    // replica replays exactly this shape — definitions, writes, a rebuild.
+    for n in 0..16 {
+        let mut transaction = source.begin().now().unwrap();
+        transaction.put(at(&format!("r{n}")), payload(n + 200));
+        transaction.commit().now().unwrap();
+    }
+    for n in 16..24 {
+        delete(&source, &format!("r{n}"));
+    }
+    {
+        let mut transaction = source.begin().now().unwrap();
+        Catalog::new(&mut transaction).rebuild_index(&index);
+        transaction.commit().now().unwrap();
+    }
+
+    let replica_backend = backend();
+    let replica = store_on(&replica_backend);
+    crate::replay(&source, &replica);
+
+    let node_identity = Key::from(vec![0x38]);
+    for keyspace in [Keyspace::INDEX, Keyspace::META] {
+        let derived = |backend: &Arc<dyn KvBackend>| {
+            dump(backend, keyspace)
+                .into_iter()
+                .filter(|(key, _)| *key != node_identity)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            derived(&source_backend),
+            derived(&replica_backend),
+            "keyspace {keyspace} differs after replay — a replica derived different index state"
+        );
+    }
+
+    // The property a reader meets: the same answers, probe for probe. The
+    // replica's own definition is read back, as a promoted follower would.
+    let answers = |store: &Store| -> Vec<Vec<tessari_types::RecordId>> {
+        let mut transaction = store.begin().now().unwrap();
+        let definition = Catalog::new(&mut transaction)
+            .field_indexes_on(table)
+            .now()
+            .unwrap()
+            .into_iter()
+            .find(|held| held.partitions.is_some())
+            .expect("the partitioned index");
+        let mut held = Vec::new();
+        for n in 0..32_u32 {
+            let query = [f64::from(n % 2) * 500.0, f64::from(n % 16) * 0.1];
+            held.push(
+                transaction
+                    .records_by_vector(&definition, &query, 10, None)
+                    .now()
+                    .unwrap(),
+            );
+        }
+        held
+    };
+    assert_eq!(
+        answers(&source),
+        answers(&replica),
+        "two replicas of one log answered one question differently"
+    );
+
+    // Re-seed: a follower that replays what it already holds — the re-seeded
+    // case — derives the same bytes a second time, and a third store seeded
+    // from the same log agrees byte for byte too.
+    crate::replay(&source, &replica);
+    let reseeded_backend = backend();
+    let reseeded = store_on(&reseeded_backend);
+    crate::replay(&source, &reseeded);
+    let derived = |backend: &Arc<dyn KvBackend>| {
+        dump(backend, Keyspace::INDEX)
+            .into_iter()
+            .filter(|(key, _)| *key != node_identity)
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        derived(&source_backend),
+        derived(&reseeded_backend),
+        "a re-seeded replica derived different index state"
+    );
+    assert_eq!(answers(&source), answers(&reseeded));
+}
