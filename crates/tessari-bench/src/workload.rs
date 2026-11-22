@@ -97,6 +97,11 @@ pub const ALL: &[Workload] = &[
         run: crate::concurrent::concurrent,
     },
     Workload {
+        name: "guards",
+        about: "row-guard overhead — full-table sweeps as a guarded and an unguarded reader over 100 000 records: the per-record cost of enforcement and the zero-overhead claim for tables that do not use it (G094 C3/C5)",
+        run: crate::guards::guards,
+    },
+    Workload {
         name: "readers",
         about: "point reads from 1 to 16 threads at once over 20 000 records — reads per second and tail latency as readers are added",
         run: crate::readers::readers,

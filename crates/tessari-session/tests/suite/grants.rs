@@ -830,3 +830,76 @@ fn row_guards_stage_writes() {
         "a bucket took a row guard: {refused:?}"
     );
 }
+
+/// Guards synchronize through the catalog: definitions made on one node
+/// enforce on a node that replayed its log, and the replayed node keeps
+/// enforcing with the leader gone — the failover essence, since enforcement
+/// lives in the session layer and answers from the catalog it holds
+/// (ADR-0140, C4).
+#[test]
+fn row_guards_enforce_on_a_replayed_node_with_the_leader_gone() {
+    let leader_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let leader = Store::open(Arc::clone(&leader_backend)).now().unwrap();
+    {
+        let mut setup = Session::new(&leader);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 1, tenant: 'a' };\n\
+                 CREATE orders:2 = { total: 2, tenant: 'b' };\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+    }
+    let mut root = Session::new(&leader);
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    // The definitions a cluster synchronizes: the user, the switch, the guard.
+    root.run_now(
+        "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
+         ALTER TABLE orders ENABLE ROW SECURITY;\n\
+         GRANT read, write ON orders WHERE (tenant = 'a') TO ada;",
+    )
+    .unwrap();
+
+    // What the leader answers, for the equality the cluster must keep.
+    let mut ada_on_leader = signed_in(&leader, "ada");
+    let on_leader = ada_on_leader.run_now("SELECT * FROM orders;").unwrap();
+    let expected = on_leader.last().unwrap().records().unwrap();
+    assert_eq!(
+        expected.len(),
+        1,
+        "the leader itself did not filter: {expected:?}"
+    );
+
+    // A second node holds nothing but the leader's log, replayed.
+    let follower_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let follower = Store::open(Arc::clone(&follower_backend)).now().unwrap();
+    crate::replay(&leader, &follower);
+
+    // The leader is gone — dropped and unreachable, the failover essence.
+    drop(ada_on_leader);
+    drop(root);
+    drop(leader);
+
+    let mut ada = signed_in(&follower, "ada");
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let held = ada.run_now("SELECT * FROM orders;").unwrap();
+    let answered = held.last().unwrap().records().unwrap();
+    assert_eq!(
+        answered.len(),
+        1,
+        "the replayed node did not enforce the guard: {answered:?}"
+    );
+    // The writes stage there too, against the rows the guard reaches.
+    ada.run_now("UPDATE orders:1 SET total = 10;").unwrap();
+    let refused = ada.run_now("UPDATE orders:2 SET total = 20;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "the replayed node let a write past the guard: {refused:?}"
+    );
+}

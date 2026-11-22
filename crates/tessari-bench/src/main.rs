@@ -47,6 +47,7 @@ mod counting;
 mod feeds;
 mod gate;
 mod guard;
+mod guards;
 #[cfg(feature = "counting")]
 mod memory;
 mod paging;
