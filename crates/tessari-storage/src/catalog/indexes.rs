@@ -170,6 +170,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             unique: shape.unique,
             search: shape.search,
             quantized: shape.quantized,
+            partitions: shape.partitions,
             vector: shape.vector,
             spatial: shape.spatial,
             containment: shape.containment,

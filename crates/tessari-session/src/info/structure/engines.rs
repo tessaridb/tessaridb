@@ -115,13 +115,14 @@ impl Session<'_> {
             .await?
             .into_iter()
             .find(|index| index.vector.is_some());
-        let (measured, footprint, quantized) = match index {
+        let (measured, footprint, quantized, partitions) = match index {
             Some(index) => (
                 transaction.vector_recall(&index).await?,
                 transaction.vector_node_bytes(&index).await?,
                 index.quantized,
+                index.partitions,
             ),
-            None => (None, None, false),
+            None => (None, None, false, None),
         };
         Ok(BTreeMap::from([
             ("name".to_owned(), Value::from(name.text.as_str())),
@@ -135,6 +136,15 @@ impl Session<'_> {
             // the second as the first is the failure this field exists to avoid.
             ("recall".to_owned(), measured.map_or(Value::None, reported)),
             ("quantized".to_owned(), Value::Bool(quantized)),
+            // Absent from the answer, not `none` in it: every index written
+            // before the kind existed partitions nothing, and a `none` would
+            // read as a question nobody answered (ADR-0141).
+            (
+                "partitions".to_owned(),
+                partitions.map_or(Value::None, |count| {
+                    Value::Number(Number::Integer(i64::from(count)))
+                }),
+            ),
             // Measured off the stored nodes: the average bytes one takes, beside
             // how many there are. `None` while the store holds no vector.
             (

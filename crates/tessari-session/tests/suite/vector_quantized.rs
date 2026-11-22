@@ -136,3 +136,34 @@ fn quantized_is_refused_on_an_index_that_holds_no_vectors() {
             .is_err()
     );
 }
+
+#[test]
+fn a_partitioned_index_is_refused_until_its_build_path_lands() {
+    // The kind is frozen (ADR-0141) and stored by this wave's grammar and
+    // catalog only: the definition refuses by name rather than promise
+    // partitions no index builds. The refusal is removed with the build path
+    // it names.
+    let store = store();
+    let mut session = ready(&store);
+    session.run_now("DEFINE COLLECTION notes;").unwrap();
+    assert!(
+        matches!(
+            session.run_now("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS 32;"),
+            Err(tessari_session::Error::PartitionsUnbuilt)
+        ),
+        "a partitioned index defined before its build path exists"
+    );
+    assert!(
+        matches!(
+            session.run_now("DEFINE VECTOR crowd DIMENSION 3 DISTANCE euclidean PARTITIONS 8;"),
+            Err(tessari_session::Error::PartitionsUnbuilt)
+        ),
+        "a partitioned store defined before its build path exists"
+    );
+    // The statement refused whole: no table from the store declaration
+    // survives it.
+    assert!(
+        session.run_now("INFO FOR TABLE crowd;").is_err(),
+        "nothing half-defines"
+    );
+}

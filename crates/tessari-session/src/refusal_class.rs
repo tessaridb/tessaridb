@@ -59,6 +59,7 @@ impl Error {
             | Self::RestoreTargetExists { .. }
             | Self::NoVaultRoot
             | Self::FormatNotFinalized { .. }
+            | Self::PartitionsUnbuilt
             | Self::AcrossInDoubt { .. }
             | Self::NotAcknowledgedInTime { .. }
             | Self::ConditionNotMet { .. }

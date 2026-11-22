@@ -2,9 +2,9 @@
 
 use super::{
     EngineMember, FIELD_CONTAINMENT, FIELD_DATABASE, FIELD_ENGINE, FIELD_FIELDS, FIELD_ID,
-    FIELD_NAME, FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_POSITIONS, FIELD_QUANTIZED, FIELD_SEARCH,
-    FIELD_SPATIAL, FIELD_TABLE, FIELD_TOKENIZER, FIELD_UNIQUE, FIELD_UNSCORED, FIELD_VECTOR,
-    field_id, field_name, flag, id_of, number, object,
+    FIELD_NAME, FIELD_NAMESPACE, FIELD_OFFSETS, FIELD_PARTITIONS, FIELD_POSITIONS, FIELD_QUANTIZED,
+    FIELD_SEARCH, FIELD_SPATIAL, FIELD_TABLE, FIELD_TOKENIZER, FIELD_UNIQUE, FIELD_UNSCORED,
+    FIELD_VECTOR, field_id, field_name, flag, id_of, number, object,
 };
 use crate::error::{Error, Result};
 use std::collections::BTreeMap;
@@ -26,6 +26,11 @@ pub struct IndexShape {
     pub vector: Option<VectorDistance>,
     /// Whether a vector index keeps each vector as one byte per component.
     pub quantized: bool,
+    /// How many partitions a vector index's corpus is split into, when it is
+    /// the partitioned kind (ADR-0141). `None` is every index written before
+    /// the kind existed, and every graph that is not one: a plain or coded
+    /// NSW index, which partitions nothing.
+    pub partitions: Option<u32>,
     /// Whether the index holds cells of each record's geometry.
     pub spatial: bool,
     /// Whether the index holds the (path, leaf) pairs of each record's document,
@@ -160,6 +165,10 @@ pub struct IndexDefinition {
     /// one of them. A match is a **candidate and never a result**, for the
     /// reason a cell match is: a path forgets where in an array a leaf was.
     pub containment: bool,
+    /// How many partitions this index's corpus is split into, when it is the
+    /// partitioned vector kind (ADR-0141). `None` is every index written
+    /// before the kind existed, and every index that is not one.
+    pub partitions: Option<u32>,
     /// What it keeps beside its postings, when it is a search index.
     pub costs: SearchCosts,
     /// The search this index is a member of, when it is one (ADR-0105).
@@ -273,6 +282,11 @@ impl IndexDefinition {
         if self.quantized {
             value.insert(FIELD_QUANTIZED.to_owned(), Value::Bool(true));
         }
+        // Written only when set: a graph that is not the partitioned kind
+        // partitions nothing, and keeps the bytes it always had.
+        if let Some(partitions) = self.partitions {
+            value.insert(FIELD_PARTITIONS.to_owned(), number(partitions));
+        }
         // Written only when set, so every other index's entry keeps the bytes
         // it always had.
         if self.containment {
@@ -357,6 +371,12 @@ impl IndexDefinition {
             // Absent on every index written before `QUANTIZED`, which is what
             // each of them is: full precision.
             quantized: flag(fields, FIELD_QUANTIZED, "index")?,
+            // Absent on every index written before the partitioned kind, which
+            // is what each of them is not.
+            partitions: fields
+                .get(FIELD_PARTITIONS)
+                .map(|held| id_of(held, "index", FIELD_PARTITIONS))
+                .transpose()?,
             // An index written before spatial indexes existed holds no such
             // field and is not one, the same reading the two flags above get.
             spatial: flag(fields, FIELD_SPATIAL, "index")?,

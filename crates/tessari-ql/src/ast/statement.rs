@@ -511,6 +511,10 @@ pub enum StatementKind {
         /// Whether its index keeps each vector as one byte per component
         /// (`QUANTIZED`), rescored on the records' full vectors.
         quantized: bool,
+        /// How many partitions its index's corpus is split into
+        /// (`PARTITIONS n`), when it is the partitioned kind (ADR-0141).
+        /// `None` is an index that partitions nothing.
+        partitions: Option<u32>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -604,6 +608,11 @@ pub enum StatementKind {
         /// (`QUANTIZED`). Only after `VECTOR <distance>`: on any other kind it
         /// would describe storage that kind does not have.
         quantized: bool,
+        /// How many partitions a vector index's corpus is split into
+        /// (`PARTITIONS n`), when it is the partitioned kind (ADR-0141).
+        /// Only after `VECTOR <distance>`, and only once. `None` is a graph
+        /// that partitions nothing.
+        partitions: Option<u32>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

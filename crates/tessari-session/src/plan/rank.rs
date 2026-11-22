@@ -66,6 +66,7 @@ mod tests {
             search,
             unique,
             quantized: false,
+            partitions: None,
             vector: None,
             spatial: false,
             containment: false,
