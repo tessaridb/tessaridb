@@ -259,3 +259,165 @@ fn text_vector_and_place_fuse_in_one_read() {
         );
     });
 }
+
+/// The golden bounds of the fused-order grammar (T1.4): one branch is not a
+/// fusion, a weight must be above zero, a depth must be a whole number above
+/// zero, and `FUSE` is the whole order.
+#[test]
+fn the_fused_order_refuses_its_out_of_range_shapes() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        corpus(&mut session);
+        for read in [
+            "SELECT * FROM t ORDER BY FUSE (a DESC);",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b WEIGHT 0);",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b WEIGHT -2);",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b WEIGHT 1.5e400);",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b) DEPTH 0;",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b) DEPTH 1.5;",
+            "SELECT * FROM t ORDER BY FUSE (a DESC, b), a;",
+        ] {
+            assert!(
+                session.run_now(read).is_err(),
+                "{}: {read} answered",
+                backend.name
+            );
+        }
+    });
+}
+
+/// `DEPTH 1` counts only each branch's first record: the golden reads the
+/// answer off the store's own single-key orders, computed here.
+#[test]
+fn depth_one_counts_only_each_branchs_first_record() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        corpus(&mut session);
+        let whole = expected(
+            &mut session,
+            &[("a DESC", 1.0), ("b", 2.0), ("c DESC", 1.0)],
+            1,
+        );
+        assert_eq!(whole.len(), 3, "{}: three firsts", backend.name);
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM t WHERE c != 0 ORDER BY FUSE (a DESC, b WEIGHT 2, c DESC) DEPTH 1;"
+            ),
+            whole,
+            "{}",
+            backend.name
+        );
+    });
+}
+
+/// A weight names how much an order counts (T1.4): doubling one branch moves
+/// the records only that branch placed, and the golden answer is computed
+/// from the store's own single-key orders with the weight applied here.
+#[test]
+fn a_weight_names_how_much_an_order_counts() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        corpus(&mut session);
+        let branches = &[("a DESC", 3.0), ("b", 1.0)];
+        let golden = expected(&mut session, branches, 15);
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM t WHERE c != 0 ORDER BY FUSE (a DESC WEIGHT 3, b) DEPTH 15;"
+            ),
+            golden,
+            "{}",
+            backend.name
+        );
+        // The weights are not symmetric: swapping them re-ranks the middle.
+        let swapped = expected(&mut session, &[("a DESC", 1.0), ("b", 3.0)], 15);
+        assert_ne!(
+            golden, swapped,
+            "{}: the corpus must distinguish the weights",
+            backend.name
+        );
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM t WHERE c != 0 ORDER BY FUSE (a DESC, b WEIGHT 3) DEPTH 15;"
+            ),
+            swapped,
+            "{}",
+            backend.name
+        );
+    });
+}
+
+/// Text and vector in one fusion (T1.4's two-branch case): a search-score
+/// branch and a distance branch, each defined by the store's own single-key
+/// order — the search index serving the one, the vector index the other. A
+/// record the vector branch cannot place (no vector) still answers when the
+/// text branch places it, and is golden-computed the same way.
+#[test]
+fn a_fusion_of_text_and_vector_places_what_either_branch_places() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        run(
+            &mut session,
+            "DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;
+             DEFINE TABLE docs (body string ANALYZER english, embedding vector<2>);
+             DEFINE INDEX body ON docs FIELDS body SEARCH;
+             DEFINE INDEX embedding ON docs FIELDS embedding VECTOR euclidean;
+             CREATE docs:'a' = { body: 'the quick fox jumps', embedding: [0.0, 0.0] };
+             CREATE docs:'b' = { body: 'a lazy dog sleeps', embedding: [0.0, 10.0] };
+             CREATE docs:'c' = { body: 'the fox meets the dog', embedding: [10.0, 10.0] };
+             CREATE docs:'d' = { body: 'quick quick quick' };
+             CREATE docs:'e' = { body: 'nothing to see here', embedding: [7.0, 7.0] };",
+        );
+        let text = ids(
+            &mut session,
+            "SELECT * FROM docs ORDER BY search::score(body, 'quick fox') DESC;",
+        );
+        let vector = ids(
+            &mut session,
+            "SELECT * FROM docs ORDER BY vector::euclidean(embedding, [0.0, 1.0]);",
+        );
+        // The golden, computed from the two single-key orders above: each
+        // branch's first `depth` ranks earn weight / (60 + rank).
+        let mut scores: BTreeMap<RecordId, f64> = BTreeMap::new();
+        for (order, weight) in [(&text, 2.0), (&vector, 1.0)] {
+            for (place, id) in order.iter().take(4).enumerate() {
+                let rank = f64::from(u32::try_from(place).unwrap().saturating_add(1));
+                *scores.entry(id.clone()).or_default() += weight / (K + rank);
+            }
+        }
+        let mut golden: Vec<RecordId> = scores.into_keys().collect();
+        golden.sort_by(|left, right| {
+            let score = |id: &RecordId| {
+                let mut held = 0.0;
+                for (order, weight) in [(&text, 2.0), (&vector, 1.0)] {
+                    if let Some(place) = order.iter().position(|at| at == id)
+                        && place < 4
+                    {
+                        held += weight
+                            / (K + f64::from(u32::try_from(place).unwrap().saturating_add(1)));
+                    }
+                }
+                held
+            };
+            score(right)
+                .total_cmp(&score(left))
+                .then_with(|| left.cmp(right))
+        });
+        assert!(
+            golden.contains(&RecordId::from("d")),
+            "{}: the unvectorized record the text branch placed is missing from the golden",
+            backend.name
+        );
+        assert_eq!(
+            ids(
+                &mut session,
+                "SELECT * FROM docs ORDER BY FUSE (search::score(body, 'quick fox') DESC WEIGHT 2, vector::euclidean(embedding, [0.0, 1.0])) DEPTH 4;"
+            ),
+            golden,
+            "{}",
+            backend.name
+        );
+    });
+}
