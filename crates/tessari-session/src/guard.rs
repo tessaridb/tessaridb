@@ -227,6 +227,40 @@ impl Session<'_> {
         Ok(None)
     }
 
+    /// Whether `record` of `table` is one of the rows this session's guards
+    /// reach — the feed's question (ADR-0140 D5), over a record the caller
+    /// already redacted, so a guard reads the same image the subscriber is
+    /// sent and cannot be probed for a hidden field.
+    ///
+    /// `true` is the ordinary answer: no switch, no guards, or the record
+    /// admits. The feed asks per change and skips what is not admitted, the
+    /// way the grant list already skips a table it does not name.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::RowGuardInvalid`] when a stored guard refuses to evaluate —
+    /// the round refuses, and the subscriber sees the feed end with its
+    /// reason rather than a silent gap.
+    pub async fn admits_row(
+        &self,
+        store: &tessari_storage::Store,
+        table: TableId,
+        id: &RecordId,
+        record: &Value,
+    ) -> Result<bool> {
+        let mut transaction = store.begin().await?;
+        let judged = match self.rows_in(&mut transaction, table).await? {
+            None => true,
+            Some(guards) => {
+                guards
+                    .admits(self, &mut transaction, (id, record.clone()), &None)
+                    .await?
+            }
+        };
+        transaction.rollback();
+        Ok(judged)
+    }
+
     /// Refuse when `record` is not one of the rows the write grant reaches
     /// (ADR-0140 D1).
     ///
