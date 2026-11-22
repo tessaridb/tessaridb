@@ -17,6 +17,34 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
+## 0.52.0 — 2026-11-22
+
+A vector index may be partitioned: the corpus is split into trained
+partitions and every vector is kept as product-quantized codes, so indexed
+reads answer corpora the in-memory graph cannot hold.
+
+- `DEFINE INDEX … VECTOR <metric> PARTITIONS n` (and `DEFINE VECTOR …
+  PARTITIONS n`) declare the kind. Training is deterministic by construction
+  — a seed derived from the index identity, fixed iterations, id-sorted
+  samples — so every replica derives byte-identical state from one log, and
+  write maintenance assigns and codes against the stored state without ever
+  re-training.
+- An `APPROXIMATE` read probes: the partition centroids are ranked by the
+  query's distance, the nearest partitions are read as ranges, and the
+  candidate window is re-ranked on the records' own full vectors — the same
+  division of labour the `QUANTIZED` kind states, one level down in memory.
+  `APPROXIMATE EFFORT n` names how many partitions are probed.
+- Under a `WHERE`, only the records the condition admits cost a distance —
+  the graph walk's collapse at selective filters is the case the kind
+  exists for. `EXPLAIN` names the kind: an approximate plan over a
+  partitioned index carries its partition count.
+- The kind needs store format 17 (new key kinds `0x49`/`0x4a`); a store an
+  older build wrote refuses the definition (`FormatNotFinalized`) until it
+  is finalized, and keeps its stamp until then.
+- Measured on the release bench (20 000 records × 32 dimensions): ten bytes
+  a vector against the full graph's 586, at 99.9 % recall@10 after
+  rescoring.
+
 ## 0.51.0 — 2026-11-22
 
 Row-level security: a grant narrows to the rows a predicate reaches, and a

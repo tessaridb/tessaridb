@@ -1136,6 +1136,37 @@ inside a node), `node_bytes` (the whole node, neighbour list included) and
 The trade is recall for memory: a fifth of the bytes per vector for about three
 points of recall, at the engine's own budget.
 
+#### A partitioned store, when the corpus outgrows the graph
+
+```
+DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine PARTITIONS 64;
+DEFINE INDEX by_embedding ON notes FIELDS embedding VECTOR cosine PARTITIONS 64;
+```
+
+From `0.52.0` a vector index may instead be **partitioned**: the corpus is split
+into `PARTITIONS n` ranges around trained centroids and every vector is kept as
+**product-quantized codes** — the width divided into eight-component subspaces,
+each coded as one byte naming the nearest of that subspace's codebook centroids.
+A 768-component vector is 96 bytes, against ~6.4 KB the graph spends on node and
+edges, and the codes sit in the index keyspace rather than in memory.
+
+A read answers by **probing** rather than walking: the centroids are ranked by
+the query's distance, the nearest partitions are read as ranges, and the codes
+rank the candidates — the same division of labour as `QUANTIZED`, one level down
+in memory. `APPROXIMATE EFFORT n` names how many partitions are probed, clamped
+to at least the `LIMIT` and at most the partition count; without `EFFORT` the
+engine's own budget of sixty-four applies. Under a `WHERE`, only the records the
+condition admits cost a distance — a selective filter reads whole partitions past,
+where the graph's walk evaluates a distance for every record it visits.
+
+Training is deterministic by construction — a seed derived from the index's
+identity, fixed iteration counts, samples in record-id order — so every replica
+derives byte-identical state from one log and no node ever re-trains. The
+partitioned kind needs a store at format 17: a store an older build wrote refuses
+the definition (`FormatNotFinalized`) until it is finalized. `INFO FOR VECTOR`
+reports `partitions`, and the recall figure's `neighbours` names the partition
+count and `exploration` the probe count the measurement probed.
+
 ### A geo store, when the places are the point
 
 ```
@@ -11636,7 +11667,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.51.0", "build": "0.51.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.52.0", "build": "0.52.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

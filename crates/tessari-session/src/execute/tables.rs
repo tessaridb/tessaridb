@@ -21,6 +21,10 @@ pub(super) struct VectorStore<'a> {
     pub(super) distance: &'a Name,
     /// Whether its index keeps vectors as one byte per component.
     pub(super) quantized: bool,
+    /// How many partitions its index's corpus is split into, when it is the
+    /// partitioned kind (ADR-0141). `None` is an index that partitions
+    /// nothing.
+    pub(super) partitions: Option<u32>,
 }
 
 impl Session<'_> {
@@ -73,6 +77,16 @@ impl Session<'_> {
             self.refuse_a_format_the_store_does_not_hold(
                 "a containment index",
                 FormatVersion::CONTAINMENT_INDEX,
+            )
+            .await?;
+        }
+        // The partitioned vector kind writes key kinds a store below format 17
+        // cannot read or clear (ADR-0141), for the reason the containment gate
+        // above states.
+        if shape.vector.is_some() && shape.partitions.is_some() {
+            self.refuse_a_format_the_store_does_not_hold(
+                "a partitioned vector index",
+                FormatVersion::PARTITIONED_INDEX,
             )
             .await?;
         }
@@ -192,6 +206,7 @@ impl Session<'_> {
             dimension,
             distance,
             quantized,
+            partitions,
         } = store;
         let distance =
             VectorDistance::parse(&distance.text).ok_or_else(|| Error::NoSuchDistance {
@@ -274,6 +289,7 @@ impl Session<'_> {
                 spatial: false,
                 containment: false,
                 quantized,
+                partitions,
                 vector: Some(distance),
                 costs: tessari_storage::SearchCosts::default(),
             },

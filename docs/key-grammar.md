@@ -116,6 +116,8 @@ because renumbering after data exists is a full rebuild.
 | `0x46` | `RetiredSince` (the version from which this store keeps retired entries) | `meta` | implemented — see §6.2a; node-local, never in the log |
 | `0x47` | `FieldStatistics` (one declared field of one table summarised for the planner) | `index` | implemented — per-column statistics (G083); node-local, never in the log |
 | `0x48` | `FieldChanges` (writes one table has gained or lost on this node) | `index` | implemented — the freshness counter for `0x47` (G083); node-local, never in the log |
+| `0x49` | `VectorTrained` (a partitioned vector index's centroids and codebooks) | `index` | implemented — see §6.2c-2 (ADR-0141); format 17 |
+| `0x4a` | `VectorCodes` (one record's product-quantized codes, by partition) | `index` | implemented — see §6.2c-2 (ADR-0141); format 17 |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
@@ -872,6 +874,27 @@ Components are stored as their **bit patterns**, not in the order-preserving for
 an index key uses: nothing here has to sort, and the walk wants numbers to
 compute with.
 
+### 6.2c-2 The partitioned vector index — keyspace `index`
+
+```text
+<0x49> <namespace:u32> <database:u32> <table:u32> <index:u32>                          → <partitions:u32> <dimensions:u32> <subspaces:u32> <centroid:f64 × partitions×dimensions> <codebook:f64 × subspaces×256×ceil(dimensions/subspaces)>
+<0x4a> <namespace:u32> <database:u32> <table:u32> <index:u32> <partition:u32> <record-id> → <code:u8 × subspaces>
+```
+
+One key of each kind per index (`0x49`, exactly an index prefix, so finding it
+is a point read) and one `0x4a` per record with a vector. A partitioned
+(IVF, product-quantized) vector index keeps no graph: a probe ranks the
+centroids by the query's distance, reads the probed partitions as prefix
+ranges, and answers with the records the codes place nearest; the records'
+own full vectors decide the order, as they do for `QUANTIZED` codes. The
+partition sorts before the record id so one partition is one prefix range,
+and a record the predicate rejects costs bytes, never a distance (ADR-0141
+D3). Both kinds are built by applying the log — a seeded k-means with fixed
+iterations over id-sorted samples — so every replica derives byte-identical
+state and no node ever re-trains (ADR-0141 D1, amended: the trained state
+travels as index entries, not in the catalog record). Both are cleared with
+the index's entries, first written at format 17.
+
 ### 6.2d Expiry, eviction and topic entries — keyspace `index`
 
 ```text
@@ -1251,6 +1274,7 @@ and is rewritten at open only where the row below says so.
 | `14` | the catalog keeps the declared realm/domain topology in system table `33` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `33` | opened as is and keeps its stamp; `DEFINE TOPOLOGY` is refused (`FormatNotFinalized`) until the store is finalized |
 | `15` | the catalog keeps the load-balancing policy in system table `34` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `34` | opened as is and keeps its stamp; `DEFINE BALANCER` is refused (`FormatNotFinalized`) until the store is finalized |
 | `16` | the catalog keeps a namespace's workload pools in system table `35` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `35` | opened as is and keeps its stamp; `DEFINE POOL` is refused (`FormatNotFinalized`) until the store is finalized |
+| `17` | a vector index may be partitioned (ADR-0141): key kinds `0x49` (a partitioned index's trained centroids and codebooks) and `0x4a` (one record's product-quantized codes, by partition) — entries a build before it neither reads nor clears, so a store holding them is one it must not open | opened as is and keeps its stamp; a partitioned vector index is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the

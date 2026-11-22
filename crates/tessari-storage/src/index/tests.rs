@@ -16,6 +16,7 @@ fn definition() -> IndexDefinition {
         search: true,
         unique: false,
         quantized: false,
+        partitions: None,
         vector: None,
         spatial: false,
         containment: false,

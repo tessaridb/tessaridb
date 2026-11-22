@@ -177,6 +177,7 @@ impl Vocabulary {
                     spatial: false,
                     containment: false,
                     quantized: false,
+                    partitions: None,
                     vector: None,
                     costs: tessari_storage::SearchCosts::default(),
                 },

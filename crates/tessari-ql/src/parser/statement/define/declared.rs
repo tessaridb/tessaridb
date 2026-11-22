@@ -4,7 +4,7 @@ use super::super::Parser;
 use crate::ast::{RollupCompute, StatementKind};
 use crate::error::{Error, Result};
 use crate::token::{Keyword, Punct, Token};
-use tessari_types::Filter;
+use tessari_types::{Filter, Number};
 
 /// What a refusal of a filter name offers instead. Spelled out because a
 /// refusal's expectation is static text; the test below holds it to
@@ -59,8 +59,31 @@ impl Parser<'_> {
             // Optional and last: a store is full precision unless it says so,
             // and the word reads after the distance it is a form of.
             quantized: self.eat_word("quantized"),
+            // Optional and after it: how many partitions the index's corpus
+            // is split into (ADR-0141). The same rule as above — a form of
+            // the index, reading after what it forms.
+            partitions: if self.eat_word("partitions") {
+                Some(self.partition_count()?)
+            } else {
+                None
+            },
             if_not_exists,
         })
+    }
+
+    /// A `PARTITIONS` count: a positive whole number, one the store can split
+    /// a corpus into. Zero and a negative refuse as one, which they are —
+    /// neither describes a partition.
+    fn partition_count(&mut self) -> Result<u32> {
+        let Some(Token::Number(Number::Integer(written))) = self.peek() else {
+            return Err(self.error_here("a positive whole number of partitions"));
+        };
+        let written = *written;
+        self.advance();
+        u32::try_from(written)
+            .ok()
+            .filter(|count| *count >= 2)
+            .ok_or_else(|| self.error_here("at least two partitions, or the word says nothing"))
     }
 
     /// `DEFINE SERIES readings RETAIN 30d [TIME at]`
@@ -365,6 +388,22 @@ impl Parser<'_> {
         } else {
             false
         };
+        // `PARTITIONS n` is a form of the vector index's corpus, so it reads
+        // after `VECTOR <distance>` and nowhere else — on any other kind it
+        // would describe a structure that kind does not have. The count is a
+        // positive whole number: fewer than two partitions is a graph that
+        // partitioned nothing and said so anyway. Judged before the word is
+        // taken, so the refusal points at it.
+        let partitions = if matches!(self.peek(), Some(Token::Ident(found)) if found.eq_ignore_ascii_case("partitions"))
+        {
+            if !matches!(kind, Some(Marker::Vector(_))) {
+                return Err(self.error_here("`PARTITIONS` only after `VECTOR` and its distance"));
+            }
+            self.eat_word("partitions");
+            Some(self.partition_count()?)
+        } else {
+            None
+        };
         // An index over `tags[*]` is a **multikey** index: one entry per element
         // rather than one per record. Three shapes are refused, each naming its
         // own reason — a caller told "unexpected token" would go looking for a
@@ -400,6 +439,7 @@ impl Parser<'_> {
                 _ => None,
             },
             quantized,
+            partitions,
             if_not_exists,
         })
     }

@@ -123,6 +123,11 @@ pub struct Plan {
     pub left_rows: Option<u64>,
     /// The right side's row count the same choice weighed.
     pub right_rows: Option<u64>,
+    /// How many partitions a vector index's probe reads are divided into —
+    /// present only on an approximate read over a partitioned index, so a
+    /// plan says `probe over n partitions` in the one number it can know
+    /// without running.
+    pub partitions: Option<u32>,
     /// How many entry changes the table or index has taken since the
     /// statistic behind `expected` was walked — present only when the
     /// estimate came from statistics, so a reader sees the freshness of
@@ -154,8 +159,16 @@ impl Plan {
             lanes: None,
             left_rows: None,
             right_rows: None,
+            partitions: None,
             exact: access.exactness(),
         }
+    }
+
+    /// The same plan, probing a partitioned vector index of this many
+    /// partitions.
+    #[must_use]
+    pub fn probing(self, partitions: Option<u32>) -> Self {
+        Self { partitions, ..self }
     }
 
     /// The same plan, folding group-bys over this many partition lanes.
@@ -254,6 +267,12 @@ impl Plan {
             Some(Expected::AtMost(held)) => Some(held),
             _ => None,
         };
+        if let Some(held) = self.partitions {
+            plan.insert(
+                "partitions".to_owned(),
+                Value::Number(Number::Integer(i64::from(held))),
+            );
+        }
         for (key, held) in [
             ("columns", self.columns),
             ("cells", self.cells),

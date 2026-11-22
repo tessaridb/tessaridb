@@ -836,6 +836,7 @@ impl Session<'_> {
                 containment,
                 vector,
                 quantized,
+                partitions,
                 if_not_exists,
             } => {
                 self.define_index(
@@ -849,6 +850,7 @@ impl Session<'_> {
                         spatial: *spatial,
                         containment: *containment,
                         quantized: *quantized,
+                        partitions: *partitions,
                         vector: match vector {
                             Some(named) => {
                                 Some(VectorDistance::parse(&named.text).ok_or_else(|| {
@@ -1684,6 +1686,7 @@ impl Session<'_> {
                 dimension,
                 distance,
                 quantized,
+                partitions,
                 if_not_exists,
             } => {
                 self.define_vector(
@@ -1693,6 +1696,7 @@ impl Session<'_> {
                         dimension: *dimension,
                         distance,
                         quantized: *quantized,
+                        partitions: *partitions,
                     },
                     *if_not_exists,
                     span,

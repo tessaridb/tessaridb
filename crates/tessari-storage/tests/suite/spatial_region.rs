@@ -83,6 +83,7 @@ impl Fixture {
                     spatial: true,
                     containment: false,
                     quantized: false,
+                    partitions: None,
                     vector: None,
                     costs: tessari_storage::SearchCosts::default(),
                 },

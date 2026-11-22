@@ -30,6 +30,7 @@ pub type Failable<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 use crate::samples::{Report, Samples};
 pub(crate) use filtered::vector_filtered;
 pub(crate) use heavy::{clustered, restore, vault, vector_index};
+pub(crate) use partitioned::vector_partitioned;
 pub(crate) use planner::planner;
 pub(crate) use quantized::vector_quantized;
 pub(crate) use reads::{filter, search};
@@ -166,6 +167,11 @@ pub const ALL: &[Workload] = &[
         run: vector_quantized,
     },
     Workload {
+        name: "vector-partitioned",
+        about: "a partitioned vector store against a full-precision one — bytes per vector, build, probe and recall after rescoring",
+        run: vector_partitioned,
+    },
+    Workload {
         name: "paging",
         about: "the same page by offset, by cursor, and by a cursor that cannot seek, at four depths",
         run: crate::paging::paging,
@@ -254,6 +260,7 @@ macro_rules! timed {
 // Declared after `timed!`, which they use: a macro is in scope only below its definition.
 mod filtered;
 mod heavy;
+mod partitioned;
 mod planner;
 mod quantized;
 mod reads;

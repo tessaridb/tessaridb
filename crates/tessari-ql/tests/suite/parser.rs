@@ -1191,6 +1191,7 @@ fn a_vector_store_declares_its_width_and_its_distance() {
         dimension,
         distance,
         quantized,
+        partitions,
         if_not_exists,
     } = one("DEFINE VECTOR embeddings DIMENSION 768 DISTANCE cosine;")
     else {
@@ -1200,6 +1201,7 @@ fn a_vector_store_declares_its_width_and_its_distance() {
     assert_eq!(dimension, 768);
     assert_eq!(distance.text, "cosine");
     assert!(!quantized, "a store is full precision unless it says so");
+    assert_eq!(partitions, None, "a plain graph partitions nothing");
     assert!(!if_not_exists);
 
     let StatementKind::DefineVector { if_not_exists, .. } =
@@ -2630,6 +2632,54 @@ fn quantized_belongs_to_a_vector_index_alone() {
     let Err(refused) = tessari_ql::parse("DEFINE INDEX by_city ON people FIELDS city QUANTIZED;")
     else {
         panic!("QUANTIZED on an ordered index was accepted");
+    };
+    assert!(
+        refused.to_string().contains("only after `VECTOR`"),
+        "{refused}"
+    );
+}
+
+#[test]
+fn a_vector_index_or_store_may_be_partitioned() {
+    let StatementKind::DefineIndex {
+        vector, partitions, ..
+    } = one("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS 32;")
+    else {
+        panic!("expected an index definition");
+    };
+    assert_eq!(vector.map(|word| word.text), Some("cosine".to_owned()));
+    assert_eq!(partitions, Some(32), "the count the statement names");
+
+    let StatementKind::DefineIndex { partitions, .. } =
+        one("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine;")
+    else {
+        panic!("expected an index definition");
+    };
+    assert_eq!(partitions, None, "a plain graph partitions nothing");
+
+    let StatementKind::DefineVector { partitions, .. } =
+        one("DEFINE VECTOR embeddings DIMENSION 8 DISTANCE euclidean PARTITIONS 16;")
+    else {
+        panic!("not a vector store declaration");
+    };
+    assert_eq!(partitions, Some(16));
+
+    // The count is a whole number and at least two: fewer describes a
+    // partition the corpus cannot be split into, and the word says nothing.
+    assert!(parse("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS;").is_err());
+    assert!(parse("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS 0;").is_err());
+    assert!(parse("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS 1;").is_err());
+    assert!(parse("DEFINE INDEX by_e ON notes FIELDS e VECTOR cosine PARTITIONS 1.5;").is_err());
+}
+
+#[test]
+fn partitions_belong_to_a_vector_index_alone() {
+    // A partition count is a form of vector index; on any other index the
+    // word would describe a structure that index does not have.
+    let Err(refused) =
+        tessari_ql::parse("DEFINE INDEX by_city ON people FIELDS city PARTITIONS 4;")
+    else {
+        panic!("PARTITIONS on an ordered index was accepted");
     };
     assert!(
         refused.to_string().contains("only after `VECTOR`"),

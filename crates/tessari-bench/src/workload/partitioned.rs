@@ -1,0 +1,102 @@
+//! A partitioned vector store against a full-precision one over the same
+//! vectors.
+//!
+//! The question is the SG1 study's disk-scale one, now answerable: what the
+//! partitioned kind costs per vector and what recall its codes still buy
+//! once a read is rescored on the full vectors. Both stores hold the same
+//! records and answer the same queries, and each approximate ten is compared
+//! with the exact ten — the same discipline `quantized.rs` states.
+
+use super::{FILTERED_RECORDS, Failable, QUERIES, embedding, ids, prepared};
+use crate::samples::{Report, Samples};
+use std::time::Instant;
+use tessari_session::RunNow;
+use tessaridb::Db;
+
+/// How many partitions the corpus is split into — the SG1 regime table's
+/// starting point for a 20 000-record corpus.
+const PARTITIONS: u32 = 32;
+
+pub(crate) fn vector_partitioned(db: &Db) -> Failable<Vec<Report>> {
+    prepared(db)?;
+    let mut session = db.session();
+    session.run_now("USE NAMESPACE bench; USE DATABASE bench;")?;
+    let mut reports = Vec::new();
+    for (store, word) in [("full", ""), ("ivf", &format!(" PARTITIONS {PARTITIONS}"))] {
+        session.run_now(&format!(
+            "DEFINE VECTOR {store} DIMENSION {} DISTANCE euclidean{word};",
+            super::DIMENSIONS
+        ))?;
+        // One transaction, so the index is built and extended in one batch.
+        let mut script = String::from("BEGIN;\n");
+        for n in 0..FILTERED_RECORDS {
+            script.push_str(&format!(
+                "CREATE {store}:{n} = {{ vector: {} }};\n",
+                embedding(n)
+            ));
+        }
+        script.push_str("COMMIT;");
+        let mut built = Samples::with_capacity(1);
+        timed!(built, session.run_now(&script)?);
+        reports.push(built.summarise(&format!("{store} write + build")));
+        session.run_now(&format!("REBUILD INDEX vector ON {store};"))?;
+        let info = session.run_now(&format!("INFO FOR VECTOR {store};"))?;
+        let held = info
+            .first()
+            .and_then(|outcome| match outcome {
+                tessaridb::Outcome::Value(tessaridb::Value::Object(fields)) => Some(
+                    ["vector_bytes", "node_bytes", "nodes", "partitions"]
+                        .iter()
+                        .map(|name| {
+                            format!(
+                                "{name} {}",
+                                fields
+                                    .get(*name)
+                                    .map_or_else(String::new, ToString::to_string)
+                            )
+                        })
+                        .collect::<Vec<_>>()
+                        .join(", "),
+                ),
+                _ => None,
+            })
+            .unwrap_or_default();
+        reports.push(Report::measurement(&format!("{store} footprint"), &held));
+
+        let mut exact = Samples::with_capacity(QUERIES);
+        let mut walked = Samples::with_capacity(QUERIES);
+        let (mut overlap, mut asked) = (0_u64, 0_u64);
+        for n in 0..QUERIES {
+            let query = embedding(
+                u64::try_from(n)
+                    .unwrap_or(0)
+                    .saturating_add(FILTERED_RECORDS),
+            );
+            let read = format!(
+                "SELECT * FROM {store} ORDER BY vector::euclidean(vector, {query}) LIMIT 10"
+            );
+            let truth = ids(timed!(exact, session.run_now(&format!("{read};"))?));
+            let found = ids(timed!(
+                walked,
+                session.run_now(&format!("{read} APPROXIMATE;"))?
+            ));
+            overlap = overlap.saturating_add(
+                u64::try_from(found.iter().filter(|id| truth.contains(id)).count()).unwrap_or(0),
+            );
+            asked = asked.saturating_add(u64::try_from(truth.len()).unwrap_or(0));
+        }
+        reports.push(exact.summarise(&format!("{store} exact")));
+        reports.push(walked.summarise(&format!("{store} probe")));
+        let recall = if asked == 0 {
+            0.0
+        } else {
+            f64::from(u32::try_from(overlap).unwrap_or(0)) * 100.0
+                / f64::from(u32::try_from(asked).unwrap_or(1))
+        };
+        reports.push(Report::measurement(
+            &format!("{store} recall"),
+            &format!("{recall:.1}% of the exact ten over {asked} asked"),
+        ));
+    }
+    Ok(reports)
+}
