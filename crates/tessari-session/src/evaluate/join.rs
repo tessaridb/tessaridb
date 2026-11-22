@@ -129,6 +129,7 @@ impl Session<'_> {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                let rows = self.rows_in(transaction, id).await?;
                 right_count = Catalog::new(transaction).record_count(id).await?;
                 // A full join answers every right record, so it reads them all:
                 // never probed through an index, and refused on a node holding
@@ -138,19 +139,21 @@ impl Session<'_> {
                         .await?;
                 }
                 if self.missing(transaction, id, Part::Whole).await?.is_some() {
-                    far_gathered = Some((context, id, visible));
+                    far_gathered = Some((context, id, visible, rows));
                 } else {
                     match super::join_serving(transaction, id, right_key, driving_count, outer)
                         .await?
                     {
                         super::JoinServing::Probe(index) => {
-                            probed = Some((index, visible, context, id));
+                            probed = Some((index, visible, rows, context, id));
                         }
                         super::JoinServing::Build => {
                             let found = transaction
                                 .scan_table(context.namespace, context.database, id)
                                 .await?;
-                            let found = self.records_of(found, &visible)?;
+                            let found = self
+                                .permitted_records_of(transaction, found, &visible, &rows)
+                                .await?;
                             if outer == Some(Outer::Full) {
                                 unmatched.clone_from(&found);
                             }
@@ -196,6 +199,7 @@ impl Session<'_> {
             JoinSide::Table { table, .. } => {
                 let (context, id) = self.resolve_table(transaction, table).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                let rows = self.rows_in(transaction, id).await?;
                 let searched = self.searched_for(transaction, id, &shown(select)).await?;
                 let found = self
                     .whole_table(
@@ -205,7 +209,11 @@ impl Session<'_> {
                         reporting.collected,
                     )
                     .await?;
-                (self.records_of(found, &visible)?, searched)
+                (
+                    self.permitted_records_of(transaction, found, &visible, &rows)
+                        .await?,
+                    searched,
+                )
             }
             JoinSide::Read { read, .. } => {
                 let answered = Box::pin(self.read(transaction, read, within, None)).await?;
@@ -230,7 +238,7 @@ impl Session<'_> {
             }
         };
 
-        if let Some((context, id, visible)) = far_gathered {
+        if let Some((context, id, visible, rows)) = far_gathered {
             let keys: BTreeSet<Value> = driving
                 .iter()
                 .filter_map(|(_, record)| left_key.path.resolve(record).cloned())
@@ -247,7 +255,10 @@ impl Session<'_> {
                         reporting.collected,
                     )
                     .await?;
-                collect_by_key(&mut built, self.records_of(found, &visible)?, right_key);
+                let found = self
+                    .permitted_records_of(transaction, found, &visible, &rows)
+                    .await?;
+                collect_by_key(&mut built, found, right_key);
             }
         }
 
@@ -274,11 +285,12 @@ impl Session<'_> {
             };
             left_kinds.insert(key.type_name());
             let matches: Vec<(RecordId, Value)> = match &probed {
-                Some((index, visible, _, _)) => {
+                Some((index, visible, rows, _, _)) => {
                     let offered = transaction
                         .records_by_index(index, core::slice::from_ref(&key))
                         .await?;
-                    self.records_of(offered, visible)?
+                    self.permitted_records_of(transaction, offered, visible, rows)
+                        .await?
                         .into_iter()
                         .filter(|(_, held)| right_key.path.resolve(held) == Some(&key))
                         .collect()
@@ -348,11 +360,12 @@ impl Session<'_> {
                 // The index path never read the right side, so learning what it
                 // holds costs a scan. It is paid once, after an empty answer,
                 // and never by a join that worked.
-                Some((_, visible, context, id)) => {
+                Some((_, visible, rows, context, id)) => {
                     let found = transaction
                         .scan_table(context.namespace, context.database, *id)
                         .await?;
-                    self.records_of(found, visible)?
+                    self.permitted_records_of(transaction, found, visible, rows)
+                        .await?
                         .iter()
                         .filter_map(|(_, record)| right_key.path.resolve(record))
                         .map(Value::type_name)

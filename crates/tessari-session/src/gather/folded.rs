@@ -114,8 +114,14 @@ impl Session<'_> {
                     let full = page.len() == GATHER_PAGE_RECORDS;
                     folded = folded.saturating_add(u64::try_from(page.len()).unwrap_or(u64::MAX));
                     after = page.last().map(|(id, _)| id.clone());
+                    // Row guards apply to a gathered span exactly as to a
+                    // local one: tested here, where the records are folded.
+                    let rows = self.rows_in(transaction, id).await?;
                     let mut kept = Vec::with_capacity(page.len());
-                    for (record_id, record) in self.records_of(page, &reduce.visible)? {
+                    for (record_id, record) in self
+                        .permitted_records_of(transaction, page, &reduce.visible, &rows)
+                        .await?
+                    {
                         if let Some(condition) = condition {
                             let held = self
                                 .evaluate_in(

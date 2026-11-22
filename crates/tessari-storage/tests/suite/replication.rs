@@ -2392,7 +2392,13 @@ fn a_grant_and_its_revocation_travel_with_the_user_they_are_about() {
         .find(|found| found.name == "reader")
         .expect("the user this test just declared");
     catalog
-        .grant(user.id, TableId::new(7), tessari_storage::Verb::ALL, &[])
+        .grant(
+            user.id,
+            TableId::new(7),
+            tessari_storage::Verb::ALL,
+            &[],
+            None,
+        )
         .unwrap();
     transaction.commit().now().unwrap();
 

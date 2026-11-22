@@ -56,6 +56,7 @@ mod generate;
 mod geo;
 mod geometry;
 mod grants;
+mod guard;
 mod identity;
 mod info;
 mod kv;

@@ -631,6 +631,22 @@
               </div>
               <div id="user-list" class="answer small" aria-live="polite"></div>
             </div>
+            <div class="pane">
+              <div class="pane-head">
+                <h2>Row security</h2>
+                <div class="row tight">
+                  <span id="security-status" class="status" role="status"></span>
+                  <button id="security-refresh" type="button" class="quiet">Refresh</button>
+                </div>
+              </div>
+              <p class="note">A row guard narrows a grant to the rows a predicate reaches — GRANT read ON orders WHERE (tenant = 'a') TO ada. The table's switch decides whether guards are enforced; without it they sleep.</p>
+              <p class="note">The node answers this list — and refuses its changes — with the signed-in caller's own authority.</p>
+              <div class="row spread">
+                <label>Namespace <input id="security-namespace" type="text" /></label>
+                <label>Database <input id="security-database" type="text" /></label>
+              </div>
+              <div id="security-list" class="answer small"></div>
+            </div>
           </section>
           <section id="panel-this-node" role="tabpanel" aria-labelledby="tab-this-node" tabindex="0" hidden>
             <div class="pane-head">
@@ -1061,6 +1077,7 @@
           <label>What <input id="grant-what" type="text" placeholder="read, write" /></label>
         </div>
         <div class="row">
+          <label id="grant-rows-field" class="wide">Rows <input id="grant-rows" type="text" placeholder="tenant = 'a' — optional" /></label>
           <label class="wide">Why <input id="grant-why" type="text" placeholder="joining the billing rota" /></label>
         </div>
         <p id="grant-says" class="note says"></p>

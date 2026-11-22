@@ -270,6 +270,10 @@ impl Session<'_> {
         let home = self
             .partition_for(definition.as_deref(), &payload, table.span)?
             .unwrap_or(id);
+        // D1: a create lands only where the write grant reaches, asked after
+        // defaults so the predicate judges the record as it will stand.
+        self.refuse_write_outside_guard(transaction, id, &identity, &payload, span)
+            .await?;
         let address =
             RecordAddress::new(context.namespace, context.database, home, identity.clone());
         self.put_record(transaction, address.clone(), payload.clone(), span)
@@ -562,6 +566,11 @@ impl Session<'_> {
             let identity = self
                 .free_identity(transaction, &context, id, &payload, table.span)
                 .await?;
+            // D1: a row lands only where the write grant reaches, asked after
+            // defaults and identity so the predicate judges the row as it
+            // will stand.
+            self.refuse_write_outside_guard(transaction, id, &identity, &payload, span)
+                .await?;
             let home = match named {
                 Some(named) => named,
                 None => self
@@ -717,6 +726,10 @@ impl Session<'_> {
             });
         };
         let before = tessari_encoding::decode_payload(&stored)?;
+        // D1: the row the arbiter matched is one the write grant must reach
+        // before the clause may change it.
+        self.refuse_write_outside_guard(transaction, table, existing, &before, span)
+            .await?;
         // The WHERE reads the record as it stood, beside the proposed row as
         // `excluded` — one scope, the same injection the edit's assignments
         // see inside `edit_stored`.

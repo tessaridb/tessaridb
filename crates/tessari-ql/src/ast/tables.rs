@@ -168,6 +168,12 @@ pub enum TableChange {
     /// `STORE ROW` / `STORE COLUMN` — parses, and refuses: the storage kind
     /// is chosen at define time and immutable afterwards .
     Store(StoreKind),
+    /// `ENABLE ROW SECURITY` — row guards are enforced on this table from the
+    /// commit onwards (ADR-0140). Off is what every table has always been.
+    EnableRowSecurity,
+    /// `DISABLE ROW SECURITY` — the guards still exist; they are simply not
+    /// asked until the table is enabled again.
+    DisableRowSecurity,
 }
 
 /// What a table's expiry declaration says (ADR-0122 A1): that its records may

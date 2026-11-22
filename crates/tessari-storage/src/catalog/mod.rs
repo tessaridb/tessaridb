@@ -304,6 +304,24 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
         Ok(true)
     }
 
+    /// Enforce or stop enforcing row guards on this table (ADR-0140), keeping
+    /// everything else about it. The guards themselves are grant rows and are
+    /// not touched here; the switch decides whether they are asked.
+    ///
+    /// Answers `false` when there is no table under that id.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the stored definition cannot be read.
+    pub async fn set_row_security(&mut self, id: TableId, on: bool) -> Result<bool> {
+        let Some(mut definition) = self.table(id).await? else {
+            return Ok(false);
+        };
+        definition.row_security = on;
+        self.write(system::TABLES, id.get(), &definition.to_value());
+        Ok(true)
+    }
+
     /// Set or clear when the table's shards split and merge without being
     /// asked (ADR-0113 D2), keeping everything else about it.
     ///

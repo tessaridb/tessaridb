@@ -147,6 +147,7 @@ fn every_definition_round_trips_through_its_value() {
         shards: None,
         partition: None,
         spread: false,
+        row_security: false,
         auto_split: super::super::AutoSplitSetting::Inherited,
         expire: None,
         // Not the default either, for the identity's reason: an empty list

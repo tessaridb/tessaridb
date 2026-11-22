@@ -206,6 +206,8 @@ impl<'a> Session<'a> {
             now: self.now,
             // A probe answers one question and holds no block open.
             held: None,
+            // A probe parses no guards: it never reaches a guarded read.
+            guard_cache: dashmap::DashMap::new(),
         };
         probe.acting_as(id).await?;
         Ok(probe)

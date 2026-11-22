@@ -430,12 +430,16 @@ fn erase_statement(statement: &mut Statement) {
             verbs,
             table,
             fields,
+            guard,
             user,
         } => {
             erase_names(Some(verbs));
             erase_table(table);
             erase_names(Some(fields));
             erase_name(user);
+            if let Some(held) = guard {
+                erase_expr(&mut held.predicate);
+            }
         }
         StatementKind::Revoke { verbs, table, user } => {
             erase_names(Some(verbs));

@@ -183,8 +183,17 @@ impl Session<'_> {
         if past < wanted.wanted {
             return Ok(Walked::Declined);
         }
+        let found = candidates.into_iter().collect();
+        let rows_guard = self.rows_in(transaction, table).await?;
+        let found = match &rows_guard {
+            Some(_) => {
+                self.permitted_records_of(transaction, found, &visible, &rows_guard)
+                    .await?
+            }
+            None => self.records_of(found, &visible)?,
+        };
         Ok(Walked::Served {
-            found: self.records_of(candidates.into_iter().collect(), &visible)?,
+            found,
             index: ranked.index.name.clone(),
         })
     }

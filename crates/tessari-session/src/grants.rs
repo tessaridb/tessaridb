@@ -12,7 +12,7 @@
 //! to know the history to know the outcome. That is also what makes it
 //! idempotent, since a grant is identified by the pair it names.
 
-use tessari_ql::{Name, Span, TableRef};
+use tessari_ql::{Name, RowGuard, Span, TableRef};
 use tessari_storage::{Catalog, Transaction, UserDefinition, Verb};
 
 use crate::error::{Error, Result};
@@ -33,10 +33,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         verbs: &[Name],
         table: &TableRef,
-        fields: &[Name],
+        narrowing: (&[Name], Option<&RowGuard>),
         user: &Name,
         span: Span,
     ) -> Result<Outcome> {
+        let (fields, guard) = narrowing;
         let (asked, held) = self
             .grant_operands(transaction, verbs, table, user, span)
             .await?;
@@ -47,7 +48,31 @@ impl Session<'_> {
             return Err(Error::FieldsOnAWrite { span });
         }
         let named: Vec<String> = fields.iter().map(|name| name.text.clone()).collect();
-        Catalog::new(transaction).grant(held.id, asked.1, &asked.0, &named)?;
+        // The text is what the catalog keeps; the parsed form was validated by
+        // the parser, and the statement-level semantic check happens where the
+        // guard is compiled (ADR-0140, D2).
+        let guard_text = guard.map(|held| held.text.as_str());
+        // The engine survey's line (ADR-0140): buckets, queues and vaults
+        // have no rows a predicate can guard — bytes behind a path, engine
+        // state behind a hold, secrets already strict. A guard there would
+        // refuse every write or silently pass, and neither is a permission.
+        if guard.is_some() {
+            let definition = Catalog::new(transaction).table(asked.1).await?;
+            let (refused, kind) = match definition.as_ref() {
+                Some(held) if held.is_bucket() => (true, "bucket"),
+                Some(held) if held.is_vault() => (true, "vault"),
+                Some(held) if held.is_queue() => (true, "queue"),
+                _ => (false, ""),
+            };
+            if refused {
+                return Err(Error::RowGuardsOnKind {
+                    table: table.name.text.clone(),
+                    kind,
+                    span,
+                });
+            }
+        }
+        Catalog::new(transaction).grant(held.id, asked.1, &asked.0, &named, guard_text)?;
         Ok(Outcome::Done)
     }
 
@@ -91,13 +116,19 @@ impl Session<'_> {
             catalog.revoke(held.id, asked.1);
         } else {
             // The field list travels with the grant it belongs to: revoking a
-            // verb narrows what may be done, never what may be seen.
+            // verb narrows what may be done, never what may be seen. The row
+            // guard travels with it for the same reason — narrowing a verb
+            // must never widen the rows it reaches.
             let kept = existing
                 .iter()
                 .find(|grant| grant.table == asked.1)
                 .map(|grant| grant.fields.clone())
                 .unwrap_or_default();
-            catalog.grant(held.id, asked.1, &remaining, &kept)?;
+            let guard = existing
+                .iter()
+                .find(|grant| grant.table == asked.1)
+                .and_then(|grant| grant.guard.clone());
+            catalog.grant(held.id, asked.1, &remaining, &kept, guard.as_deref())?;
         }
         Ok(Outcome::Done)
     }

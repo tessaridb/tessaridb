@@ -581,3 +581,325 @@ fn a_write_only_grant_does_not_answer_or_select_records_through_a_write() {
     let held = root.run_now("SELECT * FROM staff:1;").unwrap();
     assert_eq!(held.last().unwrap().records().unwrap().len(), 1);
 }
+
+/// A grant names the rows it reaches, the table switch turns enforcement on,
+/// and both survive a reopen exactly as written (ADR-0140, SG2: the grammar
+/// and the catalog; enforcement itself is SG3 and not asserted here).
+#[test]
+fn a_guarded_grant_and_the_switch_round_trip() {
+    // The backend is held beside the store so the reopen below can answer
+    // from the same bytes — the catalog, not the session, is the authority.
+    let backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let store = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut root = {
+        let mut setup = Session::new(&store);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 3 };\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+        let mut root = Session::new(&store);
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+            .unwrap();
+        root
+    };
+    // Both spellings parse; the grant stores the predicate text it was given.
+    root.run_now("GRANT read ON orders WHERE (total > 10) TO ada;")
+        .unwrap();
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+
+    let described = root.run_now("INFO FOR USER ada;").unwrap();
+    let text = format!("{described:?}");
+    assert!(text.contains("total > 10"), "guard text lost: {text}");
+
+    let table = root.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(text.contains("row_security"), "switch not reported: {text}");
+    assert!(text.contains("true"), "switch not on: {text}");
+
+    // DISABLE parses and lands too.
+    root.run_now("ALTER TABLE orders DISABLE ROW SECURITY;")
+        .unwrap();
+    let table = root.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(text.contains("false"), "switch not off: {text}");
+
+    // A reopen finds the guard and the switch as written — the catalog is the
+    // authority, memory was never the record.
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+    drop(root);
+    drop(store);
+    let reopened = Store::open(Arc::clone(&backend)).now().unwrap();
+    let mut again = Session::new(&reopened);
+    again.sign_in("root", PASSWORD).now().unwrap();
+    again
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let table = again.run_now("INFO FOR TABLE orders;").unwrap();
+    let text = format!("{table:?}");
+    assert!(
+        text.contains("true"),
+        "switch did not survive reopen: {text}"
+    );
+    let described = again.run_now("INFO FOR USER ada;").unwrap();
+    let text = format!("{described:?}");
+    assert!(
+        text.contains("total > 10"),
+        "guard did not survive reopen: {text}"
+    );
+}
+
+/// Row guards narrow what a guarded session reads: the scan, the identity
+/// read, the switch, the unguarded owner, and a stored predicate that no
+/// longer evaluates (ADR-0140, SG3 read paths).
+#[test]
+fn row_guards_filter_reads_and_fail_closed() {
+    let store = store();
+    let mut root = {
+        let mut setup = Session::new(&store);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 3, tenant: 'a' };\n\
+                 CREATE orders:2 = { total: 30, tenant: 'b' };\n\
+                 CREATE orders:3 = { total: 300, tenant: 'a' };\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+        let mut root = Session::new(&store);
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+            .unwrap();
+        root
+    };
+
+    // The switch off: a guarded grant changes nothing until it is on.
+    root.run_now("GRANT read ON orders WHERE (tenant = 'a') TO ada;")
+        .unwrap();
+    let mut ada = signed_in(&store, "ada");
+    let held = ada.run_now("SELECT * FROM orders;").unwrap();
+    assert_eq!(held.last().unwrap().records().unwrap().len(), 3);
+
+    // The switch on: the scan now answers only the rows the guard reaches.
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+    let held = ada.run_now("SELECT * FROM orders;").unwrap();
+    let records = held.last().unwrap().records().unwrap();
+    assert_eq!(records.len(), 2, "guarded scan leaked: {records:?}");
+    assert!(
+        records
+            .iter()
+            .all(|record| format!("{record:?}").contains("tenant")),
+        "wrong rows: {records:?}"
+    );
+
+    // The identity read answers absence for a guarded-out record.
+    let held = ada.run_now("SELECT * FROM orders:1;").unwrap();
+    assert_eq!(held.last().unwrap().records().unwrap().len(), 1);
+    let held = ada.run_now("SELECT * FROM orders:2;").unwrap();
+    assert!(held.last().unwrap().records().unwrap().is_empty());
+
+    // The owner is subject to nothing they were not granted — role governs,
+    // and the switch does not change that (ADR-0140 D4).
+    let held = root.run_now("SELECT * FROM orders;").unwrap();
+    assert_eq!(held.last().unwrap().records().unwrap().len(), 3);
+
+    // D2: a stored predicate that no longer evaluates refuses the statement,
+    // naming the guard — never a silent widen or narrow. The grant replaces
+    // the earlier one (a grant is identified by its pair), so no revoke.
+    // Division by zero refuses rather than answering, which is what makes
+    // the guard un-evaluable; a cross-kind comparison would merely read
+    // false, which is a filter, not a failure.
+    root.run_now("GRANT read ON orders WHERE (total / 0 > 1) TO ada;")
+        .unwrap();
+    let refused = ada.run_now("SELECT * FROM orders;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardInvalid { .. })),
+        "a broken guard did not refuse the read: {refused:?}"
+    );
+
+    // The same broken guard refuses the identity read too.
+    let refused = ada.run_now("SELECT * FROM orders:1;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardInvalid { .. })),
+        "a broken guard did not refuse the identity read: {refused:?}"
+    );
+}
+
+/// Writes stage through the row guards: a guarded writer touches only the
+/// rows its grant reaches, cannot move a row out of them, cannot create
+/// outside them, and cannot guard a table kind that has no rows (ADR-0140 D1
+/// and the engine survey).
+#[test]
+fn row_guards_stage_writes() {
+    let store = store();
+    let mut root = {
+        let mut setup = Session::new(&store);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 3, tenant: 'a' };\n\
+                 CREATE orders:2 = { total: 30, tenant: 'b' };\n\
+                 DEFINE BUCKET files;\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+        let mut root = Session::new(&store);
+        root.sign_in("root", PASSWORD).now().unwrap();
+        root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+            .unwrap();
+        root.run_now("DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';")
+            .unwrap();
+        root
+    };
+    root.run_now("ALTER TABLE orders ENABLE ROW SECURITY;")
+        .unwrap();
+    root.run_now("GRANT read, write ON orders WHERE (tenant = 'a') TO ada;")
+        .unwrap();
+    let mut ada = signed_in(&store, "ada");
+
+    // Within the guard: create, update, delete all stage.
+    ada.run_now("CREATE orders:3 = { total: 300, tenant: 'a' };")
+        .unwrap();
+    ada.run_now("UPDATE orders:1 SET total = 4;").unwrap();
+    ada.run_now("DELETE orders:3;").unwrap();
+
+    // Outside it: a create refuses, naming the guard.
+    let refused = ada.run_now("CREATE orders:4 = { total: 40, tenant: 'b' };");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "a create outside the guard ran: {refused:?}"
+    );
+
+    // A located update of another tenant's row refuses.
+    let refused = ada.run_now("UPDATE orders:2 SET total = 5;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "an update of a guarded-out row ran: {refused:?}"
+    );
+
+    // Moving a reached row out of the guard refuses at the new row.
+    let refused = ada.run_now("UPDATE orders:1 SET tenant = 'b';");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "an update moved a row out of the guard: {refused:?}"
+    );
+
+    // A delete of another tenant's row refuses.
+    let refused = ada.run_now("DELETE orders:2;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "a delete of a guarded-out row ran: {refused:?}"
+    );
+
+    // Set forms take the same rule per record.
+    let refused = ada.run_now("UPDATE orders SET total = 0 WHERE true LIMIT ALL;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "a set update reached a guarded-out row: {refused:?}"
+    );
+    let refused = ada.run_now("DELETE FROM orders WHERE true LIMIT ALL;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "a set delete reached a guarded-out row: {refused:?}"
+    );
+
+    // The rows are exactly where the refusals left them.
+    let held = root.run_now("SELECT * FROM orders;").unwrap();
+    assert_eq!(held.last().unwrap().records().unwrap().len(), 2);
+
+    // Kinds without rows refuse the guard at grant time, by name.
+    let refused = root.run_now("GRANT read ON files WHERE (name = 'x') TO ada;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardsOnKind { .. })),
+        "a bucket took a row guard: {refused:?}"
+    );
+}
+
+/// Guards synchronize through the catalog: definitions made on one node
+/// enforce on a node that replayed its log, and the replayed node keeps
+/// enforcing with the leader gone — the failover essence, since enforcement
+/// lives in the session layer and answers from the catalog it holds
+/// (ADR-0140, C4).
+#[test]
+fn row_guards_enforce_on_a_replayed_node_with_the_leader_gone() {
+    let leader_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let leader = Store::open(Arc::clone(&leader_backend)).now().unwrap();
+    {
+        let mut setup = Session::new(&leader);
+        setup
+            .run_now(
+                "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                 DEFINE DATABASE shop; USE DATABASE shop;\n\
+                 DEFINE COLLECTION orders;\n\
+                 CREATE orders:1 = { total: 1, tenant: 'a' };\n\
+                 CREATE orders:2 = { total: 2, tenant: 'b' };\n\
+                 DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+            )
+            .unwrap();
+    }
+    let mut root = Session::new(&leader);
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    // The definitions a cluster synchronizes: the user, the switch, the guard.
+    root.run_now(
+        "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
+         ALTER TABLE orders ENABLE ROW SECURITY;\n\
+         GRANT read, write ON orders WHERE (tenant = 'a') TO ada;",
+    )
+    .unwrap();
+
+    // What the leader answers, for the equality the cluster must keep.
+    let mut ada_on_leader = signed_in(&leader, "ada");
+    let on_leader = ada_on_leader.run_now("SELECT * FROM orders;").unwrap();
+    let expected = on_leader.last().unwrap().records().unwrap();
+    assert_eq!(
+        expected.len(),
+        1,
+        "the leader itself did not filter: {expected:?}"
+    );
+
+    // A second node holds nothing but the leader's log, replayed.
+    let follower_backend = Arc::new(MemoryBackend::new()) as Arc<dyn KvBackend>;
+    let follower = Store::open(Arc::clone(&follower_backend)).now().unwrap();
+    crate::replay(&leader, &follower);
+
+    // The leader is gone — dropped and unreachable, the failover essence.
+    drop(ada_on_leader);
+    drop(root);
+    drop(leader);
+
+    let mut ada = signed_in(&follower, "ada");
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let held = ada.run_now("SELECT * FROM orders;").unwrap();
+    let answered = held.last().unwrap().records().unwrap();
+    assert_eq!(
+        answered.len(),
+        1,
+        "the replayed node did not enforce the guard: {answered:?}"
+    );
+    // The writes stage there too, against the rows the guard reaches.
+    ada.run_now("UPDATE orders:1 SET total = 10;").unwrap();
+    let refused = ada.run_now("UPDATE orders:2 SET total = 20;");
+    assert!(
+        matches!(refused, Err(tessari_session::Error::RowGuardDenied { .. })),
+        "the replayed node let a write past the guard: {refused:?}"
+    );
+}

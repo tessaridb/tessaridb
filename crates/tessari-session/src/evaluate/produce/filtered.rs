@@ -28,6 +28,17 @@ impl Session<'_> {
             table: named.map(ToOwned::to_owned),
             ..Plan::new(access)
         };
+        // Row guards (ADR-0140) resolve once for the read; a candidate the
+        // guards do not reach is skipped before the claim and the hand-over,
+        // on both the served and the walked arm. The visible the guards
+        // evaluate over is resolved only when a guard exists — otherwise it
+        // would be a second catalog read the ordinary read never needed.
+        let rows = self.rows_in(transaction, id).await?;
+        let guarded_visible = if rows.is_some() {
+            self.visible_in(transaction, id).await?
+        } else {
+            None
+        };
         // The order first, when an index holds it. A filtered read that
         // narrows and then sorts is correct and costs a sort of
         // everything the condition matched; taking the records in the
@@ -328,6 +339,12 @@ impl Session<'_> {
         match candidates {
             Candidates::Held(held) => {
                 for (id, record) in held {
+                    let Some(record) = self
+                        .permitted(transaction, &id, record, &guarded_visible, &rows)
+                        .await?
+                    else {
+                        continue;
+                    };
                     // A locking read claims the row before handing it
                     // over, the way the unfiltered hand-over does.
                     if let Some(taking) = taking.as_mut()
@@ -374,6 +391,12 @@ impl Session<'_> {
                 'walk: while let Some(round) = walk.next_round(transaction).await? {
                     for (id, payload) in round {
                         let record = self.record_of(&payload, &visible)?;
+                        let Some(record) = self
+                            .permitted(transaction, &id, record, &visible, &rows)
+                            .await?
+                        else {
+                            continue;
+                        };
                         // A locking read claims the row before handing it
                         // over, the way the unfiltered hand-over does.
                         if let Some(taking) = taking.as_mut()

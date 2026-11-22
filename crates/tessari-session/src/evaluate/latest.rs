@@ -81,8 +81,16 @@ impl Session<'_> {
             return Ok(Walked::NotServed);
         };
         let rows = transaction.newest_per_value(&index).await?;
+        let rows_guard = self.rows_in(transaction, table).await?;
+        let found = match &rows_guard {
+            Some(_) => {
+                self.permitted_records_of(transaction, rows, &visible, &rows_guard)
+                    .await?
+            }
+            None => self.records_of(rows, &visible)?,
+        };
         Ok(Walked::Served {
-            found: self.records_of(rows, &visible)?,
+            found,
             index: index.name,
         })
     }

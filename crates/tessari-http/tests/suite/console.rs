@@ -1190,6 +1190,11 @@ fn the_eight_destinations_are_named_for_the_jobs_and_there_are_eight() {
     // sixth, Backup, was the same trade asked for again (2026-09-30), and the
     // seventh, Vault, once more (G048, 2026-09-30). The eighth, Data, is the trade
     // made on the owner's G071 request for a page of databases and tables.
+    //
+    // A ninth, Security, was asked for (G094 SG5, 2026-11-22) and built, and the
+    // owner looked at it beside Access and decided the fold: the row-guard
+    // surface is a pane inside Access — the same job as the grants it toggles —
+    // and a tab is the trade again only when Security outgrows the pane.
     let (_node, address) = node();
     let (status, _, page) = get(&address, "/");
     assert_eq!(status, 200, "the console's page is not served");

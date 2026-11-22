@@ -301,6 +301,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             shards,
             partition: shape.partition,
             spread: shape.spread,
+            row_security: false,
             auto_split: super::definition::AutoSplitSetting::Inherited,
             events: Vec::new(),
             feeds: Vec::new(),

@@ -91,7 +91,7 @@ pub(crate) async fn described_grant(
     grant: &GrantDefinition,
 ) -> Result<Value> {
     let named = table_named(catalog, grant.table).await?;
-    Ok(Value::Object(BTreeMap::from([
+    let mut fields = BTreeMap::from([
         ("table".to_owned(), named),
         (
             "verbs".to_owned(),
@@ -113,7 +113,14 @@ pub(crate) async fn described_grant(
                     .collect(),
             ),
         ),
-    ])))
+    ]);
+    // Present only when the grant narrows rows (ADR-0140): a grant without a
+    // guard reads exactly as it always has, and a report that added `"guard":
+    // NONE` to every legacy grant would teach readers to stop looking at it.
+    if let Some(guard) = &grant.guard {
+        fields.insert("guard".to_owned(), Value::from(guard.as_str()));
+    }
+    Ok(Value::Object(fields))
 }
 
 /// A table's name, or nothing when its definition has been dropped.

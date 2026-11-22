@@ -28,8 +28,8 @@
   }
   var value = (id) => control(id).value;
   var trimmed = (id) => control(id).value.trim();
-  function setValue(id, text) {
-    control(id).value = text;
+  function setValue(id, text2) {
+    control(id).value = text2;
   }
   function write(id, words6) {
     at(id).textContent = words6;
@@ -88,9 +88,9 @@
   function hold(holding) {
     held = holding;
   }
-  function onArrival(names2, todo) {
-    arrivals.push({ names: names2, todo });
-    if (!held && names2.includes(here())) {
+  function onArrival(names3, todo) {
+    arrivals.push({ names: names3, todo });
+    if (!held && names3.includes(here())) {
       todo();
     }
   }
@@ -198,9 +198,9 @@
     if (clipboard === void 0) {
       const range = document.createRange();
       range.selectNodeContents(where3);
-      const selection2 = window.getSelection();
-      selection2?.removeAllRanges();
-      selection2?.addRange(range);
+      const selection3 = window.getSelection();
+      selection3?.removeAllRanges();
+      selection3?.addRange(range);
       said3.textContent = "selected — ⌘C or Ctrl-C";
       return;
     }
@@ -214,7 +214,7 @@
     );
   }
   function entry(one2) {
-    const row = made("div", "logged");
+    const row2 = made("div", "logged");
     const head = made("div", "logged-head");
     const screen = made("span", "faint");
     screen.textContent = one2.screen;
@@ -244,8 +244,8 @@
     opened2.textContent = "Open in Run";
     opened2.addEventListener("click", () => reopen(one2.what));
     actions.append(copied2, opened2, told3);
-    row.append(head, what, said3, why, actions);
-    return row;
+    row2.append(head, what, said3, why, actions);
+    return row2;
   }
   function draw() {
     clear("log-list");
@@ -334,18 +334,18 @@
     hereAgain();
     changed();
   }
-  function reason(text) {
+  function reason(text2) {
     try {
-      const body = JSON.parse(text);
+      const body = JSON.parse(text2);
       if (typeof body === "object" && body !== null && "error" in body) {
         const held6 = body.error;
         if (typeof held6 === "string") {
           return held6;
         }
       }
-      return text;
+      return text2;
     } catch {
-      return text;
+      return text2;
     }
   }
   function sheet() {
@@ -389,12 +389,12 @@
           // console did not ask for and cannot clear.
           credentials: "omit"
         });
-        const text = await reply.text();
+        const text2 = await reply.text();
         if (reply.status >= 400) {
-          say("identity-status", reason(text), true);
+          say("identity-status", reason(text2), true);
           return;
         }
-        held2 = JSON.parse(text).token;
+        held2 = JSON.parse(text2).token;
         setValue("password", "");
         say("identity-status", "");
         signedIn();
@@ -460,21 +460,21 @@
     }
     return result.kind ?? "answered";
   };
-  function said(text, status) {
+  function said(text2, status2) {
     let body;
     try {
-      body = JSON.parse(text);
+      body = JSON.parse(text2);
     } catch {
-      const words6 = text.trim();
-      return { said: words6 === "" ? `${status}` : words6, failed: status >= 400 };
+      const words6 = text2.trim();
+      return { said: words6 === "" ? `${status2}` : words6, failed: status2 >= 400 };
     }
     if (typeof body.error === "string") {
       return { said: body.error, failed: true, refusal: typeof body.code === "string" ? body.code : void 0 };
     }
     if (!Array.isArray(body.results)) {
-      return { said: text, failed: status >= 400 };
+      return { said: text2, failed: status2 >= 400 };
     }
-    return { said: body.results.map(outcome).join(", "), failed: status >= 400 };
+    return { said: body.results.map(outcome).join(", "), failed: status2 >= 400 };
   }
   async function ask(source, screen, why, parameters) {
     const started = performance.now();
@@ -515,26 +515,26 @@
     if (reply.status === 401 && token() !== null) {
       ended();
     }
-    const text = await reply.text();
+    const text2 = await reply.text();
     record({
       what: source,
-      ...said(text, reply.status),
+      ...said(text2, reply.status),
       ms: Math.round(performance.now() - started),
       screen,
       why
     });
-    return { reply, text };
+    return { reply, text: text2 };
   }
   async function valueOf(source, screen, why, parameters) {
-    const { reply, text } = await ask(source, screen, why, parameters);
+    const { reply, text: text2 } = await ask(source, screen, why, parameters);
     let body;
     try {
-      body = JSON.parse(text);
+      body = JSON.parse(text2);
     } catch {
-      throw new Error(text.trim() === "" ? reply.status + " " + reply.statusText : text);
+      throw new Error(text2.trim() === "" ? reply.status + " " + reply.statusText : text2);
     }
     if (!Array.isArray(body.results)) {
-      throw new Error(typeof body.error === "string" ? body.error : text);
+      throw new Error(typeof body.error === "string" ? body.error : text2);
     }
     const answered2 = body.results[body.results.length - 1];
     return answered2 === void 0 ? null : answered2;
@@ -568,26 +568,26 @@
     if (reply.status === 401 && token() !== null) {
       ended();
     }
-    const text = await reply.text();
+    const text2 = await reply.text();
     record({
       what: `${method} ${path}`,
-      ...said(text, reply.status),
+      ...said(text2, reply.status),
       ms: Math.round(performance.now() - started),
       screen
     });
     try {
-      return { status: reply.status, body: JSON.parse(text) };
+      return { status: reply.status, body: JSON.parse(text2) };
     } catch {
-      return { status: reply.status, body: text };
+      return { status: reply.status, body: text2 };
     }
   }
   async function scrape(route2) {
     const reply = await fetch(route2, { credentials: "omit" });
-    const text = await reply.text();
+    const text2 = await reply.text();
     try {
-      return { status: reply.status, body: JSON.parse(text) };
+      return { status: reply.status, body: JSON.parse(text2) };
     } catch {
-      return { status: reply.status, body: text };
+      return { status: reply.status, body: text2 };
     }
   }
 
@@ -695,17 +695,17 @@
     if (written === "") {
       return {};
     }
-    let read;
+    let read2;
     try {
-      read = JSON.parse(written);
+      read2 = JSON.parse(written);
     } catch {
       return "the values are not JSON";
     }
-    if (typeof read !== "object" || read === null || Array.isArray(read)) {
+    if (typeof read2 !== "object" || read2 === null || Array.isArray(read2)) {
       return "the values are an object of names to TessariQL literals";
     }
     const values = {};
-    for (const [name, held6] of Object.entries(read)) {
+    for (const [name, held6] of Object.entries(read2)) {
       if (typeof held6 !== "string") {
         return `each value is a TessariQL literal written as a string, such as "'a'" or "3"`;
       }
@@ -920,7 +920,7 @@
       }
       const fields = inside;
       const here2 = Object.keys(fields).sort();
-      if (!here2.every((field) => flat(fields[field]))) {
+      if (!here2.every((field2) => flat(fields[field2]))) {
         return null;
       }
       if (agreed === null) {
@@ -939,7 +939,7 @@
     }
     const values = records.map((record2) => record2.value);
     const numeric = fields.map(
-      (field) => values.every((value2) => typeof value2[field] === "number")
+      (field2) => values.every((value2) => typeof value2[field2] === "number")
     );
     const table = made("table");
     const head = table.createTHead().insertRow();
@@ -950,11 +950,11 @@
     }
     const body = table.createTBody();
     records.forEach((record2, position) => {
-      const row = body.insertRow();
-      row.insertCell().textContent = record2.id;
-      fields.forEach((field, index) => {
-        const box2 = row.insertCell();
-        box2.textContent = cell(values[position]?.[field]);
+      const row2 = body.insertRow();
+      row2.insertCell().textContent = record2.id;
+      fields.forEach((field2, index) => {
+        const box2 = row2.insertCell();
+        box2.textContent = cell(values[position]?.[field2]);
         if (numeric[index] === true) {
           box2.classList.add("number");
         }
@@ -967,11 +967,11 @@
     const table = made("table");
     const body = table.createTBody();
     for (const [name, value2] of Object.entries(held6)) {
-      const row = body.insertRow();
+      const row2 = body.insertRow();
       const label = made("th");
       label.textContent = name;
-      row.appendChild(label);
-      const box2 = row.insertCell();
+      row2.appendChild(label);
+      const box2 = row2.insertCell();
       box2.textContent = typeof value2 === "string" ? value2 : JSON.stringify(value2);
       if (typeof value2 === "number") {
         box2.classList.add("number");
@@ -1174,11 +1174,11 @@
   var GROUP = /^[A-Za-z0-9_.:-]{1,128}$/;
   var DURATION = /^[0-9]{1,9}(ms|s|m|h|d|w)$/;
   var WHOLE = /^[0-9]{1,15}$/;
-  var aName = (text) => NAME.test(text) ? text : null;
-  var aGroup = (text) => GROUP.test(text) ? text : null;
-  var aDuration = (text) => DURATION.test(text) ? text : null;
-  function aWhole(text) {
-    return WHOLE.test(text) ? Number(text) : null;
+  var aName = (text2) => NAME.test(text2) ? text2 : null;
+  var aGroup = (text2) => GROUP.test(text2) ? text2 : null;
+  var aDuration = (text2) => DURATION.test(text2) ? text2 : null;
+  function aWhole(text2) {
+    return WHOLE.test(text2) ? Number(text2) : null;
   }
   var tenancy = (namespace, database) => `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
 
@@ -1203,28 +1203,28 @@
   }
   var words = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
   async function results(source) {
-    const { text } = await ask(source, SCREEN);
-    const body = JSON.parse(text);
+    const { text: text2 } = await ask(source, SCREEN);
+    const body = JSON.parse(text2);
     if (!Array.isArray(body.results)) {
-      throw new Error(typeof body.error === "string" ? body.error : text);
+      throw new Error(typeof body.error === "string" ? body.error : text2);
     }
     return body.results;
   }
-  function strings(answered2, field) {
-    const list = held3(answered2)?.[field];
+  function strings(answered2, field2) {
+    const list = held3(answered2)?.[field2];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
-  function offer(id, names2) {
+  function offer(id, names3) {
     const select = at(id);
     const kept3 = value(id);
     clear(id);
-    for (const name of names2) {
+    for (const name of names3) {
       const option = made("option");
       option.value = name;
       option.textContent = name;
       select.appendChild(option);
     }
-    if (names2.includes(kept3)) {
+    if (names3.includes(kept3)) {
       setValue(id, kept3);
     }
   }
@@ -1266,17 +1266,17 @@
     state("topics-status", "waiting", "asking…");
     try {
       const listed2 = strings(await valueOf(start + "INFO FOR DATABASE;", SCREEN), "topics");
-      const names2 = listed2.filter((name) => aName(name) !== null);
-      const shown3 = names2.slice(0, TOPICS_SHOWN);
+      const names3 = listed2.filter((name) => aName(name) !== null);
+      const shown3 = names3.slice(0, TOPICS_SHOWN);
       const asked2 = shown3.map((name) => `INFO FOR TOPIC ${name};`).join(" ");
       const answered2 = shown3.length === 0 ? [] : await results(start + asked2);
-      const read = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
-      draw2(read);
-      if (names2.length === 0) {
+      const read2 = answered2.map((each) => topic(each.value)).filter((each) => each !== null);
+      draw2(read2);
+      if (names3.length === 0) {
         const here2 = `${place2.namespace}.${place2.database}`;
         state("topics-status", "empty", `${here2} holds no topics — create one below.`);
-      } else if (names2.length > shown3.length) {
-        state("topics-status", "partial", `showing ${shown3.length} of ${names2.length} topics`);
+      } else if (names3.length > shown3.length) {
+        state("topics-status", "partial", `showing ${shown3.length} of ${names3.length} topics`);
       } else {
         settled("topics-status");
       }
@@ -1285,49 +1285,49 @@
       state("topics-status", "wrong", words(failure));
     }
   }
-  function numberCell(row, figure2) {
-    const box2 = row.insertCell();
+  function numberCell(row2, figure2) {
+    const box2 = row2.insertCell();
     box2.textContent = String(figure2);
     box2.classList.add("number");
   }
-  function headed(names2) {
+  function headed(names3) {
     const table = made("table");
     const head = table.createTHead().insertRow();
-    for (const name of names2) {
+    for (const name of names3) {
       const column = made("th");
       column.textContent = name;
       head.appendChild(column);
     }
     return table;
   }
-  function draw2(read) {
-    topics = read;
+  function draw2(read2) {
+    topics = read2;
     if (chosen() === null) {
       chosenName = null;
     }
     clear("topics-list");
-    if (read.length > 0) {
+    if (read2.length > 0) {
       const table = headed(["topic", "held", "last", "keeps", "repeats", "readers", "groups", "most behind"]);
       const body = table.createTBody();
-      for (const each of read) {
-        const row = body.insertRow();
+      for (const each of read2) {
+        const row2 = body.insertRow();
         const pick = made("button", each.name === chosenName ? "quiet chosen" : "quiet");
         pick.type = "button";
         pick.textContent = each.name;
         pick.setAttribute("aria-pressed", String(each.name === chosenName));
         pick.addEventListener("click", () => choose(each.name));
-        row.insertCell().appendChild(pick);
-        numberCell(row, held5(each));
+        row2.insertCell().appendChild(pick);
+        numberCell(row2, held5(each));
         if (each.partitions === null) {
-          numberCell(row, each.last);
+          numberCell(row2, each.last);
         } else {
-          row.insertCell().textContent = `${each.partitions.each.length} partitions`;
+          row2.insertCell().textContent = `${each.partitions.each.length} partitions`;
         }
-        row.insertCell().textContent = keeps(each);
-        row.insertCell().textContent = repeats(each);
-        numberCell(row, readerCount(each));
-        numberCell(row, groupCount(each));
-        numberCell(row, behind(each));
+        row2.insertCell().textContent = keeps(each);
+        row2.insertCell().textContent = repeats(each);
+        numberCell(row2, readerCount(each));
+        numberCell(row2, groupCount(each));
+        numberCell(row2, behind(each));
       }
       at("topics-list").appendChild(table);
     }
@@ -1354,12 +1354,12 @@
     const table = headed(["partition", "first", "last", "held", "behind"]);
     const rows2 = table.createTBody();
     for (const each of split.each) {
-      const row = rows2.insertRow();
-      numberCell(row, each.index);
-      row.insertCell().textContent = each.first === null ? "none held" : String(each.first);
-      numberCell(row, each.last);
-      numberCell(row, heldIn(each));
-      numberCell(row, each.behind);
+      const row2 = rows2.insertRow();
+      numberCell(row2, each.index);
+      row2.insertCell().textContent = each.first === null ? "none held" : String(each.first);
+      numberCell(row2, each.last);
+      numberCell(row2, heldIn(each));
+      numberCell(row2, each.behind);
     }
     at("topic-partitions").appendChild(
       note(split.by === null ? "spread over the partitions evenly" : `a message's partition is chosen by ${split.by}`)
@@ -1387,10 +1387,10 @@
       const readers = headed(["reader", "position", "lag"]);
       const readerRows = readers.createTBody();
       for (const [name, each] of found.readers) {
-        const row = readerRows.insertRow();
-        row.insertCell().textContent = name;
-        numberCell(row, each.position);
-        numberCell(row, each.lag);
+        const row2 = readerRows.insertRow();
+        row2.insertCell().textContent = name;
+        numberCell(row2, each.position);
+        numberCell(row2, each.lag);
       }
       at("topic-readers").appendChild(found.readers.size > 0 ? readers : note("nobody reads under a name"));
       const groups = headed([
@@ -1406,8 +1406,8 @@
       ]);
       const groupRows = groups.createTBody();
       for (const [name, each] of found.groups) {
-        const row = groupRows.insertRow();
-        row.insertCell().textContent = name;
+        const row2 = groupRows.insertRow();
+        row2.insertCell().textContent = name;
         const figures = [
           each.position,
           each.committed,
@@ -1418,18 +1418,18 @@
           each.dead_lettered
         ];
         for (const figure2 of figures) {
-          numberCell(row, figure2);
+          numberCell(row2, figure2);
         }
-        row.insertCell().textContent = each.deadline;
+        row2.insertCell().textContent = each.deadline;
       }
       at("topic-groups").appendChild(found.groups.size > 0 ? groups : note("no group settles this topic"));
       drawPartitions(found);
       const ingested = headed(["consumer", "group", "into", "here"]);
       const ingestedRows = ingested.createTBody();
       for (const [name, each] of found.ingestedBy) {
-        const row = ingestedRows.insertRow();
+        const row2 = ingestedRows.insertRow();
         for (const cell2 of [name, each.group, each.into, each.running ? "running" : "not running"]) {
-          row.insertCell().textContent = cell2;
+          row2.insertCell().textContent = cell2;
         }
       }
       at("topic-ingested").appendChild(
@@ -1476,9 +1476,9 @@
         const inside = fieldsOf(record2.value) ?? {};
         const position = typeof inside["position"] === "number" ? inside["position"] : last;
         last = Math.max(last, position);
-        const row = body.insertRow();
-        numberCell(row, position);
-        row.insertCell().textContent = JSON.stringify(inside["value"] ?? null);
+        const row2 = body.insertRow();
+        numberCell(row2, position);
+        row2.insertCell().textContent = JSON.stringify(inside["value"] ?? null);
       }
       at("browse-list").appendChild(table);
       at("browse-next").dataset["after"] = String(last);
@@ -1515,8 +1515,8 @@
   var SCREEN2 = "Data";
   var opened = null;
   var words2 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
-  var names = (answered2, field) => {
-    const list = held3(answered2)?.[field];
+  var names = (answered2, field2) => {
+    const list = held3(answered2)?.[field2];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   };
   function kind(about) {
@@ -1532,8 +1532,8 @@
     }
     return about["schemafull"] === true ? "table" : "table, schemaless";
   }
-  var count = (about, field) => {
-    const list = about[field];
+  var count = (about, field2) => {
+    const list = about[field2];
     return Array.isArray(list) ? String(list.length) : "";
   };
   function selection() {
@@ -1591,13 +1591,13 @@
         state("data-status", "empty", "This database holds no table yet — define one on Run.");
         return;
       }
-      const { text } = await ask(
+      const { text: text2 } = await ask(
         selecting + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "),
         SCREEN2
       );
-      const body = JSON.parse(text);
+      const body = JSON.parse(text2);
       if (!Array.isArray(body.results)) {
-        throw new Error(typeof body.error === "string" ? body.error : text);
+        throw new Error(typeof body.error === "string" ? body.error : text2);
       }
       const answers = body.results.slice(2);
       draw3(tables.map((name, at_) => ({ name, about: held3(answers[at_] ?? null) ?? {} })));
@@ -1606,9 +1606,9 @@
       state("data-status", "wrong", words2(failure));
     }
   }
-  function draw3(read) {
+  function draw3(read2) {
     clear("data-list");
-    if (read.length === 0) return;
+    if (read2.length === 0) return;
     const table = made("table");
     const head = table.createTHead().insertRow();
     for (const column of ["table", "kind", "fields", "indexes", ""]) {
@@ -1617,17 +1617,17 @@
       head.appendChild(cell2);
     }
     const body = table.createTBody();
-    for (const each of read) {
-      const row = body.insertRow();
+    for (const each of read2) {
+      const row2 = body.insertRow();
       const name = made("button", "link");
       name.type = "button";
       name.textContent = each.name;
       name.addEventListener("click", () => openTable(each));
-      row.insertCell().appendChild(name);
-      row.insertCell().textContent = kind(each.about);
-      row.insertCell().textContent = count(each.about, "fields");
-      row.insertCell().textContent = count(each.about, "indexes");
-      const actions = row.insertCell();
+      row2.insertCell().appendChild(name);
+      row2.insertCell().textContent = kind(each.about);
+      row2.insertCell().textContent = count(each.about, "fields");
+      row2.insertCell().textContent = count(each.about, "indexes");
+      const actions = row2.insertCell();
       actions.className = "actions";
       const browse2 = made("button", "quiet small");
       browse2.type = "button";
@@ -1642,8 +1642,8 @@
     opened = one2;
     write("table-dialog-title", one2.name);
     say("table-status", kind(one2.about));
-    const named = (field) => {
-      const list = one2.about[field];
+    const named = (field2) => {
+      const list = one2.about[field2];
       return Array.isArray(list) ? list.map(
         (each) => typeof each === "object" && each !== null && "name" in each ? String(each.name) : String(each)
       ).join(", ") : "";
@@ -1760,15 +1760,15 @@
     at("detail-name").textContent = name;
     clear("detail-facts");
     if (Array.isArray(answered2?.records)) {
-      for (const row of answered2.records) {
+      for (const row2 of answered2.records) {
         const id = made("p", "faint");
-        id.textContent = row.id;
+        id.textContent = row2.id;
         at("detail-facts").appendChild(id);
-        if (typeof row.value === "object" && row.value !== null) {
+        if (typeof row2.value === "object" && row2.value !== null) {
           const into = made("div");
-          into.id = `detail-row-${row.id.replace(/[^a-zA-Z0-9]/g, "-")}`;
+          into.id = `detail-row-${row2.id.replace(/[^a-zA-Z0-9]/g, "-")}`;
           at("detail-facts").appendChild(into);
-          facts(into.id, row.value);
+          facts(into.id, row2.value);
         }
       }
       if (answered2.records.length === 0) {
@@ -1903,9 +1903,9 @@
     setValue("drawer-remove-confirm", "");
     shapeRemove();
     if (!subject.self) {
-      const note2 = made("p", "faint");
-      note2.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
-      at("drawer-missing").appendChild(note2);
+      const note3 = made("p", "faint");
+      note3.textContent = `${subject.name} answers on ${subject.endpoint ?? "an address this node did not record"}.`;
+      at("drawer-missing").appendChild(note3);
     }
     say("drawer-status", "");
     preview();
@@ -1995,8 +1995,8 @@
   var PERIODS = ["awareness", "collection", "round", "campaign", "lease"];
   var mine = [];
   var rows = [];
-  function aFingerprint(text) {
-    const plain = text.replace(/:/g, "").toLowerCase();
+  function aFingerprint(text2) {
+    const plain = text2.replace(/:/g, "").toLowerCase();
     return FINGERPRINT.test(plain) ? plain : null;
   }
   function daysLeft(expires) {
@@ -2046,15 +2046,15 @@
   function drawJoin() {
     const select = at("join-row");
     clear("join-row");
-    const open3 = rows.filter((row) => (row.node ?? null) === null && typeof row.name === "string");
+    const open3 = rows.filter((row2) => (row2.node ?? null) === null && typeof row2.name === "string");
     if (open3.length === 0) {
       hide("join-token", true);
     }
-    for (const row of open3) {
+    for (const row2 of open3) {
       const option = made("option");
-      option.value = row.name ?? "";
-      const until = row.join_expires_ms;
-      option.textContent = (row.name ?? "") + (typeof until === "number" ? ` (a token waits until ${new Date(until).toLocaleTimeString()})` : "");
+      option.value = row2.name ?? "";
+      const until = row2.join_expires_ms;
+      option.textContent = (row2.name ?? "") + (typeof until === "number" ? ` (a token waits until ${new Date(until).toLocaleTimeString()})` : "");
       select.appendChild(option);
     }
     shapeJoin();
@@ -2087,7 +2087,7 @@
       return { missing: `type ${fingerprint.slice(0, 8)} again to confirm` };
     }
     const own2 = mine.find((shown3) => shown3.fingerprint === fingerprint);
-    const pinned = rows.find((row) => row.fingerprint === fingerprint);
+    const pinned = rows.find((row2) => row2.fingerprint === fingerprint);
     return {
       statement: `REVOKE CERTIFICATE '${fingerprint}';`,
       says: (own2 !== void 0 ? `This is the certificate THIS node presents on its ${own2.surface ?? ""} surface — every peer will refuse this node until it is given a new one. ` : pinned !== void 0 ? `This is the certificate pinned to ${pinned.name ?? "a row"}. ` : "") + "Every node refuses it, in both directions, for good."
@@ -2128,14 +2128,14 @@
       "statement" in composed ? `Replaces the policy on every node: ${composed.statement} The node refuses a set whose periods do not hold together, and says which.` : composed.missing
     );
   }
-  async function send(statement2, status, why) {
-    say(status, "sending…");
+  async function send(statement2, status2, why) {
+    say(status2, "sending…");
     try {
       const answered2 = await valueOf(statement2, SCREEN3, why);
-      say(status, "done");
+      say(status2, "done");
       return answered2 !== null;
     } catch (failure) {
-      say(status, told(failure), true);
+      say(status2, told(failure), true);
       return false;
     }
   }
@@ -2280,9 +2280,9 @@ Shown once. The node keeps only its digest.`);
   //! behind a disclosure. The difference matters because reading TessariQL to find
   //! out what a button does makes the language the interface, and then everybody
   //! who cannot read it is guessing.
-  function quoted(text) {
+  function quoted(text2) {
     let out = "'";
-    for (const character of text) {
+    for (const character of text2) {
       if (character === "'") {
         out += "\\'";
       } else if (character === "\\") {
@@ -2406,7 +2406,7 @@ Shown once. The node keeps only its digest.`);
     write("remove-preview", statement2 ?? "");
   }
   function wire12() {
-    for (const field of [
+    for (const field2 of [
       "new-name",
       "new-scope",
       "new-role",
@@ -2414,10 +2414,10 @@ Shown once. The node keeps only its digest.`);
       "new-password",
       "new-reach"
     ]) {
-      at(field).addEventListener("input", shapeTheForm);
-      at(field).addEventListener("change", shapeTheForm);
+      at(field2).addEventListener("input", shapeTheForm);
+      at(field2).addEventListener("change", shapeTheForm);
     }
-    for (const field of [
+    for (const field2 of [
       "change-name",
       "change-what",
       "change-password",
@@ -2425,11 +2425,11 @@ Shown once. The node keeps only its digest.`);
       "change-role-other",
       "change-why"
     ]) {
-      at(field).addEventListener("input", shapeTheChange);
-      at(field).addEventListener("change", shapeTheChange);
+      at(field2).addEventListener("input", shapeTheChange);
+      at(field2).addEventListener("change", shapeTheChange);
     }
-    for (const field of ["remove-name", "remove-confirm", "remove-why"]) {
-      at(field).addEventListener("input", shapeTheRemoval);
+    for (const field2 of ["remove-name", "remove-confirm", "remove-why"]) {
+      at(field2).addEventListener("input", shapeTheRemoval);
     }
     shapeTheForm();
     shapeTheChange();
@@ -2487,37 +2487,37 @@ Shown once. The node keeps only its digest.`);
   function intended() {
     const found = [];
     for (let index = 0; index < ROWS; index += 1) {
-      const read = (part) => trimmed(`peer-${index}-${part}`);
-      if (IDENTIFYING.every((part) => read(part) === "")) {
+      const read2 = (part) => trimmed(`peer-${index}-${part}`);
+      if (IDENTIFYING.every((part) => read2(part) === "")) {
         continue;
       }
       const roles = BITS2.filter((bit) => at(`peer-${index}-${bit}`).checked);
       found.push({
-        name: read("name"),
-        endpoint: read("endpoint"),
-        clients: read("clients"),
-        node: read("node"),
-        fingerprint: read("fingerprint"),
-        replicates: read("replicates").replace(/\s+/g, " "),
+        name: read2("name"),
+        endpoint: read2("endpoint"),
+        clients: read2("clients"),
+        node: read2("node"),
+        fingerprint: read2("fingerprint"),
+        replicates: read2("replicates").replace(/\s+/g, " "),
         roles
       });
     }
     return found;
   }
   function incomplete(rows2) {
-    for (const [index, row] of rows2.entries()) {
-      const missing3 = aName(row.name) === null ? "a name: a letter or _, then letters, digits or _" : row.endpoint === "" ? "a peer address" : row.node !== "" && row.fingerprint !== "" ? "a node id or a fingerprint, not both" : row.fingerprint !== "" && aFingerprint(row.fingerprint) === null ? "a fingerprint of 64 hexadecimal digits" : !REACH.test(row.replicates) ? "what it replicates: STORE, NAMESPACE n or DATABASE n.d" : row.roles.length === 0 ? "at least one role" : null;
+    for (const [index, row2] of rows2.entries()) {
+      const missing3 = aName(row2.name) === null ? "a name: a letter or _, then letters, digits or _" : row2.endpoint === "" ? "a peer address" : row2.node !== "" && row2.fingerprint !== "" ? "a node id or a fingerprint, not both" : row2.fingerprint !== "" && aFingerprint(row2.fingerprint) === null ? "a fingerprint of 64 hexadecimal digits" : !REACH.test(row2.replicates) ? "what it replicates: STORE, NAMESPACE n or DATABASE n.d" : row2.roles.length === 0 ? "at least one role" : null;
       if (missing3 !== null) {
         return `row ${index + 1} needs ${missing3}`;
       }
     }
     return null;
   }
-  var own = (rows2) => thisNode === null ? void 0 : rows2.find((row) => row.node === thisNode?.id);
+  var own = (rows2) => thisNode === null ? void 0 : rows2.find((row2) => row2.node === thisNode?.id);
   function formation(rows2) {
-    const declarations = rows2.map((row) => {
-      const pinned = aFingerprint(row.fingerprint);
-      return `DEFINE REPLICA ${row.name} AT ${quoted(row.endpoint)}` + (row.clients === "" ? "" : ` CLIENTS AT ${quoted(row.clients)}`) + (row.node === "" ? "" : ` NODE ${quoted(row.node)}`) + ` ROLES ${row.roles.join(", ")} REPLICATES ${row.replicates}` + (pinned === null ? "" : ` FINGERPRINT '${pinned}'`) + ";";
+    const declarations = rows2.map((row2) => {
+      const pinned = aFingerprint(row2.fingerprint);
+      return `DEFINE REPLICA ${row2.name} AT ${quoted(row2.endpoint)}` + (row2.clients === "" ? "" : ` CLIENTS AT ${quoted(row2.clients)}`) + (row2.node === "" ? "" : ` NODE ${quoted(row2.node)}`) + ` ROLES ${row2.roles.join(", ")} REPLICATES ${row2.replicates}` + (pinned === null ? "" : ` FINGERPRINT '${pinned}'`) + ";";
     });
     const mine2 = own(rows2);
     return [
@@ -2538,8 +2538,8 @@ Shown once. The node keeps only its digest.`);
       say("form-says", missing3, true);
       return;
     }
-    const named = rows2.map((row) => row.name).join(", ");
-    const waiting = rows2.filter((row) => row.node === "" && row.fingerprint === "").map((row) => row.name);
+    const named = rows2.map((row2) => row2.name).join(", ");
+    const waiting = rows2.filter((row2) => row2.node === "" && row2.fingerprint === "").map((row2) => row2.name);
     const mine2 = own(rows2);
     say(
       "form-says",
@@ -2585,9 +2585,9 @@ Shown once. The node keeps only its digest.`);
     at("open-form").addEventListener("click", () => openDialog("form-dialog"));
     at("add-peer").addEventListener("click", () => {
       for (let index = 1; index < ROWS; index += 1) {
-        const row = at(`peer-row-${index}`);
-        if (row.hidden) {
-          row.hidden = false;
+        const row2 = at(`peer-row-${index}`);
+        if (row2.hidden) {
+          row2.hidden = false;
           at(`peer-${index}-name`).focus();
           break;
         }
@@ -2741,9 +2741,12 @@ Shown once. The node keeps only its digest.`);
     setValue("grant-reach", fill.reach ?? "table");
     setValue("grant-name", fill.name ?? "");
     setValue("grant-what", fill.what ?? "");
-    setValue("grant-why", "");
+    setValue("grant-rows", "");
     say("grant-status", "");
     shape2();
+    if (fill.rows === true) {
+      at("grant-rows").focus();
+    }
     write("grant-dialog-title", direction === "take" ? `Take away from ${fill.who}` : `Give ${fill.who}`);
     openDialog("grant-dialog");
   }
@@ -2763,7 +2766,9 @@ Shown once. The node keeps only its digest.`);
         return null;
       }
       const [namespaceOf, databaseOf, table] = parts;
-      const act3 = giving ? `GRANT ${what} ON ${table} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
+      const rows2 = giving ? trimmed("grant-rows") : "";
+      const guard = rows2 === "" ? "" : ` WHERE (${rows2})`;
+      const act3 = giving ? `GRANT ${what} ON ${table}${guard} TO ${who};` : `REVOKE ${what} ON ${table} FROM ${who};`;
       return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act3}`;
     }
     const target = reach3 === "store" ? "STORE" : `${reach3 === "namespace" ? "NAMESPACE" : "DATABASE"} ${name}`;
@@ -2789,7 +2794,9 @@ Shown once. The node keeps only its digest.`);
     const today = lookup(who);
     const standing = today === null ? ` This panel has not been told what ${who} reaches — press List to find out.` : ` Today ${who} is ${today.role} in ${today.reach}.`;
     if (table && giving) {
-      return `Gives ${who} ${what} on ${trimmed("grant-name")}. If they hold no table grant yet this NARROWS them: a user with grants reaches exactly what they were granted, and nothing else their role would have allowed.` + standing;
+      const rows2 = trimmed("grant-rows");
+      const guarding = rows2 === "" ? "" : ` Only the rows WHERE (${rows2}) reach them — and only once the table's row security is on; until then the guard sleeps. Re-granting this table replaces the guard wholesale.`;
+      return `Gives ${who} ${what} on ${trimmed("grant-name")}. If they hold no table grant yet this NARROWS them: a user with grants reaches exactly what they were granted, and nothing else their role would have allowed.` + guarding + standing;
     }
     if (table) {
       return `Takes ${what} on ${trimmed("grant-name")} away from ${who}. If it is their LAST table grant the node will refuse it — going from one grant to none widens them back to their whole role, which is the opposite of a revoke.` + standing;
@@ -2799,19 +2806,21 @@ Shown once. The node keeps only its digest.`);
   }
   function shape2() {
     hide("grant-name-field", reachOf() === "store");
+    hide("grant-rows-field", reachOf() !== "table" || value("grant-direction") !== "give");
     say("grant-says", statement() === null ? missing2() : says());
   }
   function wire15() {
-    for (const field of [
+    for (const field2 of [
       "grant-who",
       "grant-what",
       "grant-reach",
       "grant-name",
+      "grant-rows",
       "grant-direction",
       "grant-why"
     ]) {
-      at(field).addEventListener("input", shape2);
-      at(field).addEventListener("change", shape2);
+      at(field2).addEventListener("input", shape2);
+      at(field2).addEventListener("change", shape2);
     }
     at("grant-apply").addEventListener("click", async () => {
       const sending = statement();
@@ -3055,11 +3064,11 @@ Shown once. The node keeps only its digest.`);
     return one2;
   }
   function lamps(has, wanted3) {
-    const row = made("div", "lamps");
+    const row2 = made("div", "lamps");
     for (const bit of BITS3) {
       const held6 = has.includes(bit.name);
       const asked2 = wanted3 !== null && wanted3.includes(bit.name);
-      row.appendChild(
+      row2.appendChild(
         lamp(
           bit.letter,
           held6 ? "held" : asked2 ? "wanted" : "off",
@@ -3067,7 +3076,7 @@ Shown once. The node keeps only its digest.`);
         )
       );
     }
-    return row;
+    return row2;
   }
   function fact(label, said3) {
     if (said3 === null) {
@@ -3118,14 +3127,14 @@ Shown once. The node keeps only its digest.`);
     head.append(name, lamps(has, wanted3));
     box2.appendChild(head);
     if (drained(has)) {
-      const note2 = made("p", "note warn");
-      note2.textContent = kind3 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
-      box2.appendChild(note2);
+      const note3 = made("p", "note warn");
+      note3.textContent = kind3 === "self" ? "Drained — it holds its data and answers nothing." : "Declared with no roles — drained.";
+      box2.appendChild(note3);
     }
     if (kind3 === "peer") {
-      const note2 = made("p", "faint");
-      note2.textContent = "lamps as declared here; this node has not asked it";
-      box2.appendChild(note2);
+      const note3 = made("p", "faint");
+      note3.textContent = "lamps as declared here; this node has not asked it";
+      box2.appendChild(note3);
     }
     for (const one2 of facts2) {
       if (one2 !== null) {
@@ -3177,10 +3186,10 @@ Shown once. The node keeps only its digest.`);
     if (tables.length === 0) {
       return null;
     }
-    const row = made("div", "glyphs");
+    const row2 = made("div", "glyphs");
     const label = made("p", "glyphs-truth faint");
     label.textContent = "split tables, counted on the leader's last pass — not re-measured for this screen";
-    row.appendChild(label);
+    row2.appendChild(label);
     for (const one2 of tables) {
       const glyph = made("div", "glyph");
       const name = made("span", "glyph-name");
@@ -3198,9 +3207,9 @@ Shown once. The node keeps only its digest.`);
         said3.textContent = act3;
         glyph.appendChild(said3);
       }
-      row.appendChild(glyph);
+      row2.appendChild(glyph);
     }
-    return row;
+    return row2;
   }
   function topology(scheme, seen) {
     const layer = made("section", "topology");
@@ -3253,24 +3262,24 @@ Shown once. The node keeps only its digest.`);
       return id === null || !placed.has(id);
     });
     if (loose.length > 0) {
-      const row = made("div", "realm-loose");
+      const row2 = made("div", "realm-loose");
       const tag = made("p", "faint");
       tag.textContent = "members no realm claims:";
-      row.appendChild(tag);
+      row2.appendChild(tag);
       for (const peer of loose) {
         const who = made("div", "realm-member loose");
         who.textContent = peer.name ?? "(unnamed peer)";
-        row.appendChild(who);
+        row2.appendChild(who);
       }
-      layer.appendChild(row);
+      layer.appendChild(row2);
     }
     return layer;
   }
   function linkEdge(link) {
-    const row = link.row;
-    const name = told2(row["name"]) ?? "(unnamed link)";
-    const direction = row["direction"] === "inbound" ? "receives" : "serves";
-    const endpoint = told2(row["endpoint"]);
+    const row2 = link.row;
+    const name = told2(row2["name"]) ?? "(unnamed link)";
+    const direction = row2["direction"] === "inbound" ? "receives" : "serves";
+    const endpoint = told2(row2["endpoint"]);
     const edge = made("div", "link-edge");
     const head = made("span", "link-word");
     head.textContent = `${name} — this cluster ${direction}`;
@@ -3280,7 +3289,7 @@ Shown once. The node keeps only its digest.`);
       at2.textContent = endpoint;
       edge.appendChild(at2);
     }
-    if (row["paused"] === true) {
+    if (row2["paused"] === true) {
       const held6 = made("span", "link-paused");
       held6.textContent = "paused";
       edge.appendChild(held6);
@@ -3535,53 +3544,53 @@ Shown once. The node keeps only its digest.`);
     });
     return out;
   }
-  function kept2(row) {
-    if (wanted.find !== "" && !row.searchable.includes(wanted.find)) {
+  function kept2(row2) {
+    if (wanted.find !== "" && !row2.searchable.includes(wanted.find)) {
       return false;
     }
     if (wanted.status === "drained") {
-      if (row.roles.length !== 0) {
+      if (row2.roles.length !== 0) {
         return false;
       }
-    } else if (wanted.status !== "all" && !row.roles.includes(wanted.status)) {
+    } else if (wanted.status !== "all" && !row2.roles.includes(wanted.status)) {
       return false;
     }
     switch (wanted.bound) {
       case "disk25":
-        return row.diskFree !== null && row.diskFree < 0.25;
+        return row2.diskFree !== null && row2.diskFree < 0.25;
       case "disk10":
-        return row.diskFree !== null && row.diskFree < 0.1;
+        return row2.diskFree !== null && row2.diskFree < 0.1;
       case "mem85":
-        return row.memoryUsed !== null && row.memoryUsed > 0.85;
+        return row2.memoryUsed !== null && row2.memoryUsed > 0.85;
       case "cpu80":
-        return row.cpuBusy !== null && row.cpuBusy > 0.8;
+        return row2.cpuBusy !== null && row2.cpuBusy > 0.8;
       case "stale":
-        return row.stale;
+        return row2.stale;
       default:
         return true;
     }
   }
   function compareRows(left, right) {
-    const value2 = (row) => {
+    const value2 = (row2) => {
       switch (wanted.sort) {
         case "name":
-          return row.name;
+          return row2.name;
         case "address":
-          return row.address;
+          return row2.address;
         case "roles":
-          return row.roles.length;
+          return row2.roles.length;
         case "region":
-          return row.region;
+          return row2.region;
         case "leads":
-          return row.leads;
+          return row2.leads;
         case "disk":
-          return row.diskFree;
+          return row2.diskFree;
         case "memory":
-          return row.memoryUsed;
+          return row2.memoryUsed;
         case "cpu":
-          return row.cpuBusy;
+          return row2.cpuBusy;
         case "fresh":
-          return row.stale ? Number.POSITIVE_INFINITY : row.observed;
+          return row2.stale ? Number.POSITIVE_INFINITY : row2.observed;
       }
     };
     const a = value2(left);
@@ -3601,12 +3610,12 @@ Shown once. The node keeps only its digest.`);
   function percentOf(fractionValue) {
     return fractionValue === null ? "—" : `${Math.round(fractionValue * 100)}%`;
   }
-  function freshCell(row) {
-    if (row.observed === null) {
+  function freshCell(row2) {
+    if (row2.observed === null) {
       return "—";
     }
-    const said3 = row.observed === 0 ? "now" : `${row.observed}s ago`;
-    return row.stale ? `stale · ${said3}` : said3;
+    const said3 = row2.observed === 0 ? "now" : `${row2.observed}s ago`;
+    return row2.stale ? `stale · ${said3}` : said3;
   }
   function lamps2(roles) {
     return ["serving", "writable", "coordinating"].map((bit) => roles.includes(bit) ? bit.charAt(0).toUpperCase() : "·").join("");
@@ -3633,14 +3642,14 @@ Shown once. The node keeps only its digest.`);
       const headRow = head.insertRow();
       for (const column of COLUMNS) {
         const th = document.createElement("th");
-        const button = made("button", "sort");
-        button.type = "button";
-        button.textContent = column.label + (wanted.sort === column.key ? wanted.dir === 1 ? " ▲" : " ▼" : "");
-        button.setAttribute(
+        const button2 = made("button", "sort");
+        button2.type = "button";
+        button2.textContent = column.label + (wanted.sort === column.key ? wanted.dir === 1 ? " ▲" : " ▼" : "");
+        button2.setAttribute(
           "aria-sort",
           wanted.sort === column.key ? wanted.dir === 1 ? "ascending" : "descending" : "none"
         );
-        button.addEventListener("click", () => {
+        button2.addEventListener("click", () => {
           if (wanted.sort === column.key) {
             wanted.dir = -wanted.dir;
           } else {
@@ -3650,15 +3659,15 @@ Shown once. The node keeps only its digest.`);
           renderFilters();
           renderRows();
         });
-        th.appendChild(button);
+        th.appendChild(button2);
         headRow.appendChild(th);
       }
       const body = table.createTBody();
-      for (const row of rows2) {
+      for (const row2 of rows2) {
         const tr = body.insertRow();
         tr.tabIndex = 0;
         tr.classList.add("server-row");
-        const open3 = () => show3(row.subject);
+        const open3 = () => show3(row2.subject);
         tr.addEventListener("click", open3);
         tr.addEventListener("keydown", (pressed) => {
           if (pressed.key === "Enter" || pressed.key === " ") {
@@ -3667,18 +3676,18 @@ Shown once. The node keeps only its digest.`);
           }
         });
         const cells = [
-          row.name,
-          row.address ?? "—",
-          row.roles.length === 0 ? "drained" : lamps2(row.roles),
-          row.region ?? "—",
-          row.leads ?? "—",
-          percentOf(row.diskFree),
-          percentOf(row.memoryUsed),
-          percentOf(row.cpuBusy),
-          freshCell(row)
+          row2.name,
+          row2.address ?? "—",
+          row2.roles.length === 0 ? "drained" : lamps2(row2.roles),
+          row2.region ?? "—",
+          row2.leads ?? "—",
+          percentOf(row2.diskFree),
+          percentOf(row2.memoryUsed),
+          percentOf(row2.cpuBusy),
+          freshCell(row2)
         ];
-        for (const text of cells) {
-          tr.insertCell().textContent = text;
+        for (const text2 of cells) {
+          tr.insertCell().textContent = text2;
         }
       }
       tableInto.appendChild(table);
@@ -3726,9 +3735,9 @@ Shown once. The node keeps only its digest.`);
   var HEALTH_ROUTE = "/health";
   var READY_ROUTE = "/ready";
   var METRICS_ROUTE = "/metrics";
-  function readings(text) {
+  function readings(text2) {
     const out = {};
-    for (const line of text.split("\n")) {
+    for (const line of text2.split("\n")) {
       if (line.startsWith("#") || line.trim() === "") {
         continue;
       }
@@ -3767,13 +3776,13 @@ Shown once. The node keeps only its digest.`);
       let layout = {};
       try {
         const listed2 = held3(await valueOf("INFO FOR TOPOLOGIES;", "Node"));
-        const names2 = Array.isArray(listed2?.["topologies"]) ? listed2["topologies"].filter(
+        const names3 = Array.isArray(listed2?.["topologies"]) ? listed2["topologies"].filter(
           (name) => typeof name === "string"
         ) : [];
-        if (names2.length === 0) {
+        if (names3.length === 0) {
           layout = { ...layout, topology: null };
         } else {
-          const scheme = held3(await valueOf(`INFO FOR TOPOLOGY ${names2[0]};`, "Node"));
+          const scheme = held3(await valueOf(`INFO FOR TOPOLOGY ${names3[0]};`, "Node"));
           layout = { ...layout, topology: scheme ?? null };
         }
       } catch {
@@ -3799,15 +3808,15 @@ Shown once. The node keeps only its digest.`);
         if (typeof held6 !== "object" || held6 === null) {
           return null;
         }
-        const row = held6;
-        const above = typeof row["above"] === "number" ? row["above"] / 100 : null;
-        const within = typeof row["within"] === "string" ? row["within"] : null;
-        const spacing = typeof row["spacing"] === "string" ? row["spacing"] : null;
+        const row2 = held6;
+        const above = typeof row2["above"] === "number" ? row2["above"] / 100 : null;
+        const within = typeof row2["within"] === "string" ? row2["within"] : null;
+        const spacing = typeof row2["spacing"] === "string" ? row2["spacing"] : null;
         if (above === null || within === null || spacing === null) {
           return null;
         }
-        const epoch = typeof row["epoch"] === "number" ? ` · epoch ${String(row["epoch"])}` : "";
-        const version = typeof row["version"] === "number" ? ` · version ${String(row["version"])}` : "";
+        const epoch = typeof row2["epoch"] === "number" ? ` · epoch ${String(row2["epoch"])}` : "";
+        const version = typeof row2["version"] === "number" ? ` · version ${String(row2["version"])}` : "";
         return `load above ${above.toFixed(2)} within ${within}, spacing ${spacing}${epoch}${version}`;
       };
       const policy2 = balancerLine(balancer);
@@ -3829,8 +3838,8 @@ Shown once. The node keeps only its digest.`);
           settled("replication-status");
           const edges = [];
           const lines = [];
-          for (const row of rows2) {
-            const link = row ?? {};
+          for (const row2 of rows2) {
+            const link = row2 ?? {};
             const name = typeof link["name"] === "string" ? link["name"] : null;
             const direction = typeof link["direction"] === "string" ? link["direction"] : "?";
             const endpoint = typeof link["endpoint"] === "string" ? link["endpoint"] : "?";
@@ -3895,8 +3904,8 @@ Shown once. The node keeps only its digest.`);
         } else {
           settled("pools-status");
           facts("pools-facts", {
-            pools: rows2.map((row) => {
-              const pool = row ?? {};
+            pools: rows2.map((row2) => {
+              const pool = row2 ?? {};
               const name = typeof pool["name"] === "string" ? pool["name"] : "?";
               const max = typeof pool["max_concurrent"] === "number" ? String(pool["max_concurrent"]) : "?";
               const kinds = ["reads", "writes", "definitions"].filter((kind3) => pool[kind3] === true).join(", ");
@@ -3969,8 +3978,8 @@ Shown once. The node keeps only its digest.`);
       }
       openDialog("mine-dialog");
     });
-    for (const field of ["mine-current", "mine-new", "mine-again"]) {
-      at(field).addEventListener("input", shapeMine);
+    for (const field2 of ["mine-current", "mine-new", "mine-again"]) {
+      at(field2).addEventListener("input", shapeMine);
     }
     at("mine").addEventListener("click", async () => {
       const name = trimmed("user");
@@ -3987,20 +3996,20 @@ Shown once. The node keeps only its digest.`);
           body: value("mine-new"),
           credentials: "omit"
         });
-        const text = await reply.text();
+        const text2 = await reply.text();
         record({
           what: "Change your own password — POST /password as " + name,
-          said: reply.status >= 400 ? reason(text) : "changed; every session ended",
+          said: reply.status >= 400 ? reason(text2) : "changed; every session ended",
           failed: reply.status >= 400,
           ms: Math.round(performance.now() - started),
           screen: "Users · your own password"
         });
         if (reply.status >= 400) {
-          say("mine-status", reason(text), true);
+          say("mine-status", reason(text2), true);
           return;
         }
-        for (const field of ["mine-current", "mine-new", "mine-again"]) {
-          setValue(field, "");
+        for (const field2 of ["mine-current", "mine-new", "mine-again"]) {
+          setValue(field2, "");
         }
         shapeMine();
         closeDialog("mine-dialog");
@@ -4016,41 +4025,41 @@ Shown once. The node keeps only its digest.`);
   //! Running a script, and showing what came back.
   var drawing = "auto";
   var answered = null;
-  function one(pane2, result) {
+  function one(pane3, result) {
     if (result.kind === "records" && Array.isArray(result.records)) {
       const records = result.records;
       const table = records.length === 0 ? null : drawn(records);
       if (table === null) {
-        pane2.appendChild(shown(records.length === 0 ? "(no records)" : records));
+        pane3.appendChild(shown(records.length === 0 ? "(no records)" : records));
       } else {
-        pane2.appendChild(table);
+        pane3.appendChild(table);
       }
-      pane2.appendChild(
+      pane3.appendChild(
         trailer("(" + records.length + " record(s), via " + String(result.path) + ")")
       );
-      for (const note2 of result.notes ?? []) {
-        pane2.appendChild(trailer("note " + note2.kind + ": " + note2.message));
+      for (const note3 of result.notes ?? []) {
+        pane3.appendChild(trailer("note " + note3.kind + ": " + note3.message));
       }
       return;
     }
     if (result.kind === "done") {
-      pane2.appendChild(trailer("ok"));
+      pane3.appendChild(trailer("ok"));
       return;
     }
-    pane2.appendChild(shown(result));
+    pane3.appendChild(shown(result));
   }
   function paint() {
-    const pane2 = at("answer");
-    pane2.textContent = "";
+    const pane3 = at("answer");
+    pane3.textContent = "";
     if (answered === null) {
       return;
     }
     if (drawing === "json" || !Array.isArray(answered.results)) {
-      pane2.appendChild(shown(answered));
+      pane3.appendChild(shown(answered));
       return;
     }
     for (const result of answered.results) {
-      one(pane2, result);
+      one(pane3, result);
     }
   }
   async function run() {
@@ -4058,13 +4067,13 @@ Shown once. The node keeps only its digest.`);
     answered = null;
     clear("answer");
     try {
-      const { reply, text } = await ask(value("script"), "Query");
+      const { reply, text: text2 } = await ask(value("script"), "Query");
       try {
-        answered = JSON.parse(text);
+        answered = JSON.parse(text2);
       } catch {
         answered = null;
         const block = made("pre");
-        block.textContent = text;
+        block.textContent = text2;
         at("answer").appendChild(block);
       }
       paint();
@@ -4074,11 +4083,11 @@ Shown once. The node keeps only its digest.`);
     }
   }
   function wire19() {
-    for (const button of all("[data-shape]")) {
-      button.addEventListener("click", () => {
-        drawing = button.dataset["shape"] ?? "auto";
+    for (const button2 of all("[data-shape]")) {
+      button2.addEventListener("click", () => {
+        drawing = button2.dataset["shape"] ?? "auto";
         for (const other of all("[data-shape]")) {
-          other.classList.toggle("chosen", other === button);
+          other.classList.toggle("chosen", other === button2);
         }
         paint();
       });
@@ -4110,7 +4119,13 @@ Shown once. The node keeps only its digest.`);
       const fields = grant;
       const table = typeof fields["table"] === "string" ? fields["table"] : "a dropped table";
       const full = namespace !== null && database !== null ? `${namespace}.${database}.${table}` : table;
-      out.push({ kind: "table grant", what: words3(fields["verbs"]), on: full, reach: "table" });
+      const guard = typeof fields["guard"] === "string" ? ` WHERE (${fields["guard"]})` : "";
+      out.push({
+        kind: "table grant",
+        what: words3(fields["verbs"]) + guard,
+        on: full,
+        reach: "table"
+      });
     }
     for (const authority of Array.isArray(one2["authorities"]) ? one2["authorities"] : []) {
       if (typeof authority !== "object" || authority === null) continue;
@@ -4138,11 +4153,11 @@ Shown once. The node keeps only its digest.`);
     }
     const body = table.createTBody();
     for (const one2 of list) {
-      const row = body.insertRow();
-      row.insertCell().textContent = one2.kind;
-      row.insertCell().textContent = one2.what;
-      row.insertCell().textContent = one2.on === "store" ? "the whole store" : one2.on;
-      const cell2 = row.insertCell();
+      const row2 = body.insertRow();
+      row2.insertCell().textContent = one2.kind;
+      row2.insertCell().textContent = one2.what;
+      row2.insertCell().textContent = one2.on === "store" ? "the whole store" : one2.on;
+      const cell2 = row2.insertCell();
       cell2.className = "actions";
       const revoke = made("button", "quiet small danger");
       revoke.type = "button";
@@ -4268,16 +4283,16 @@ Shown once. The node keeps only its digest.`);
   //! called, reported as success. The record key had already been fixed this way
   //! four lines above; the table had not.
   var inDetail = (kind3, name) => (answered2) => show2(kind3, name, answered2);
-  function splitAt(text, separator) {
-    const at2 = text.indexOf(separator);
-    return at2 < 0 ? [text, ""] : [text.slice(0, at2), text.slice(at2 + separator.length)];
+  function splitAt(text2, separator) {
+    const at2 = text2.indexOf(separator);
+    return at2 < 0 ? [text2, ""] : [text2.slice(0, at2), text2.slice(at2 + separator.length)];
   }
-  function candidates(text) {
-    const record2 = text.includes(":");
-    const parts = record2 ? [] : text.split(".");
+  function candidates(text2) {
+    const record2 = text2.includes(":");
+    const parts = record2 ? [] : text2.split(".");
     const out = [];
     if (record2) {
-      const [reach3, key] = splitAt(text, ":");
+      const [reach3, key] = splitAt(text2, ":");
       const parts2 = reach3.split(".");
       if (parts2.length === 3) {
         const [namespaceOf, databaseOf, table] = parts2;
@@ -4299,7 +4314,7 @@ Shown once. The node keeps only its digest.`);
             } catch {
               history = null;
             }
-            show2("record", text, answered2, history);
+            show2("record", text2, answered2, history);
           }
         });
       }
@@ -4309,7 +4324,7 @@ Shown once. The node keeps only its digest.`);
       out.push({
         kind: "table",
         statement: `USE NAMESPACE ${namespace}; USE DATABASE ${database}; INFO FOR TABLE ${table};`,
-        land: inDetail("table", text)
+        land: inDetail("table", text2)
       });
     }
     if (parts.length === 2) {
@@ -4317,37 +4332,37 @@ Shown once. The node keeps only its digest.`);
       out.push({
         kind: "database",
         statement: "USE NAMESPACE " + namespace + "; USE DATABASE " + database + "; INFO FOR DATABASE;",
-        land: inDetail("database", text)
+        land: inDetail("database", text2)
       });
     }
     if (parts.length === 1) {
       out.push({
         kind: "account",
-        statement: "INFO FOR USER " + text + ";",
+        statement: "INFO FOR USER " + text2 + ";",
         // The account's own screen, which already draws a user as facts — landing
         // in Run would answer the question and lose the four things you reached
         // for the account in order to do.
         land: () => {
           show("access");
-          void showUser(text);
+          void showUser(text2);
         }
       });
       out.push({
         kind: "namespace",
-        statement: "USE NAMESPACE " + text + "; INFO FOR NAMESPACE;",
-        land: inDetail("namespace", text)
+        statement: "USE NAMESPACE " + text2 + "; INFO FOR NAMESPACE;",
+        land: inDetail("namespace", text2)
       });
     }
     return out;
   }
   async function look() {
-    const text = trimmed("search");
-    if (text === "") {
+    const text2 = trimmed("search");
+    if (text2 === "") {
       return;
     }
     write("search-says", "looking…");
     hide2();
-    for (const candidate of candidates(text)) {
+    for (const candidate of candidates(text2)) {
       try {
         const answered2 = await valueOf(candidate.statement, "Search · " + candidate.kind);
         write("search-says", "");
@@ -4359,7 +4374,7 @@ Shown once. The node keeps only its digest.`);
     }
     write(
       "search-says",
-      text.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : text.includes(".") ? "nothing here answers to that name" : "nothing here answers to that name — a table is named in full, as namespace.database.table"
+      text2.includes(":") ? "nothing here answers to that — name a record in full, as namespace.database.table:key" : text2.includes(".") ? "nothing here answers to that name" : "nothing here answers to that name — a table is named in full, as namespace.database.table"
     );
   }
   function wire21() {
@@ -4377,6 +4392,197 @@ Shown once. The node keeps only its digest.`);
         event.preventDefault();
         at("search").focus();
         at("search").select();
+      }
+    });
+  }
+
+  // src/html.ts
+  //! Build-time HTML. Nothing here reaches the browser.
+  //!
+  //! The page is a value the build renders to a string, so the committed
+  //! `index.html` is still real markup with every element present — a reader with
+  //! JavaScript off sees the structure, and the tests that assert an id resolves
+  //! are asserting something about the file rather than about a runtime.
+  //!
+  //! This is deliberately not a virtual DOM. Nothing here diffs, reconciles or
+  //! re-renders; it builds a string once, at build time, and then the module is
+  //! gone. Runtime construction is `dom.ts`, which is a different problem.
+
+  // src/ui.ts
+  //! The console's vocabulary.
+  //!
+  //! Every name here was read off the markup that already existed rather than
+  //! invented for it: the panel had been writing `pane`, `pane-head`, `split`,
+  //! `row`, `note` and `answer` by hand in five hundred places, which is a
+  //! component model that nobody had written down. This writes it down.
+  //!
+  //! The point of the band is that a new screen composes these instead of
+  //! starting again at `document.createElement`. If adding a screen is not
+  //! cheaper after this than before it, the model is wrong and the fix is here,
+  //! not in the screen.
+
+  // src/security.ts
+  //! Row security — the guards, and the switch that turns them on.
+  //!
+  //! A pane inside Access (the owner's call, 2026-11-22: the same job as the
+  //! grants it toggles, and a tab of its own is the destination trade again
+  //! only when this outgrows the pane): see which tables enforce row security,
+  //! flip the switch, and reach the grant dialog with a row predicate already
+  //! in hand. Defining and dropping the guards themselves is the grant
+  //! dialog's job — this pane hands it a prefilled form rather than growing a
+  //! second one.
+  //!
+  //! # Everything here is a statement
+  //!
+  //! The console has no private route: the list below is `INFO FOR DATABASE`
+  //! and `INFO FOR TABLE` through `/script`, the toggle is `ALTER TABLE …
+  //! ENABLE ROW SECURITY`, and the node refuses both with the caller's own
+  //! authority — a reader sees nothing here and cannot flip anything, which is
+  //! this screen's access check and needs no code of its own.
+  var SCREEN4 = "Security";
+  var names2 = (answered2, field2) => {
+    const list = held3(answered2)?.[field2];
+    return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
+  };
+  var accounts = (answered2) => {
+    const list = held3(answered2)?.["users"];
+    if (!Array.isArray(list)) return [];
+    const out = [];
+    for (const one2 of list) {
+      if (typeof one2 === "object" && one2 !== null) {
+        const name = one2["user"];
+        if (typeof name === "string") out.push(name);
+      }
+    }
+    return out;
+  };
+  function selection2() {
+    const namespace = trimmed2("security-namespace");
+    const database = trimmed2("security-database");
+    return namespace === null || database === null ? null : `USE NAMESPACE ${namespace}; USE DATABASE ${database}; `;
+  }
+  var trimmed2 = (id) => {
+    const found = value(id).trim();
+    return found === "" ? null : found;
+  };
+  async function guardsOn(selecting, table) {
+    const found = [];
+    for (const who of accounts(await valueOf(selecting + "INFO FOR USERS;", SCREEN4))) {
+      const about = held3(await valueOf(`${selecting}INFO FOR USER ${who};`, SCREEN4));
+      const grants = about === null || !Array.isArray(about["grants"]) ? [] : about["grants"];
+      for (const grant of grants) {
+        if (typeof grant !== "object" || grant === null) continue;
+        const fields = grant;
+        if (fields["table"] === table && typeof fields["guard"] === "string") {
+          const verbs = Array.isArray(fields["verbs"]) ? fields["verbs"].map(String).join(", ") : "";
+          found.push(`${who}: ${verbs} WHERE (${fields["guard"]})`);
+        }
+      }
+    }
+    return found.join("; ");
+  }
+  function draw6(list) {
+    clear("security-list");
+    const host = at("security-list");
+    if (list.length === 0) {
+      const none = made("p", "note");
+      none.textContent = "Nothing here carries row security yet.";
+      host.appendChild(none);
+      return;
+    }
+    const table = made("table");
+    const head = table.createTHead().insertRow();
+    for (const column of ["table", "row security", "guards", ""]) {
+      const cell2 = made("th");
+      cell2.textContent = column;
+      head.appendChild(cell2);
+    }
+    const body = table.createTBody();
+    for (const one2 of list) {
+      const line = body.insertRow();
+      line.insertCell().textContent = one2.name;
+      line.insertCell().textContent = one2.enforcing ? "on" : "off";
+      line.insertCell().textContent = one2.guards;
+      const actions = line.insertCell();
+      actions.className = "actions";
+      const toggle = made("button", "quiet small");
+      toggle.type = "button";
+      toggle.textContent = one2.enforcing ? "Turn off…" : "Turn on…";
+      toggle.setAttribute("aria-label", `Row security on ${one2.name}`);
+      toggle.dataset["table"] = one2.name;
+      toggle.dataset["turn"] = one2.enforcing ? "off" : "on";
+      actions.appendChild(toggle);
+      const grant = made("button", "quiet small");
+      grant.type = "button";
+      grant.textContent = "Grant with rows…";
+      grant.setAttribute("aria-label", `Grant on ${one2.name} with a row guard`);
+      grant.dataset["grant"] = one2.name;
+      actions.appendChild(grant);
+    }
+    host.appendChild(table);
+  }
+  async function read() {
+    say("security-status", "asking…");
+    const selecting = selection2();
+    if (selecting === null) {
+      draw6([]);
+      say("security-status", "choose a namespace and a database");
+      return;
+    }
+    try {
+      const tables = names2(await valueOf(selecting + "INFO FOR DATABASE;", SCREEN4), "tables");
+      const guarded = [];
+      for (const name of tables) {
+        const shape7 = held3(await valueOf(`${selecting}INFO FOR TABLE ${name};`, SCREEN4));
+        const enforcing = shape7 !== null && shape7["row_security"] === true;
+        const guards = await guardsOn(selecting, name);
+        if (enforcing || guards !== "") {
+          guarded.push({ name, enforcing, guards });
+        }
+      }
+      draw6(guarded);
+      say(
+        "security-status",
+        guarded.length === 0 ? "nothing guards these tables yet" : `${guarded.length} table${guarded.length === 1 ? "" : "s"} carry row security`
+      );
+    } catch (failure) {
+      draw6([]);
+      say("security-status", failure instanceof Error ? failure.message : String(failure), true);
+    }
+  }
+  function fullname(selecting, table) {
+    const matched = /USE NAMESPACE (\S+); USE DATABASE (\S+);/.exec(selecting);
+    return matched === null ? table : `${matched[1]}.${matched[2]}.${table}`;
+  }
+  function wire22() {
+    at("security-refresh").addEventListener("click", () => {
+      void read();
+    });
+    for (const id of ["security-namespace", "security-database"]) {
+      at(id).addEventListener("change", () => {
+        void read();
+      });
+    }
+    at("security-list").addEventListener("click", (event) => {
+      const target = event.target;
+      if (!(target instanceof HTMLElement)) return;
+      const selecting = selection2();
+      if (selecting === null) return;
+      const table = target.dataset["table"];
+      if (table !== void 0 && target.dataset["turn"] !== void 0) {
+        const turning = target.dataset["turn"] === "on" ? "ENABLE" : "DISABLE";
+        void valueOf(
+          `${selecting}ALTER TABLE ${table} ${turning} ROW SECURITY;`,
+          SCREEN4,
+          "row security switch"
+        ).then(() => read()).catch((failure) => {
+          say("security-status", failure instanceof Error ? failure.message : String(failure), true);
+        });
+        return;
+      }
+      const grant = target.dataset["grant"];
+      if (grant !== void 0) {
+        offer2({ who: "", reach: "table", name: fullname(selecting, grant), rows: true });
       }
     });
   }
@@ -4411,7 +4617,7 @@ Shown once. The node keeps only its digest.`);
     const focused = document.activeElement;
     return focused instanceof HTMLInputElement || focused instanceof HTMLTextAreaElement || focused instanceof HTMLSelectElement;
   }
-  function draw6() {
+  function draw7() {
     clear("keys-list");
     const list = made("dl", "keys");
     for (const key of KEYS) {
@@ -4427,8 +4633,8 @@ Shown once. The node keeps only its digest.`);
     at("keys-sheet").hidden = true;
   }
   var DESTINATIONS = ["run", "data", "topics", "cluster", "access", "this-node", "backup", "vault"];
-  function wire22() {
-    draw6();
+  function wire23() {
+    draw7();
     document.addEventListener("keydown", (event) => {
       if (event.key === "Escape" && !at("keys-sheet").hidden) {
         closeIt4();
@@ -4478,8 +4684,8 @@ Shown once. The node keeps only its digest.`);
     }
   }
   var current = () => remembered() ?? (darkQuery.matches ? "dark" : "light");
-  function wire23() {
-    const button = at("theme");
+  function wire24() {
+    const button2 = at("theme");
     const show4 = () => {
       const theme = current();
       if (remembered() === null) {
@@ -4490,9 +4696,9 @@ Shown once. The node keeps only its digest.`);
       const label = document.createElement("span");
       label.className = "label";
       label.textContent = theme === "dark" ? "Light theme" : "Dark theme";
-      button.replaceChildren(icon(theme === "dark" ? "sun" : "moon"), label);
+      button2.replaceChildren(icon(theme === "dark" ? "sun" : "moon"), label);
     };
-    button.addEventListener("click", () => {
+    button2.addEventListener("click", () => {
       remember2(current() === "dark" ? "light" : "dark");
       show4();
     });
@@ -4508,7 +4714,7 @@ Shown once. The node keeps only its digest.`);
   //! node's last answer about the chosen topic, so the reader sees the blast
   //! radius before the button is live. The three that lose something (removing a
   //! topic, removing a group, moving a group) ask for the name to be typed again.
-  var SCREEN4 = "Topics";
+  var SCREEN5 = "Topics";
   var MAX_IN_FLIGHT = 1e4;
   var PLACE = "choose a namespace and a database first";
   var TOPIC = "choose a topic in the list first";
@@ -4516,8 +4722,8 @@ Shown once. The node keeps only its digest.`);
   var PLURAL = new Intl.PluralRules("en");
   var counted = (count2, one2, many) => `${count2} ${PLURAL.select(count2) === "one" ? one2 : many}`;
   function optional(id, check) {
-    const text = trimmed(id);
-    return text === "" ? void 0 : check(text);
+    const text2 = trimmed(id);
+    return text2 === "" ? void 0 : check(text2);
   }
   function newTopic() {
     const place2 = where2();
@@ -4646,12 +4852,12 @@ Shown once. The node keeps only its digest.`);
     say(form.status, "sending…");
     try {
       const why = form.why === void 0 ? void 0 : trimmed(form.why) || void 0;
-      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN4, why);
+      await valueOf(tenancy(place2.namespace, place2.database) + composed.statement, SCREEN5, why);
       say(form.status, "");
       closeDialog(form.dialog);
-      for (const field of form.fields) {
-        if (at(field) instanceof HTMLInputElement) {
-          setValue(field, field === "group-start" ? "0" : "");
+      for (const field2 of form.fields) {
+        if (at(field2) instanceof HTMLInputElement) {
+          setValue(field2, field2 === "group-start" ? "0" : "");
         }
       }
       await readTopics();
@@ -4661,11 +4867,11 @@ Shown once. The node keeps only its digest.`);
     }
     shape3(form);
   }
-  function wire24() {
+  function wire25() {
     for (const form of FORMS) {
-      for (const field of form.fields) {
-        at(field).addEventListener("input", () => shape3(form));
-        at(field).addEventListener("change", () => shape3(form));
+      for (const field2 of form.fields) {
+        at(field2).addEventListener("input", () => shape3(form));
+        at(field2).addEventListener("change", () => shape3(form));
       }
       at(form.button).addEventListener("click", () => void send2(form));
       at(form.opener).addEventListener("click", () => {
@@ -4696,7 +4902,7 @@ Shown once. The node keeps only its digest.`);
   //! first and a name that fails is refused here, before anything is sent. Whether
   //! a name stays inside the backup folder, and whether a restore may land, is the
   //! node's decision, and its refusal is shown in its own words.
-  var SCREEN5 = "Backup";
+  var SCREEN6 = "Backup";
   var WHAT = {
     state: {
       statement: "BACKUP STATE",
@@ -4794,20 +5000,20 @@ Shown once. The node keeps only its digest.`);
     disable("restore-run", !("statement" in restore3));
     write("restore-says", "statement" in restore3 ? restore3.says : restore3.missing);
   }
-  async function send3(composed, button, status, answer2, shown3) {
+  async function send3(composed, button2, status2, answer2, shown3) {
     if (!("statement" in composed)) {
       return false;
     }
-    disable(button, true);
-    say(status, "working…");
+    disable(button2, true);
+    say(status2, "working…");
     write(answer2, "");
     try {
-      write(answer2, shown3(held3(await valueOf(composed.statement, SCREEN5))));
-      say(status, "done");
+      write(answer2, shown3(held3(await valueOf(composed.statement, SCREEN6))));
+      say(status2, "done");
       return true;
     } catch (failure) {
       const words6 = told(failure);
-      say(status, failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
+      say(status2, failure instanceof Unreachable ? "the node did not answer — " + words6 : words6, true);
       return false;
     } finally {
       shape4();
@@ -4833,7 +5039,7 @@ ${bytes2.toLocaleString("en")} bytes`;
       return `${databases.join(", ") || "no database"} created · ${statements.toLocaleString("en")} statements`;
     });
   }
-  function wire25() {
+  function wire26() {
     at("open-backup").addEventListener("click", () => openDialog("backup-dialog"));
     at("open-restore").addEventListener("click", () => openDialog("restore-dialog"));
     setValue("backup-name", suggested(chosenForm()));
@@ -4867,7 +5073,7 @@ ${bytes2.toLocaleString("en")} bytes`;
   //! parameters, which is what keeps a written secret out of it. Revealed values
   //! live in one element on this page and nowhere else — no storage, no log line —
   //! and are removed by Hide, by the next reveal, and by listing again.
-  var SCREEN6 = "Vault";
+  var SCREEN7 = "Vault";
   var PAGE = 50;
   var after = null;
   function place(needsVault) {
@@ -4898,10 +5104,10 @@ ${bytes2.toLocaleString("en")} bytes`;
     if ("missing" in where3) return say("vault-rec-status", where3.missing, true);
     clear("vault-rec-vaults");
     try {
-      const report = held3(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN6));
-      const names2 = Array.isArray(report?.vaults) ? report.vaults : [];
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR DATABASE;`, SCREEN7));
+      const names3 = Array.isArray(report?.vaults) ? report.vaults : [];
       const list = made("ul");
-      for (const each of names2) {
+      for (const each of names3) {
         const name = typeof each === "string" ? each : each?.name;
         if (typeof name !== "string") continue;
         const pick = made("button", "quiet");
@@ -4916,7 +5122,7 @@ ${bytes2.toLocaleString("en")} bytes`;
         list.appendChild(item);
       }
       at("vault-rec-vaults").appendChild(list);
-      say("vault-rec-status", names2.length === 0 ? "this database holds no vault" : `${names2.length} vault(s)`);
+      say("vault-rec-status", names3.length === 0 ? "this database holds no vault" : `${names3.length} vault(s)`);
     } catch (failure) {
       failed(failure);
     }
@@ -4933,7 +5139,7 @@ ${bytes2.toLocaleString("en")} bytes`;
     const bound = after === null ? void 0 : { after };
     try {
       const report = held3(
-        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN6, void 0, bound)
+        await valueOf(`${where3.tenancy}INFO FOR VAULT ${vault} RECORDS${from} LIMIT ${PAGE};`, SCREEN7, void 0, bound)
       );
       const ids = Array.isArray(report?.records) ? report.records : [];
       clear("vault-rec-ids");
@@ -4961,7 +5167,7 @@ ${bytes2.toLocaleString("en")} bytes`;
   async function reveal(where3, vault, id) {
     hideRevealed();
     try {
-      const opened2 = held3(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN6, void 0, { id }));
+      const opened2 = held3(await valueOf(`${where3}REVEAL * FROM ${vault}:$id;`, SCREEN7, void 0, { id }));
       at("vault-rec-shown").appendChild(shown(opened2 ?? {}));
       disable("vault-rec-hide", false);
       say("vault-rec-status", "revealed — the store recorded this read");
@@ -4971,24 +5177,24 @@ ${bytes2.toLocaleString("en")} bytes`;
   }
   async function writeField() {
     const where3 = place(true);
-    const field = aName(trimmed("vault-rec-field"));
+    const field2 = aName(trimmed("vault-rec-field"));
     const id = trimmed("vault-rec-id");
     if ("missing" in where3 || where3.vault === null) {
       return say("vault-rec-status", "missing" in where3 ? where3.missing : "name the vault", true);
     }
-    if (field === null) return say("vault-rec-status", "name the field", true);
+    if (field2 === null) return say("vault-rec-status", "name the field", true);
     if (id === "") return say("vault-rec-status", "name the record id", true);
     const secret = value("vault-rec-value");
     setValue("vault-rec-value", "");
     shape5();
     try {
       await valueOf(
-        `${where3.tenancy}UPSERT ${where3.vault}:$id MERGE { '${field}': $value };`,
-        SCREEN6,
+        `${where3.tenancy}UPSERT ${where3.vault}:$id MERGE { '${field2}': $value };`,
+        SCREEN7,
         void 0,
         { id: quoted(id), value: quoted(secret) }
       );
-      say("vault-rec-status", `wrote ${field} on ${id}`);
+      say("vault-rec-status", `wrote ${field2} on ${id}`);
     } catch (failure) {
       failed(failure);
     }
@@ -5002,7 +5208,7 @@ ${bytes2.toLocaleString("en")} bytes`;
     clear("vault-rec-trail");
     try {
       const by = actor === null ? "" : ` BY ${actor}`;
-      const report = held3(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN6));
+      const report = held3(await valueOf(`${where3.tenancy}INFO FOR AUDIT${by};`, SCREEN7));
       at("vault-rec-trail").appendChild(shown(report?.audit ?? []));
       say("vault-rec-status", "the audit trail, oldest first");
     } catch (failure) {
@@ -5041,7 +5247,7 @@ ${bytes2.toLocaleString("en")} bytes`;
   //! emptied as soon as its request has gone. A vault's three names are grammar
   //! in the path, so each passes `aName()` first and a name that fails is refused
   //! here, before anything is sent.
-  var SCREEN7 = "Vault";
+  var SCREEN8 = "Vault";
   function shown2(body) {
     if (typeof body !== "object" || body === null) return "";
     const answered2 = body;
@@ -5069,7 +5275,7 @@ ${bytes2.toLocaleString("en")} bytes`;
   async function act2(method, path, statusId, answerId, body) {
     say(statusId, "working…");
     try {
-      const answered2 = await route(method, path, SCREEN7, body);
+      const answered2 = await route(method, path, SCREEN8, body);
       if (answered2.status === 200) {
         write(answerId, shown2(answered2.body));
         say(statusId, "done");
@@ -5089,13 +5295,13 @@ ${bytes2.toLocaleString("en")} bytes`;
   }
   var change3 = (current2, next) => JSON.stringify({ current: current2, new: next });
   function onePath() {
-    const names2 = [
+    const names3 = [
       ["namespace", trimmed("vault-one-namespace")],
       ["database", trimmed("vault-one-database")],
       ["vault", trimmed("vault-one-name")]
     ];
     const checked = [];
-    for (const [what, name] of names2) {
+    for (const [what, name] of names3) {
       if (name === "") return { missing: `name the ${what}` };
       const held6 = aName(name);
       if (held6 === null) return { missing: `${name} is not a ${what} name` };
@@ -5123,7 +5329,7 @@ ${bytes2.toLocaleString("en")} bytes`;
     if ("path" in one2) await act_(one2.path);
     shape6();
   }
-  function wire26() {
+  function wire27() {
     const store = (method, path, body) => act2(method, path, "vault-store-status", "vault-store-answer", body).finally(shape6);
     const one2 = (method, path, body) => act2(method, path, "vault-one-status", "vault-one-answer", body);
     at("vault-store-refresh").addEventListener("click", () => void store("GET", "/vault"));
@@ -5191,12 +5397,12 @@ ${bytes2.toLocaleString("en")} bytes`;
   //! writes back the statement that made it. The keys and the value come from the
   //! `/kv` routes, so what the pane shows is what any HTTP caller of those routes
   //! would be answered.
-  var SCREEN8 = "Data";
+  var SCREEN9 = "Data";
   var TABLES_ASKED = 200;
   var KEYS_SHOWN = 100;
   var words4 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
-  function strings2(answered2, field) {
-    const list = held3(answered2)?.[field];
+  function strings2(answered2, field2) {
+    const list = held3(answered2)?.[field2];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   var inMemory = /* @__PURE__ */ new Set();
@@ -5225,13 +5431,13 @@ ${bytes2.toLocaleString("en")} bytes`;
     const start = tenancy(namespace, database);
     state("kv-status", "waiting", "asking…");
     try {
-      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN8), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
+      const tables = strings2(await valueOf(start + "INFO FOR DATABASE;", SCREEN9), "tables").filter((name) => aName(name) !== null).slice(0, TABLES_ASKED);
       let answered2 = [];
       if (tables.length > 0) {
-        const { text } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN8);
-        const body = JSON.parse(text);
+        const { text: text2 } = await ask(start + tables.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN9);
+        const body = JSON.parse(text2);
         if (!Array.isArray(body.results)) {
-          throw new Error(typeof body.error === "string" ? body.error : text);
+          throw new Error(typeof body.error === "string" ? body.error : text2);
         }
         answered2 = body.results;
       }
@@ -5268,15 +5474,15 @@ ${bytes2.toLocaleString("en")} bytes`;
     const query = `?limit=${KEYS_SHOWN}` + (prefix === "" ? "" : `&prefix=${encodeURIComponent(prefix)}`);
     state("kv-status", "waiting", "asking…");
     try {
-      const { status, body } = await route("GET", where3 + query, SCREEN8);
+      const { status: status2, body } = await route("GET", where3 + query, SCREEN9);
       if (mine2 !== listing) {
         return;
       }
       clear("kv-list");
       const keys = body.keys;
-      if (status !== 200 || !Array.isArray(keys)) {
+      if (status2 !== 200 || !Array.isArray(keys)) {
         const refused = body.error;
-        throw new Error(typeof refused === "string" ? refused : `the node answered ${status}`);
+        throw new Error(typeof refused === "string" ? refused : `the node answered ${status2}`);
       }
       drawKeys(keys.filter((each) => typeof each === "string"));
       if (inMemory.has(value("kv-space"))) {
@@ -5315,9 +5521,9 @@ ${bytes2.toLocaleString("en")} bytes`;
       return;
     }
     try {
-      const { status, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN8);
+      const { status: status2, body } = await route("GET", `${where3}/key/${encodeURIComponent(key)}`, SCREEN9);
       const shown3 = made("pre");
-      if (status === 404) {
+      if (status2 === 404) {
         shown3.textContent = `${key}: no such key — it may have expired`;
       } else {
         const { value: held6, ttl } = body;
@@ -5330,7 +5536,7 @@ ${JSON.stringify(held6, null, 2)}`;
       state("kv-status", "wrong", words4(failure));
     }
   }
-  function wire27() {
+  function wire28() {
     at("kv-space").addEventListener("change", () => void listKeys());
     at("kv-list-them").addEventListener("click", () => void listKeys());
     at("kv-refresh").addEventListener("click", () => void readSpaces());
@@ -5343,7 +5549,7 @@ ${JSON.stringify(held6, null, 2)}`;
   //! Everything here reads. A table's kind is not a field of `INFO FOR DATABASE`,
   //! so each table is asked for `INFO FOR TABLE`: a series writes back the
   //! `DEFINE SERIES` statement that made it, and a rollup says it is one.
-  var SCREEN9 = "Data";
+  var SCREEN10 = "Data";
   var TABLES_ASKED2 = 200;
   var DECLARED = /^DEFINE SERIES \S+ RETAIN (\S+?)(?: TIME (\S+?))?;/;
   function kind2(value2) {
@@ -5364,34 +5570,34 @@ ${JSON.stringify(held6, null, 2)}`;
     return { name, rollup: false, time: declared[2] ?? null, retain: declared[1] ?? "" };
   }
   var words5 = (failure) => failure instanceof Unreachable ? "the node did not answer — " + told(failure) : told(failure);
-  function strings3(answered2, field) {
-    const list = held3(answered2)?.[field];
+  function strings3(answered2, field2) {
+    const list = held3(answered2)?.[field2];
     return Array.isArray(list) ? list.filter((each) => typeof each === "string") : [];
   }
   async function readSeries() {
     const namespace = aName(value("data-namespace"));
     const database = aName(value("data-database"));
     if (namespace === null || database === null) {
-      draw7([]);
+      draw8([]);
       state("series-status", "empty", "Choose a namespace and a database that exist.");
       return;
     }
     const start = tenancy(namespace, database);
     state("series-status", "waiting", "asking…");
     try {
-      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN9), "tables").filter((name) => aName(name) !== null);
+      const tables = strings3(await valueOf(start + "INFO FOR DATABASE;", SCREEN10), "tables").filter((name) => aName(name) !== null);
       const asked2 = tables.slice(0, TABLES_ASKED2);
       let answered2 = [];
       if (asked2.length > 0) {
-        const { text } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN9);
-        const body = JSON.parse(text);
+        const { text: text2 } = await ask(start + asked2.map((name) => `INFO FOR TABLE ${name};`).join(" "), SCREEN10);
+        const body = JSON.parse(text2);
         if (!Array.isArray(body.results)) {
-          throw new Error(typeof body.error === "string" ? body.error : text);
+          throw new Error(typeof body.error === "string" ? body.error : text2);
         }
         answered2 = body.results;
       }
       const found = answered2.map((each) => kind2(each.value)).filter((each) => each !== null);
-      draw7(found);
+      draw8(found);
       if (found.length === 0) {
         state("series-status", "empty", `${namespace}.${database} holds no series — DEFINE SERIES declares one.`);
       } else if (tables.length > asked2.length) {
@@ -5400,11 +5606,11 @@ ${JSON.stringify(held6, null, 2)}`;
         settled("series-status");
       }
     } catch (failure) {
-      draw7([]);
+      draw8([]);
       state("series-status", "wrong", words5(failure));
     }
   }
-  function draw7(found) {
+  function draw8(found) {
     clear("series-list");
     if (found.length === 0) {
       return;
@@ -5426,7 +5632,7 @@ ${JSON.stringify(held6, null, 2)}`;
     }
     at("series-list").appendChild(table);
   }
-  function wire28() {
+  function wire29() {
     at("series-refresh").addEventListener("click", () => void readSeries());
     onChosen(() => void readSeries());
   }
@@ -5488,16 +5694,16 @@ ${JSON.stringify(held6, null, 2)}`;
     }
     const body = table.createTBody();
     for (const one2 of rows2) {
-      const row = body.insertRow();
+      const row2 = body.insertRow();
       const name = one2.user ?? "";
       const opener = made("button", "link");
       opener.type = "button";
       opener.textContent = name;
       opener.addEventListener("click", () => act("detail", name));
-      row.insertCell().appendChild(opener);
-      row.insertCell().textContent = said2(one2) + (one2.locked === true ? " · locked" : "");
-      row.insertCell().textContent = reach2(one2);
-      const actions = row.insertCell();
+      row2.insertCell().appendChild(opener);
+      row2.insertCell().textContent = said2(one2) + (one2.locked === true ? " · locked" : "");
+      row2.insertCell().textContent = reach2(one2);
+      const actions = row2.insertCell();
       actions.className = "actions";
       for (const listed2 of ACTIONS) {
         const action = listed2.kind === "lock" && one2.locked === true ? { kind: "unlock", label: "Unlock…" } : listed2;
@@ -5559,7 +5765,7 @@ ${JSON.stringify(held6, null, 2)}`;
     }
     write("user-count", tally(matched));
   }
-  function wire29() {
+  function wire30() {
     at("list").addEventListener("click", listUsers);
     at("user-filter").addEventListener("input", redraw);
     onArrival(["access"], () => void listUsers());
@@ -5583,7 +5789,7 @@ ${JSON.stringify(held6, null, 2)}`;
   //! one, refuses the click that would send it without a reason, and redraws the
   //! list after. Each closes its dialog only on success, so a refusal stays on
   //! screen beside the form that caused it.
-  function wire30() {
+  function wire31() {
     at("define").addEventListener("click", async () => {
       const statement2 = definition();
       if (statement2 === null) {
@@ -5681,7 +5887,7 @@ ${JSON.stringify(held6, null, 2)}`;
   //! accident of who imports whom. One list is cheaper to read and cannot drift.
   write("where", "served by " + window.location.host);
   wire16();
-  wire23();
+  wire24();
   at("skip").addEventListener("click", (event) => {
     event.preventDefault();
     at("view").focus();
@@ -5692,27 +5898,28 @@ ${JSON.stringify(held6, null, 2)}`;
   wire3();
   wire19();
   wire21();
-  wire22();
+  wire23();
   wire13();
   wire11();
   wire15();
+  wire22();
   wire10();
   wire9();
   wire6();
   wire5();
   wire12();
-  wire29();
   wire30();
+  wire31();
   wire20();
   afterApplied(refreshShown);
   wire17();
   wire18();
   wire7();
-  wire24();
   wire25();
   wire26();
-  wire28();
   wire27();
+  wire29();
+  wire28();
   wire8();
   wire14();
 })();

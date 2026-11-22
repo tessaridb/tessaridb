@@ -54,6 +54,8 @@ export function offer(fill: {
   readonly reach?: Reach;
   readonly name?: string;
   readonly what?: string;
+  /** Show the row-guard field — the Security pane's "Grant with rows…" does. */
+  readonly rows?: boolean;
 }): void {
   const direction = fill.direction ?? "give";
   setValue("grant-who", fill.who);
@@ -61,9 +63,12 @@ export function offer(fill: {
   setValue("grant-reach", fill.reach ?? "table");
   setValue("grant-name", fill.name ?? "");
   setValue("grant-what", fill.what ?? "");
-  setValue("grant-why", "");
+  setValue("grant-rows", "");
   say("grant-status", "");
   shape();
+  if (fill.rows === true) {
+    at("grant-rows").focus();
+  }
   write("grant-dialog-title", direction === "take" ? `Take away from ${fill.who}` : `Give ${fill.who}`);
   openDialog("grant-dialog");
 }
@@ -92,8 +97,12 @@ export function statement(): string | null {
       return null;
     }
     const [namespaceOf, databaseOf, table] = parts as [string, string, string];
+    // A row guard rides a give, never a take: the guard the grant carries is
+    // replaced whole by the next grant, and a revoke takes the grant.
+    const rows = giving ? trimmed("grant-rows") : "";
+    const guard = rows === "" ? "" : ` WHERE (${rows})`;
     const act = giving
-      ? `GRANT ${what} ON ${table} TO ${who};`
+      ? `GRANT ${what} ON ${table}${guard} TO ${who};`
       : `REVOKE ${what} ON ${table} FROM ${who};`;
     return `USE NAMESPACE ${namespaceOf}; USE DATABASE ${databaseOf}; ${act}`;
   }
@@ -131,10 +140,18 @@ export function says(): string {
       : ` Today ${who} is ${today.role} in ${today.reach}.`;
 
   if (table && giving) {
+    const rows = trimmed("grant-rows");
+    const guarding =
+      rows === ""
+        ? ""
+        : ` Only the rows WHERE (${rows}) reach them — and only once the table's ` +
+          `row security is on; until then the guard sleeps. Re-granting this table ` +
+          `replaces the guard wholesale.`;
     return (
       `Gives ${who} ${what} on ${trimmed("grant-name")}. If they hold no table grant ` +
       `yet this NARROWS them: a user with grants reaches exactly what they were ` +
       `granted, and nothing else their role would have allowed.` +
+      guarding +
       standing
     );
   }
@@ -155,6 +172,8 @@ export function says(): string {
 
 function shape(): void {
   hide("grant-name-field", reachOf() === "store");
+  // The guard is a give-table concept; the field hides everywhere else.
+  hide("grant-rows-field", reachOf() !== "table" || value("grant-direction") !== "give");
   say("grant-says", statement() === null ? missing() : says());
 }
 
@@ -164,6 +183,7 @@ export function wire(): void {
     "grant-what",
     "grant-reach",
     "grant-name",
+    "grant-rows",
     "grant-direction",
     "grant-why",
   ]) {

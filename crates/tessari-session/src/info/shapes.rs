@@ -14,6 +14,15 @@ pub(crate) fn shape_of(definition: &TableDefinition) -> BTreeMap<String, Value> 
     let mut shape = BTreeMap::from([
         ("table".to_owned(), Value::from(definition.name.as_str())),
         ("schemafull".to_owned(), Value::Bool(definition.schemafull)),
+        // Reported because the switch and the guards it activates are two
+        // separately visible facts: a table can carry guarded grants with the
+        // switch off (guards asleep) or the switch on with no guarded grants
+        // (every row reachable, the default-deny question visible to the
+        // operator before somebody writes a guarded grant).
+        (
+            "row_security".to_owned(),
+            Value::Bool(definition.row_security),
+        ),
         ("edge".to_owned(), Value::Bool(definition.is_edge())),
         ("bucket".to_owned(), Value::Bool(definition.is_bucket())),
         // Reported because it is **stored** and behaves like nothing else in the

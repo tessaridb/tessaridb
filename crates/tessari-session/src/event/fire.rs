@@ -165,6 +165,9 @@ impl<'a> Session<'a> {
             // The body runs inside the writer's transaction and holds none of
             // its own.
             held: None,
+            // A fresh parse cache: an event body is short-lived, and the
+            // writer's cache belongs to the writer's session.
+            guard_cache: dashmap::DashMap::new(),
         };
         // The record as the writer may read it: a read of it, authorized as the
         // writer's own would be, and then their field grant. A writer who may

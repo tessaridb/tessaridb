@@ -17,6 +17,29 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
+## 0.51.0 — 2026-11-22
+
+Row-level security: a grant narrows to the rows a predicate reaches, and a
+per-table switch turns the enforcement on.
+
+- `GRANT … ON <table> TO <user> WHERE (<predicate>)` carries a TessariQL
+  row predicate on the grant; grants on one user and table AND their
+  predicates, so several guarded grants narrow to the rows every predicate
+  admits.
+- `ALTER TABLE … ENABLE ROW SECURITY` is the declarative per-table switch
+  (default off, owner-held); without it predicates store but never enforce.
+- Enforcement sits at the session layer on every answer-producing path —
+  scans, index-served reads, identity and key reads, joins, traversals,
+  graph `PATH TO`, gathered folds, `FETCH` — and stages writes both ways:
+  a write refuses when the located row or the new row falls outside the
+  guards (`RowGuardDenied`), and a stored predicate that no longer
+  evaluates refuses the statement closed (`RowGuardInvalid`).
+- Guards synchronize across a cluster through the catalog like every other
+  definition, and the change feed delivers only the rows the guards reach.
+- The console's Access screen carries the Security pane: which tables
+  enforce, the guard texts, the switch, and the grant dialog's rows field.
+  Buckets, queues and vaults refuse row guards — they hold no rows.
+
 ## 0.50.0 — 2026-11-21
 
 Cluster operations: the cluster now watches measured load and re-homes work

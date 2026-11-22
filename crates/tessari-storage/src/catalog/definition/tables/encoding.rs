@@ -58,6 +58,9 @@ impl TableDefinition {
         if self.spread {
             fields.insert(FIELD_SPREAD.to_owned(), Value::Bool(true));
         }
+        if self.row_security {
+            fields.insert(FIELD_ROW_SECURITY.to_owned(), Value::Bool(true));
+        }
         match self.auto_split {
             super::super::AutoSplitSetting::Inherited => {}
             super::super::AutoSplitSetting::Off => {
@@ -315,6 +318,19 @@ impl TableDefinition {
                         entity: "table",
                         field: FIELD_SPREAD,
                         found: "a spread that is not true or false",
+                    });
+                }
+            },
+            // Absent rather than false in a store written before row security
+            // existed — no stored entry is touched and no migration is owed.
+            row_security: match fields.get(FIELD_ROW_SECURITY) {
+                None => false,
+                Some(Value::Bool(on)) => *on,
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_ROW_SECURITY,
+                        found: "a row-security switch that is not true or false",
                     });
                 }
             },

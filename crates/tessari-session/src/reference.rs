@@ -174,12 +174,33 @@ impl Session<'_> {
         }
 
         let mut found = BTreeMap::new();
+        // Row guards per fetched table, resolved once each (a local map for
+        // determinism at this call site, not a shared one).
+        let mut rows_of: std::collections::BTreeMap<TableId, super::guard::Rows> =
+            std::collections::BTreeMap::new();
         for ((table, id), payload) in wanted.iter().zip(payloads) {
             let Some(payload) = payload else { continue };
             let Some(allowed) = visible.get(table) else {
                 continue;
             };
-            found.insert((*table, id.clone()), self.record_of(&payload, allowed)?);
+            let record = self.record_of(&payload, allowed)?;
+            // A fetched record the guards do not reach is not followed: the
+            // answer carries it as absence, the same shape a read gives it.
+            let rows = match rows_of.get(table) {
+                Some(held) => held.clone(),
+                None => {
+                    let held = self.rows_in(transaction, *table).await?;
+                    rows_of.insert(*table, held.clone());
+                    held
+                }
+            };
+            let Some(record) = self
+                .permitted(transaction, id, record, allowed, &rows)
+                .await?
+            else {
+                continue;
+            };
+            found.insert((*table, id.clone()), record);
         }
         Ok(found)
     }

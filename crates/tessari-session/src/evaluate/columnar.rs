@@ -204,6 +204,7 @@ impl Session<'_> {
         // in every comparison.
         candidates.sort_by_cached_key(tessari_encoding::encode_record_id);
         let visible = self.visible_in(transaction, table).await?;
+        let rows = self.rows_in(transaction, table).await?;
         for id in candidates {
             let address = tessari_storage::RecordAddress::new(
                 context.namespace,
@@ -218,6 +219,14 @@ impl Session<'_> {
                 continue;
             };
             let record = self.record_of(&payload, &visible)?;
+            // The row authority applies here exactly as it does on the row
+            // walk: a candidate the guards do not reach is not confirmed.
+            let Some(record) = self
+                .permitted(transaction, &address.id, record, &visible, &rows)
+                .await?
+            else {
+                continue;
+            };
             let held = self
                 .evaluate_in(
                     transaction,

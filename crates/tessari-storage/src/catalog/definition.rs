@@ -112,6 +112,7 @@ const FIELD_CONFLICT: &str = "conflict";
 const FIELD_SHARDS: &str = "shards";
 const FIELD_PARTITION: &str = "partition";
 const FIELD_SPREAD: &str = "spread";
+const FIELD_ROW_SECURITY: &str = "row_security";
 const FIELD_AUTO_SPLIT: &str = "auto_split";
 const FIELD_EXPIRE: &str = "expire";
 const FIELD_EVENTS: &str = "events";

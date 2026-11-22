@@ -606,3 +606,85 @@ fn seen_any(seen: &Cell<Vec<String>>) -> bool {
     seen.set(held);
     any
 }
+
+/// A subscription delivers only the rows the guards reach (ADR-0140 D5):
+/// the feed filters each written change through the same compiled guards a
+/// read answers through, and a guarded-out record never arrives.
+#[test]
+fn a_guarded_subscription_delivers_only_the_rows_the_guards_reach() {
+    let db = Db::in_memory().now().unwrap();
+    let mut owner = db.session();
+    owner
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE shop; USE DATABASE shop;\n\
+             DEFINE COLLECTION orders;\n\
+             DEFINE USER root ROLE owner PASSWORD 'correct horse battery';",
+        )
+        .unwrap();
+    let mut root = db.session();
+    root.sign_in("root", PASSWORD).now().unwrap();
+    root.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    root.run_now(
+        "DEFINE USER ada ON prod.shop ROLE editor PASSWORD 'correct horse battery';\n\
+         ALTER TABLE orders ENABLE ROW SECURITY;\n\
+         GRANT read ON orders WHERE (tenant = 'a') TO ada;",
+    )
+    .unwrap();
+    // The changes the feed will see, written before it opens: one row the
+    // guard reaches, one it does not.
+    root.run_now(
+        "CREATE orders:1 = { total: 1, tenant: 'a' };\n\
+         CREATE orders:2 = { total: 2, tenant: 'b' };",
+    )
+    .unwrap();
+
+    let mut ada = db.session();
+    ada.sign_in("ada", PASSWORD).now().unwrap();
+    ada.run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+
+    let delivered = Cell::new(Vec::<String>::new());
+    let rounds = Cell::new(0_u32);
+    let committed = Commits::default();
+    let following = Following {
+        from: Sequence::new(0),
+        table: Some("orders"),
+        cursor: None,
+        condition: None,
+    };
+    // The writes happen inside the first delivery, so the subscription is
+    // unambiguously open when they land.
+    let outcome = follow(
+        &db,
+        &mut ada,
+        &following,
+        &committed,
+        &|| {
+            rounds.set(rounds.get().saturating_add(1));
+            rounds.get() > ROUNDS_ALLOWED
+        },
+        &mut |change, _name, _allowed, _cursor| {
+            if let tessaridb::ChangeKind::Written(value) = &change.kind {
+                let mut held = delivered.take();
+                held.push(format!("{value:?}"));
+                delivered.set(held);
+            }
+            true
+        },
+    )
+    .now();
+
+    outcome.expect("the guarded feed ended with a refusal");
+    let held = delivered.take();
+    assert_eq!(
+        held.len(),
+        1,
+        "the feed leaked a guarded-out record: {held:?}"
+    );
+    assert!(
+        held.iter().all(|record| record.contains("tenant")),
+        "wrong record delivered: {held:?}"
+    );
+}

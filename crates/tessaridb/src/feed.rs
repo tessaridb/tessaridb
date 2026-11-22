@@ -345,6 +345,20 @@ impl Feed {
                     held
                 }
             };
+            // Row guards (ADR-0140 D5): a written change the guards do not
+            // reach is skipped, like a change the grant list does not name —
+            // and a `Removed` carries no value to judge, so it passes (v1:
+            // the subscriber learns a record it could not read is gone, not
+            // what it held — recorded as the feed's residual in the plan).
+            if let ChangeKind::Written(value) = &change.kind {
+                let image = tessari_session::redact::seen(value.clone(), &allowed);
+                if !session
+                    .admits_row(db.store(), change.table, &change.id, &image)
+                    .await?
+                {
+                    continue;
+                }
+            }
             let mut removal = None;
             if let (Some((_, narrowed)), Some(transaction)) = (&mut self.narrowed, &mut judging) {
                 match narrowed
