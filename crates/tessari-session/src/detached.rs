@@ -94,6 +94,11 @@ impl Detached {
             across_open: false,
             event_depth: 0,
             now: std::time::SystemTime::now(),
+            // The parse cache does not travel the bridge: `Detached` is a
+            // block's state, not a session's working set, and a fresh cache
+            // only re-parses a guard text on its next use — an immutable
+            // mapping, so nothing is lost but the parse.
+            guard_cache: dashmap::DashMap::new(),
         }
     }
 

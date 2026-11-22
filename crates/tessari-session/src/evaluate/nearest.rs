@@ -116,6 +116,17 @@ impl Admit for Admitting<'_, '_, '_> {
             return Ok(false);
         };
         let record = self.session.record_of(&payload, self.visible)?;
+        // Row guards (ADR-0140): a candidate the guards do not reach is not
+        // admitted, the same verdict a failed condition gives it.
+        let rows = self.session.rows_in(self.transaction, table).await?;
+        if self
+            .session
+            .permitted(self.transaction, id, record.clone(), self.visible, &rows)
+            .await?
+            .is_none()
+        {
+            return Ok(false);
+        }
         let (condition, searched, noticed) = (
             self.testing.condition,
             self.testing.searched,

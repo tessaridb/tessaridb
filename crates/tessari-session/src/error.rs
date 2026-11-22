@@ -3013,6 +3013,61 @@ pub enum Error {
         span: Span,
     },
 
+    /// A stored row guard refused to evaluate (ADR-0140 D2).
+    ///
+    /// A predicate that errors — a field renamed after the grant, a type the
+    /// comparison refuses — must never decide on its own what is visible, in
+    /// either direction. The statement stops, the guard is named, and the
+    /// operator fixes the grant.
+    #[error(
+        "the row guard on {table:?} could not be evaluated — `{guard}`; the grant needs \
+         fixing before this table can be read under it (at {span})"
+    )]
+    RowGuardInvalid {
+        /// The table the guard belongs to.
+        table: String,
+        /// The guard's source text.
+        guard: String,
+        /// Where the predicate sits.
+        span: Span,
+    },
+
+    /// A write whose new row the table's guard does not reach (ADR-0140 D1).
+    ///
+    /// An update may not move a record out of the rows its grant reaches, and
+    /// a create may not land outside them — the refusal names the table so
+    /// the caller sees the guard, not a generic permission failure.
+    #[error(
+        "the write leaves {table:?} outside the rows your grant reaches under its row \
+         guard; change the row or the grant (at {span})"
+    )]
+    RowGuardDenied {
+        /// The table the guard belongs to.
+        table: String,
+        /// Where the statement is.
+        span: Span,
+    },
+
+    /// A row guard on a table kind that has no rows to guard (ADR-0140, the
+    /// engine survey).
+    ///
+    /// Buckets hold bytes rather than documents, a queue's records are engine
+    /// state behind a hold, and a vault is already strict — a predicate over
+    /// any of the three would either refuse every write or silently pass,
+    /// and neither is a permission.
+    #[error(
+        "{table:?} is a {kind}, and row guards name the rows of a document table; \
+         grant the table without `WHERE` (at {span})"
+    )]
+    RowGuardsOnKind {
+        /// The table the grant named.
+        table: String,
+        /// What the table is, as `INFO FOR TABLE` would say.
+        kind: &'static str,
+        /// Where the statement is.
+        span: Span,
+    },
+
     /// A revocation that would have removed a user's last grant.
     ///
     /// Which would **widen** them from a named table to every table their role

@@ -191,12 +191,21 @@ impl Session<'_> {
             return Ok((Vec::new(), None));
         };
         let visible = self.visible_in(transaction, table).await?;
+        let rows = self.rows_in(transaction, table).await?;
         let mut records = Vec::with_capacity(ids.len());
         for id in &ids {
             let address =
                 RecordAddress::new(context.namespace, context.database, table, id.clone());
             if let Some(payload) = transaction.get(&address).await? {
-                records.push((id.clone(), self.record_of(&payload, &visible)?));
+                let record = self.record_of(&payload, &visible)?;
+                // A path step into a record the guards do not reach is not a
+                // step at all: the answer carries only admissible records.
+                if let Some(record) = self
+                    .permitted(transaction, id, record, &visible, &rows)
+                    .await?
+                {
+                    records.push((id.clone(), record));
+                }
             }
         }
         let steps = u64::try_from(ids.len().saturating_sub(1)).unwrap_or(u64::MAX);

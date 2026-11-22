@@ -244,6 +244,8 @@ impl Error {
             | Self::NoSuchVerb { .. }
             | Self::AcrossKind { .. }
             | Self::FieldsOnAWrite { .. }
+            | Self::RowGuardDenied { .. }
+            | Self::RowGuardsOnKind { .. }
             | Self::LastGrant { .. }
             | Self::PasshashRefused { .. }
             | Self::PasswordUnusable { .. }
@@ -295,7 +297,11 @@ impl Error {
             | Self::FileIsNotBytes { .. }
             | Self::FileNeedsAPath { .. }
             | Self::FileIsIncomplete { .. }
-            | Self::ParameterHasNoValue { .. } => RefusalClass::Invalid,
+            | Self::ParameterHasNoValue { .. }
+            // A stored predicate that no longer evaluates is the statement
+            // saying what cannot run, like the hand-written refusals beside
+            // it — the grant is the thing to fix, not the caller's request.
+            | Self::RowGuardInvalid { .. } => RefusalClass::Invalid,
         }
     }
 }

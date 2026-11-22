@@ -236,7 +236,10 @@ impl Session<'_> {
                 {
                     reporting.collected.push(note);
                     let visible = self.visible_in(transaction, address.table).await?;
-                    let found = self.records_of(found, &visible)?;
+                    let rows = self.rows_in(transaction, address.table).await?;
+                    let found = self
+                        .permitted_records_of(transaction, found, &visible, &rows)
+                        .await?;
                     return Ok((
                         Prepared::Held(
                             claim(transaction, found, reporting)?,
@@ -254,9 +257,17 @@ impl Session<'_> {
                     .searched_for(transaction, address.table, &shown(select))
                     .await?;
                 let visible = self.visible_in(transaction, address.table).await?;
+                let rows = self.rows_in(transaction, address.table).await?;
                 let found = match transaction.get(&address).await? {
                     Some(payload) => {
-                        vec![(address.id, self.record_of(&payload, &visible)?)]
+                        let record = self.record_of(&payload, &visible)?;
+                        // A record the guards do not reach answers as absence,
+                        // the same shape a guarded scan gives it.
+                        self.permitted(transaction, &address.id, record, &visible, &rows)
+                            .await?
+                            .map(|record| (address.id, record))
+                            .into_iter()
+                            .collect()
                     }
                     None => Vec::new(),
                 };
@@ -273,6 +284,7 @@ impl Session<'_> {
                 self.refuse_reading_a_vault(transaction, id, table).await?;
                 let searched = self.searched_for(transaction, id, &shown(select)).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                let rows = self.rows_in(transaction, id).await?;
                 // ADR-0102: with no condition, a leader ranks exactly the
                 // records this node would, so an ordered `LIMIT` travels.
                 let ordered = super::shape_rules::travelling_order(select, &visible);
@@ -288,9 +300,12 @@ impl Session<'_> {
                     .await?
                 {
                     reporting.collected.push(note);
+                    let found = self
+                        .permitted_records_of(transaction, found, &visible, &rows)
+                        .await?;
                     return Ok((
                         Prepared::Held(
-                            self.records_of(found, &visible)?,
+                            found,
                             Box::new(Plan::new(AccessPath::Scan).on(table.name.text.as_str())),
                         ),
                         searched,
@@ -312,6 +327,7 @@ impl Session<'_> {
                 let (context, id) = self.resolve_readable_table(transaction, table).await?;
                 self.refuse_reading_a_vault(transaction, id, table).await?;
                 let visible = self.visible_in(transaction, id).await?;
+                let rows = self.rows_in(transaction, id).await?;
                 let part = Part::Span {
                     lower: lower.fixed(*span)?,
                     upper: upper.fixed(*span)?,
@@ -325,10 +341,10 @@ impl Session<'_> {
                     .await?
                 {
                     reporting.collected.push(note);
-                    return Ok((
-                        Prepared::Held(self.records_of(found, &visible)?, Box::new(plan)),
-                        Searched::default(),
-                    ));
+                    let found = self
+                        .permitted_records_of(transaction, found, &visible, &rows)
+                        .await?;
+                    return Ok((Prepared::Held(found, Box::new(plan)), Searched::default()));
                 }
                 let searched = self.searched_for(transaction, id, &shown(select)).await?;
                 let found = transaction
@@ -341,10 +357,10 @@ impl Session<'_> {
                         *inclusive,
                     )
                     .await?;
-                Ok((
-                    Prepared::Held(self.records_of(found, &visible)?, Box::new(plan)),
-                    searched,
-                ))
+                let found = self
+                    .permitted_records_of(transaction, found, &visible, &rows)
+                    .await?;
+                Ok((Prepared::Held(found, Box::new(plan)), searched))
             }
             Source::Traverse {
                 from,

@@ -121,6 +121,9 @@ impl Session<'_> {
                 continue;
             };
             let before = decode_payload(&stored)?;
+            // D1: a set update touches only the rows the write grant reaches.
+            self.refuse_write_outside_guard(transaction, table, &id, &before, update.span)
+                .await?;
             let after = self
                 .edit_stored(
                     transaction,
@@ -184,6 +187,12 @@ impl Session<'_> {
         // always holds a value" even when a caller sets one to `none`.
         let (payload, partial) = self
             .defaults_over(transaction, address.table, payload, partial, span)
+            .await?;
+        // D1, at the one funnel every record update takes: the record an edit
+        // produces must stay inside the rows the write grant reaches. Arm
+        // level checks cover the record that was there; this covers the one
+        // being written.
+        self.refuse_write_outside_guard(transaction, address.table, &address.id, &payload, span)
             .await?;
         // A space key keeps the instant it had: an edit changes the value and
         // not how long the key lives, as `INCR` does. The space's own `SET` is

@@ -230,6 +230,11 @@ impl Session<'_> {
                     }
                 };
                 let visible = self.visible_in(transaction, id).await?;
+                // Row guards ride the same per-record moment as the claim and
+                // the hand-over: a record the guards do not reach is not
+                // claimed and not delivered, so a bounded read counts only
+                // admissible rows (ADR-0140).
+                let rows = self.rows_in(transaction, id).await?;
                 // The one place in the store that knows how many records are
                 // coming before any of them is decoded. A consumer that holds
                 // every record allocates its spine once here instead of doubling
@@ -242,6 +247,15 @@ impl Session<'_> {
                 // of it (ADR-0014, Q-72).
                 for (found_id, payload) in found {
                     let record = self.record_of(&payload, &visible)?;
+                    // A record the table's row guards do not reach is skipped
+                    // before the claim and the hand-over, like a record the
+                    // condition refused.
+                    let Some(record) = self
+                        .permitted(transaction, &found_id, record, &visible, &rows)
+                        .await?
+                    else {
+                        continue;
+                    };
                     // A locking read claims the row before handing it over:
                     // NOWAIT refuses on another transaction's claim, SKIP
                     // LOCKED passes the row over and the bound keeps pulling.

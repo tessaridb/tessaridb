@@ -66,6 +66,10 @@ impl Session<'_> {
         } = self.matched(transaction, table, condition).await?;
 
         let mut removed = Removed::new(answer);
+        // D1: a set delete reaches only the rows the write grant reaches,
+        // asked of the record as stored — the candidate here is the redacted
+        // one, and a guard is written against what the table holds.
+        let write_guards = self.write_guards_in(transaction, id).await?;
         for (record_id, record) in candidates {
             if removed.count >= ceiling {
                 break;
@@ -82,6 +86,21 @@ impl Session<'_> {
                 .await?;
             if !boolean(&held, condition.span)? {
                 continue;
+            }
+            if write_guards.is_some() {
+                let address =
+                    RecordAddress::new(context.namespace, context.database, id, record_id.clone());
+                if let Some(bytes) = transaction.get(&address).await? {
+                    let stored = tessari_encoding::decode_payload(&bytes)?;
+                    self.refuse_write_outside_guard(
+                        transaction,
+                        id,
+                        &record_id,
+                        &stored,
+                        condition.span,
+                    )
+                    .await?;
+                }
             }
             removed.add(&record_id, record);
             self.delete_record(
@@ -241,6 +260,11 @@ impl Session<'_> {
             .await?;
 
         let mut removed = Removed::new(answer);
+        // D1: a set delete reaches only the rows the write grant reaches. The
+        // guard reads the record as stored, so the payload is decoded once
+        // more here when a guard exists — the statement's redacted copy is
+        // not what a guard is written against.
+        let write_guards = self.write_guards_in(transaction, id).await?;
         // Decoded only when answered, and through the redaction every read
         // goes through, so the answer is the record as this session may see it.
         let visible = match removed.records {
@@ -250,6 +274,11 @@ impl Session<'_> {
         for (record_id, bytes) in found {
             if removed.count >= ceiling {
                 break;
+            }
+            if write_guards.is_some() {
+                let stored = tessari_encoding::decode_payload(&bytes)?;
+                self.refuse_write_outside_guard(transaction, id, &record_id, &stored, span.at)
+                    .await?;
             }
             let record = match removed.records {
                 Some(_) => self.record_of(&bytes, &visible)?,

@@ -143,6 +143,12 @@ pub struct Session<'a> {
     /// the store-clone spelling, so it outlives the attach the `BEGIN` ran
     /// in and rides the [`Detached`] state across a bridge call.
     pub(crate) held: Option<(Transaction<'static>, tessari_ql::Span)>,
+    /// Row-guard source text to its compiled predicate (ADR-0140), the
+    /// session's half of the hot path: grants are re-read per statement from
+    /// the catalog, but parsing a stored predicate happens once per distinct
+    /// text. A `DashMap` because a session crosses threads between
+    /// statements; the guard discipline lives with [`crate::guard`].
+    pub(crate) guard_cache: dashmap::DashMap<String, std::sync::Arc<tessari_ql::Expr>>,
 }
 
 /// Who a session is, to a queue.
@@ -188,6 +194,7 @@ impl<'a> Session<'a> {
             event_depth: 0,
             now: std::time::SystemTime::now(),
             held: None,
+            guard_cache: dashmap::DashMap::new(),
         }
     }
 

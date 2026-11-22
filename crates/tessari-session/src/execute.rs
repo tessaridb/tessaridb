@@ -1245,6 +1245,15 @@ impl Session<'_> {
                         span: target.span,
                     });
                 }
+                // D1: a create lands only where the write grant reaches.
+                self.refuse_write_outside_guard(
+                    transaction,
+                    address.table,
+                    &address.id,
+                    &payload,
+                    span,
+                )
+                .await?;
                 self.put_record(transaction, address.clone(), payload.clone(), span)
                     .await?;
                 expiry::settle_write_expiry(transaction, &address, settled);
@@ -1364,6 +1373,16 @@ impl Session<'_> {
                         });
                     }
                 }
+                // D1: the located record must be one the write grant reaches,
+                // and the record the edit produces must stay one.
+                self.refuse_write_outside_guard(
+                    transaction,
+                    address.table,
+                    &address.id,
+                    &before,
+                    span,
+                )
+                .await?;
                 let payload = self
                     .edit_stored(
                         transaction,
@@ -1444,6 +1463,19 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::Object(std::collections::BTreeMap::new()),
                 };
+                // D1: replacing a record reaches only the rows the write grant
+                // reaches — the one there, when there is one, and the one the
+                // edit produces.
+                if !matches!(before, Value::None) {
+                    self.refuse_write_outside_guard(
+                        transaction,
+                        address.table,
+                        &address.id,
+                        &before,
+                        span,
+                    )
+                    .await?;
+                }
                 // The same tail every update takes, so an upsert over a space
                 // key keeps its expiry exactly as an update does.
                 let payload = self
@@ -1502,6 +1534,17 @@ impl Session<'_> {
                     Some(held) => decode_payload(&held)?,
                     None => Value::None,
                 };
+                // D1: a delete reaches only the rows the write grant reaches.
+                if !matches!(before, Value::None) {
+                    self.refuse_write_outside_guard(
+                        transaction,
+                        address.table,
+                        &address.id,
+                        &before,
+                        span,
+                    )
+                    .await?;
+                }
                 self.delete_record(transaction, address, span).await?;
                 Ok(answered(*answer, before, Value::None))
             }
@@ -1518,6 +1561,18 @@ impl Session<'_> {
             } => {
                 self.clear_file(transaction, target).await?;
                 let (_, address) = self.address(transaction, target).await?;
+                // D1, the space-key spelling: the same reach rule.
+                if let Some(payload) = transaction.get(&address).await? {
+                    let held = decode_payload(&payload)?;
+                    self.refuse_write_outside_guard(
+                        transaction,
+                        address.table,
+                        &address.id,
+                        &held,
+                        span,
+                    )
+                    .await?;
+                }
                 self.delete_record(transaction, address, span).await?;
                 Ok(Outcome::Done)
             }

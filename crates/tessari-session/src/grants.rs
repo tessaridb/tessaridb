@@ -52,6 +52,26 @@ impl Session<'_> {
         // the parser, and the statement-level semantic check happens where the
         // guard is compiled (ADR-0140, D2).
         let guard_text = guard.map(|held| held.text.as_str());
+        // The engine survey's line (ADR-0140): buckets, queues and vaults
+        // have no rows a predicate can guard — bytes behind a path, engine
+        // state behind a hold, secrets already strict. A guard there would
+        // refuse every write or silently pass, and neither is a permission.
+        if guard.is_some() {
+            let definition = Catalog::new(transaction).table(asked.1).await?;
+            let (refused, kind) = match definition.as_ref() {
+                Some(held) if held.is_bucket() => (true, "bucket"),
+                Some(held) if held.is_vault() => (true, "vault"),
+                Some(held) if held.is_queue() => (true, "queue"),
+                _ => (false, ""),
+            };
+            if refused {
+                return Err(Error::RowGuardsOnKind {
+                    table: table.name.text.clone(),
+                    kind,
+                    span,
+                });
+            }
+        }
         Catalog::new(transaction).grant(held.id, asked.1, &asked.0, &named, guard_text)?;
         Ok(Outcome::Done)
     }

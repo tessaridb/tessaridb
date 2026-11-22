@@ -116,8 +116,17 @@ impl Session<'_> {
     ) -> Result<Value> {
         let (_, address) = self.address(transaction, target).await?;
         let visible = self.visible_in(transaction, address.table).await?;
+        let rows = self.rows_in(transaction, address.table).await?;
         match transaction.get(&address).await? {
-            Some(payload) => self.record_of(&payload, &visible),
+            // A record the row guards do not reach answers as absence, the
+            // same shape a guarded scan gives it (ADR-0140).
+            Some(payload) => {
+                let record = self.record_of(&payload, &visible)?;
+                Ok(self
+                    .permitted(transaction, &address.id, record, &visible, &rows)
+                    .await?
+                    .unwrap_or(Value::None))
+            }
             None => Ok(Value::None),
         }
     }
