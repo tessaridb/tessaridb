@@ -10,6 +10,7 @@
 //! `user-forms.ts` and `grants.ts`. This file draws.
 
 import { el, type Node } from "./html.js";
+import { rowSecurity } from "./security.js";
 import { to } from "./destinations.js";
 import {
   answer, behindDisclosure, button, choose, dialog, field, note, pane, paneHead, panel,
@@ -236,7 +237,8 @@ const grantDialog = (): Node =>
     row("spread", button("grant-apply", "Apply", "primary"), status("grant-status")),
   );
 
-export const access = (): Node => panel(to("access"), false, users());
+export const access = (): Node =>
+  panel(to("access"), false, users(), rowSecurity());
 
 /**
  * The screen's dialogs, placed by the page outside every panel: a dialog inside

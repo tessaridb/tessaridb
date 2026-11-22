@@ -1,10 +1,12 @@
-//! Security — row guards, and the switch that turns them on.
+//! Row security — the guards, and the switch that turns them on.
 //!
-//! The first shape of this surface, laid as the foundation the owner's wave
-//! asked for (G094 SG5): see which tables enforce row security, flip the
-//! switch, and reach the grant dialog with a row predicate already in hand.
-//! Defining and dropping the guards themselves is the grant dialog's job —
-//! this pane hands it a prefilled form rather than growing a second one.
+//! A pane inside Access (the owner's call, 2026-11-22: the same job as the
+//! grants it toggles, and a tab of its own is the destination trade again
+//! only when this outgrows the pane): see which tables enforce row security,
+//! flip the switch, and reach the grant dialog with a row predicate already
+//! in hand. Defining and dropping the guards themselves is the grant
+//! dialog's job — this pane hands it a prefilled form rather than growing a
+//! second one.
 //!
 //! # Everything here is a statement
 //!
@@ -16,10 +18,9 @@
 
 import { held, valueOf, type Result } from "./api.js";
 import { at, clear, made, say, value } from "./dom.js";
-import { to } from "./destinations.js";
 import { offer } from "./grants.js";
 import { el, type Node } from "./html.js";
-import { button, field, note, pane, paneHead, panel, row, status, text } from "./ui.js";
+import { button, field, note, pane, paneHead, row, status, text } from "./ui.js";
 
 /** The screen every statement below is recorded under. */
 const SCREEN = "Security";
@@ -204,12 +205,9 @@ export function wire(): void {
   });
 }
 
-/** The Security destination: one pane, read on demand. */
-export function security(): Node {
-  return panel(
-    to("security"),
-    false,
-    pane(
+/** The row-security pane, composed into Access: one list, read on demand. */
+export function rowSecurity(): Node {
+  return pane(
       paneHead(
         "Row security",
         row("tight", status("security-status"), button("security-refresh", "Refresh", "quiet")),
@@ -229,6 +227,5 @@ export function security(): Node {
         field("Database", text("security-database")),
       ),
       el("div", { id: "security-list", class: "answer small" }),
-    ),
   );
 }
