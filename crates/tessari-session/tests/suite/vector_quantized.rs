@@ -340,3 +340,46 @@ fn effort_names_the_probe_count_on_a_partitioned_read() {
     assert_eq!(path, AccessPath::Approximate);
     assert_eq!(one, all, "one probe still answers within the right region");
 }
+
+#[test]
+fn a_partitioned_read_is_named_in_the_plan() {
+    // C2's plan surface: EXPLAIN shows the new access path — the index, and
+    // the partition count the probe reads are divided into.
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now("DEFINE VECTOR crowd DIMENSION 3 DISTANCE euclidean PARTITIONS 8;")
+        .unwrap();
+    crowded(&mut session, "crowd");
+    let outcomes = session
+        .run_now(
+            "EXPLAIN SELECT * FROM crowd ORDER BY vector::euclidean(vector, [0.0, 1000.0, 500.93]) LIMIT 3 APPROXIMATE;",
+        )
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert_eq!(fields.get("access"), Some(&Value::from("approximate")));
+    assert_eq!(fields.get("index"), Some(&Value::from("vector")));
+    assert_eq!(
+        fields.get("partitions"),
+        Some(&Value::Number(Number::Integer(8)))
+    );
+    // The graph kind names no partitions.
+    session
+        .run_now("DEFINE VECTOR plain DIMENSION 3 DISTANCE euclidean;")
+        .unwrap();
+    crowded(&mut session, "plain");
+    let outcomes = session
+        .run_now(
+            "EXPLAIN SELECT * FROM plain ORDER BY vector::euclidean(vector, [0.0, 1000.0, 500.93]) LIMIT 3 APPROXIMATE;",
+        )
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        panic!("{outcomes:?}");
+    };
+    assert!(
+        !fields.contains_key("partitions"),
+        "the graph kind names no partitions: {fields:?}"
+    );
+}

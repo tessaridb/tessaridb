@@ -120,6 +120,7 @@ impl Session<'_> {
                     {
                         return Ok(Plan {
                             index: Some(index.name.clone()),
+                            partitions: index.partitions,
                             ..Plan::new(AccessPath::Approximate).on(named)
                         });
                     }
@@ -244,6 +245,7 @@ impl Session<'_> {
                     }
                     return Ok(Plan {
                         index: Some(index.name.clone()),
+                        partitions: index.partitions,
                         ..Plan::new(AccessPath::Approximate).on(named)
                     });
                 }

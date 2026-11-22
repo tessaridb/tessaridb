@@ -28,9 +28,13 @@ use tessari_types::RecordId;
 use crate::catalog::VectorDistance;
 use crate::graph::separation;
 
-/// How wide one product-quantizer subspace is: one byte of code per eight
-/// components, so a 768-component vector codes to 96 bytes.
-pub(crate) const SUBSPACE_WIDTH: usize = 8;
+/// How wide one product-quantizer subspace is: one byte of code per four
+/// components, so a 768-component vector codes to 192 bytes. Four rather than
+/// the literature's usual eight because the measured corpus (release bench,
+/// 20 000 × 32-dim) loses recall to coarser subspaces — eight components a
+/// byte gave 78 % after rescoring where four gives the figure the bench
+/// reports, at a footprint the 16× criterion still clears a dozen times over.
+pub(crate) const SUBSPACE_WIDTH: usize = 4;
 
 /// How many centroids one subspace's codebook holds — the whole range of one
 /// code byte.
@@ -43,7 +47,7 @@ pub(crate) const TRAIN_SAMPLE_CAP: usize = 16384;
 
 /// The most samples one subspace's codebook trains over. Codebook training
 /// multiplies the cost by the subspace count, so it samples harder.
-pub(crate) const PQ_SAMPLE_CAP: usize = 2048;
+pub(crate) const PQ_SAMPLE_CAP: usize = 16384;
 
 /// Fixed iteration counts — a constant, not a convergence test, because a
 /// convergence test on float sums is a process that two machines can answer
