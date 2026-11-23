@@ -90,6 +90,27 @@ fn serving(path: &std::path::Path, address: &str) -> Child {
     child
 }
 
+/// Connect the protocol client to a node the test just started or stopped,
+/// retrying the transient races that surface as hard errors on Darwin:
+/// `EADDRNOTAVAIL` when the ephemeral range is momentarily exhausted under
+/// a parallel suite, `EADDRINUSE` behind a closing listener, `ECONNREFUSED`
+/// before the listener reaches the port. A fixed panic after the patience
+/// keeps a genuinely unreachable node failing loud. (F-5, 2026-11-23: the
+/// allocator build's timing shifted these windows from rare to certain.)
+fn connecting(address: &str, patience: Duration) -> Client {
+    let began = Instant::now();
+    loop {
+        match Client::connect(address) {
+            Ok(client) => return client,
+            Err(why) if began.elapsed() < patience => {
+                std::thread::yield_now();
+                let _ = why;
+            }
+            Err(why) => panic!("connecting {address} never succeeded: {why}"),
+        }
+    }
+}
+
 /// A running node that is killed when it goes out of scope, however it does.
 ///
 /// A test that panics never reaches its own `kill`, and the child it started
@@ -308,7 +329,7 @@ fn one_stop_signal_drains_the_node_and_it_exits_clean_with_its_writes_kept() {
     let (wire, http) = ("127.0.0.1:47934", "127.0.0.1:47935");
     let mut node = serving_both(&path, wire, http);
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         client
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
@@ -346,7 +367,7 @@ fn one_stop_signal_drains_the_node_and_it_exits_clean_with_its_writes_kept() {
     // What was acknowledged before the signal is there after it.
     let mut reopened = serving(&path, wire);
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         let answers = client
             .run(
                 "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
@@ -382,7 +403,7 @@ fn a_scrape_describes_the_whole_process_and_not_one_listener() {
     // Traffic on the wire surface, so its counters are not zero for the trivial
     // reason. A scrape that only ever sees zeros cannot show they are wrong.
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         client
             .run("DEFINE NAMESPACE prod; USE NAMESPACE prod;", None)
             .unwrap();
@@ -433,7 +454,7 @@ fn one_process_answers_on_both_surfaces_over_one_store() {
 
     // Written over the wire protocol.
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         client
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
@@ -485,7 +506,7 @@ fn a_stopping_node_refuses_a_new_connection_and_finishes_the_store() {
 
     let node = serving_both(&path, wire, http);
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         client
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
@@ -522,7 +543,7 @@ fn a_stopping_node_refuses_a_new_connection_and_finishes_the_store() {
     drop(node);
     let reopened = serving_both(&path, wire, http);
     {
-        let mut client = Client::connect(wire).unwrap();
+        let mut client = connecting(wire, Duration::from_secs(20));
         let answers = client
             .run(
                 "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
@@ -562,7 +583,7 @@ fn the_node_is_a_process_that_survives_being_killed() {
 
     // Write through the protocol, and hold on to what the node acknowledged.
     {
-        let mut client = Client::connect(address).unwrap();
+        let mut client = connecting(address, Duration::from_secs(20));
         client
             .run(
                 "DEFINE NAMESPACE prod; USE NAMESPACE prod; \
@@ -596,7 +617,7 @@ fn the_node_is_a_process_that_survives_being_killed() {
     // A second process, over the same files.
     let mut reopened = serving(&path, address);
     {
-        let mut client = Client::connect(address).unwrap();
+        let mut client = connecting(address, Duration::from_secs(20));
         let answers = client
             .run(
                 "USE NAMESPACE prod; USE DATABASE orders; SELECT * FROM users;",
@@ -2247,7 +2268,7 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
     // carried to the primary's operator by the test the way an operator
     // carries it by hand.
     let token = {
-        let mut client = Client::connect(LINK_DR).unwrap();
+        let mut client = connecting(LINK_DR, Duration::from_secs(20));
         let answered = client
             .run(
                 "DROP REPLICATION east; \
@@ -2288,7 +2309,7 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
     let _both = (primary, dr);
 
     // A write made after both nodes came up crosses on the link's own cadence.
-    let mut client = Client::connect(LINK_PRIMARY).unwrap();
+    let mut client = connecting(LINK_PRIMARY, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:2 = { item: 'map' };",
@@ -2302,7 +2323,7 @@ fn a_write_at_the_primary_reads_at_the_dr_over_the_link() {
 
     // And the copy stays read-only by its declaration: its own writer is the
     // other cluster.
-    let mut reading = Client::connect(LINK_DR).unwrap();
+    let mut reading = connecting(LINK_DR, Duration::from_secs(20));
     let refused = reading
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:3 = { item: 'sneaky' };",
@@ -2503,7 +2524,7 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
         .expect("the restored edge")
         .1;
     {
-        let mut client = Client::connect(SEED_DR).unwrap();
+        let mut client = connecting(SEED_DR, Duration::from_secs(20));
         client
             .run(
                 &format!(
@@ -2521,7 +2542,7 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
         "the restored copy holds its snapshot's end at the declaration"
     );
     let token = {
-        let mut client = Client::connect(SEED_DR).unwrap();
+        let mut client = connecting(SEED_DR, Duration::from_secs(20));
         match client
             .run(
                 "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
@@ -2556,7 +2577,7 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
         &directory.path().join("dr/node.log"),
         &[],
     );
-    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    let mut client = connecting(SEED_PRIMARY, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
@@ -2583,11 +2604,11 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
 
     // The operator's promote is the early spelling; on an active link it is a
     // no-op, so it is safe to run at every catch-up.
-    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    let mut client = connecting(SEED_PRIMARY, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION east ACTIVE;", signed)
         .unwrap_or_else(|why| panic!("the source's promote: {why}"));
-    let mut client = Client::connect(SEED_DR).unwrap();
+    let mut client = connecting(SEED_DR, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION west ACTIVE;", signed)
         .unwrap_or_else(|why| panic!("the copy's promote: {why}"));
@@ -2601,7 +2622,7 @@ fn a_seeded_link_lives_its_lifecycle_on_the_live_pair() {
     );
 
     // A write through the active pair lands on the copy.
-    let mut client = Client::connect(SEED_PRIMARY).unwrap();
+    let mut client = connecting(SEED_PRIMARY, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:7 = { item: 'ledger' };",
@@ -2679,7 +2700,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         .expect("the restored edge")
         .1;
     {
-        let mut client = Client::connect(REV_DR).unwrap();
+        let mut client = connecting(REV_DR, Duration::from_secs(20));
         client
             .run(
                 &format!(
@@ -2692,7 +2713,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
             .unwrap_or_else(|why| panic!("the copy's half of the link: {why}"));
     }
     let token = {
-        let mut client = Client::connect(REV_DR).unwrap();
+        let mut client = connecting(REV_DR, Duration::from_secs(20));
         match client
             .run(
                 "CREATE LINK TOKEN FOR REPLICATION west EXPIRES 10m;",
@@ -2721,7 +2742,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         &directory.path().join("dr/node.log"),
         &[],
     );
-    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    let mut client = connecting(REV_PRIMARY, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:6 = { item: 'index' };",
@@ -2741,11 +2762,11 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         std::fs::read_to_string(directory.path().join("primary/node.log")).unwrap_or_default(),
         std::fs::read_to_string(directory.path().join("dr/node.log")).unwrap_or_default()
     );
-    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    let mut client = connecting(REV_PRIMARY, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION east ACTIVE;", signed)
         .unwrap();
-    let mut client = Client::connect(REV_DR).unwrap();
+    let mut client = connecting(REV_DR, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION west ACTIVE;", signed)
         .unwrap();
@@ -2762,7 +2783,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         &[],
     );
     {
-        let mut client = Client::connect(REV_DR).unwrap();
+        let mut client = connecting(REV_DR, Duration::from_secs(20));
         client
             .run("DROP REPLICATION west;", signed)
             .unwrap_or_else(|why| panic!("dropping the dead link: {why}"));
@@ -2818,7 +2839,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         &[],
     );
     {
-        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        let mut client = connecting(REV_PRIMARY, Duration::from_secs(20));
         client
             .run(
                 &format!(
@@ -2835,7 +2856,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         "the restored primary holds its snapshot's end at the declaration"
     );
     let reverse_token = {
-        let mut client = Client::connect(REV_PRIMARY).unwrap();
+        let mut client = connecting(REV_PRIMARY, Duration::from_secs(20));
         match client
             .run(
                 "CREATE LINK TOKEN FOR REPLICATION north EXPIRES 10m;",
@@ -2859,7 +2880,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         &[],
     );
     {
-        let mut client = Client::connect(REV_DR).unwrap();
+        let mut client = connecting(REV_DR, Duration::from_secs(20));
         client
             .run(
                 &format!(
@@ -2889,7 +2910,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
         &directory.path().join("dr/node.log"),
         &[("TESSARIDB_LINK_TOKEN_SOUTH", reverse_token.as_str())],
     );
-    let mut client = Client::connect(REV_DR).unwrap();
+    let mut client = connecting(REV_DR, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:10 = { item: 'lantern' };",
@@ -2917,11 +2938,11 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
     // log — the survivor's own — not the received sibling whose tail stands
     // further along; under the shipped cross-log arithmetic this refusal
     // named a lag the link could never close.
-    let mut client = Client::connect(REV_DR).unwrap();
+    let mut client = connecting(REV_DR, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION south ACTIVE;", signed)
         .unwrap_or_else(|why| panic!("the survivor's promote: {why}"));
-    let mut client = Client::connect(REV_PRIMARY).unwrap();
+    let mut client = connecting(REV_PRIMARY, Duration::from_secs(20));
     client
         .run("ALTER REPLICATION north ACTIVE;", signed)
         .unwrap_or_else(|why| panic!("the restored primary's promote: {why}"));
@@ -2935,7 +2956,7 @@ fn a_seeded_link_lives_its_reverse_on_its_own_pair() {
     );
 
     // A write through the reversed active pair lands on the restored primary.
-    let mut client = Client::connect(REV_DR).unwrap();
+    let mut client = connecting(REV_DR, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod DATABASE shop; CREATE orders:11 = { item: 'beacon' };",
@@ -3836,7 +3857,7 @@ fn at_the_leader(
             std::thread::sleep(SIGNED_POLL);
             continue;
         };
-        match Client::connect(band[leader].0).unwrap().run(script, who) {
+        match connecting(band[leader].0, Duration::from_secs(20)).run(script, who) {
             Ok(answers) => return answers,
             Err(why) if why.to_string().contains("holds no leadership") => {
                 std::thread::sleep(SIGNED_POLL);
@@ -4293,7 +4314,7 @@ fn local_majority_keeps_acknowledging_through_a_distant_realm_loss() {
         let refused = Arc::clone(&refused);
         let on = SIX_LOCAL[schema_at].0;
         std::thread::spawn(move || {
-            let mut client = Client::connect(on).unwrap();
+            let mut client = connecting(on, Duration::from_secs(20));
             let mut index = 0_u32;
             while !stop.load(Ordering::Relaxed) {
                 index = index.saturating_add(1);
@@ -4374,7 +4395,7 @@ fn local_majority_keeps_acknowledging_through_a_distant_realm_loss() {
         let refused = Arc::clone(&refused);
         let on = SIX_LOCAL[pair(third)[0]].0;
         std::thread::spawn(move || {
-            let mut client = Client::connect(on).unwrap();
+            let mut client = connecting(on, Duration::from_secs(20));
             let mut index = 10_000_u32;
             while !stop.load(Ordering::Relaxed) {
                 index = index.saturating_add(1);
@@ -4430,7 +4451,7 @@ fn local_majority_keeps_acknowledging_through_a_distant_realm_loss() {
     // election it could not know about — so this batch is written after the
     // probe found the leader, not guessed from a still-open window.
     {
-        let mut client = Client::connect(new_leader).unwrap();
+        let mut client = connecting(new_leader, Duration::from_secs(20));
         for held in 1..=10 {
             client
                 .run(
@@ -4551,7 +4572,7 @@ fn three_realms_lose_one_mid_write_and_the_claim_holds() {
     // through the leader; then every node answers the count, at the signed
     // pace, until the log has carried them everywhere.
     {
-        let mut client = Client::connect(SIX[schema_at].0).unwrap();
+        let mut client = connecting(SIX[schema_at].0, Duration::from_secs(20));
         for held in 1..=10 {
             client
                 .run(
@@ -4593,7 +4614,7 @@ fn three_realms_lose_one_mid_write_and_the_claim_holds() {
         let refused = Arc::clone(&refused);
         let on = SIX[schema_at].0;
         std::thread::spawn(move || {
-            let mut client = Client::connect(on).unwrap();
+            let mut client = connecting(on, Duration::from_secs(20));
             let mut index = 0_u32;
             while !stop.load(Ordering::Relaxed) {
                 index = index.saturating_add(1);
@@ -7894,7 +7915,7 @@ fn cross_leader_commit_latency_against_one_leader_at_majority() {
     // also writes shard 2, led by node 1.
     let cluster = two_shard_leaders(&ACROSS_TIMED);
     let on = ACROSS_TIMED[0].0;
-    let mut client = Client::connect(on).unwrap();
+    let mut client = connecting(on, Duration::from_secs(20));
     let across = |key: &str| {
         format!(
             "USE NAMESPACE prod; USE DATABASE shop; BEGIN; \
@@ -8646,7 +8667,7 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     assert_eq!(counted.len(), 1);
     // ADR-0097 D2: the count is folded on the two leaders and merged here, and
     // it is the count of all three shards.
-    let mut client = Client::connect(GATHERING[2].0).unwrap();
+    let mut client = connecting(GATHERING[2].0, Duration::from_secs(20));
     let answers = client
         .run(
             "USE NAMESPACE prod; USE DATABASE shop; SELECT count(*) AS n FROM orders;",
@@ -8766,7 +8787,7 @@ fn a_node_holding_one_shard_answers_a_read_of_the_whole_table() {
     let transacted = "USE NAMESPACE prod; USE DATABASE shop; BEGIN; SELECT * FROM orders; COMMIT;";
     let began = Instant::now();
     loop {
-        let (kind, body) = ask_as_an_old_client(GATHERING[2].0, transacted, None);
+        let (kind, body) = ask_as_an_old_connecting(GATHERING[2].0, transacted, None);
         let said = String::from_utf8_lossy(&body).into_owned();
         if kind == 2 && whole.iter().all(|id| said.contains(id.as_str())) {
             break;
@@ -9341,7 +9362,7 @@ fn a_follower_ends_where_its_leader_ended_after_commits_filed_in_four_logs() {
     // (the database's) and last by a two-database commit (the namespace's), so
     // its final value came from the coarsest log; `a1` last by the two-shard
     // one. Applied a log at a time, coarsest first, a follower ends at 2 and 1.
-    let mut client = Client::connect(ORDERED[leader].0).unwrap();
+    let mut client = connecting(ORDERED[leader].0, Duration::from_secs(20));
     client
         .run(
             "USE NAMESPACE prod; USE DATABASE other; CREATE pad:1 = { n: 0 }; \
@@ -9396,7 +9417,7 @@ fn a_node_runs_its_topic_consumers_in_every_build_and_stops_them_with_itself() {
     let http = "127.0.0.1:47870";
     let node = serving_both(&path, wire, http);
 
-    let mut client = Client::connect(wire).unwrap();
+    let mut client = connecting(wire, Duration::from_secs(20));
     let mut script = String::from(
         "DEFINE NAMESPACE shop; USE NAMESPACE shop; DEFINE DATABASE live; USE DATABASE live; \
          DEFINE TOPIC orders; DEFINE COLLECTION order_rows; \
@@ -9447,7 +9468,7 @@ fn a_node_runs_its_topic_consumers_in_every_build_and_stops_them_with_itself() {
     // It let go of the store with the records and the declaration in it, and a
     // node opened again runs the consumer again without anybody asking.
     let reopened = serving_both(&path, wire, http);
-    let mut client = Client::connect(wire).unwrap();
+    let mut client = connecting(wire, Duration::from_secs(20));
     assert_eq!(landed(&mut client), 20);
     client
         .run(
@@ -9722,7 +9743,7 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
     .expect("the leader lets a request ask for less");
 
     // One writer.
-    let mut client = Client::connect(on).unwrap();
+    let mut client = connecting(on, Duration::from_secs(20));
     let mut one = Vec::new();
     for index in 0..200 {
         let began = Instant::now();
@@ -9736,7 +9757,7 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
         .map(|writer| {
             let clause = clause.to_owned();
             std::thread::spawn(move || {
-                let mut client = Client::connect(on).unwrap();
+                let mut client = connecting(on, Duration::from_secs(20));
                 (0..50)
                     .map(|index| {
                         let began = Instant::now();
@@ -9803,7 +9824,7 @@ fn acknowledged_writes_measured(clause: &str, band: &Band) -> (usize, usize) {
             clause.to_owned(),
         );
         std::thread::spawn(move || {
-            let mut client = Client::connect(on).unwrap();
+            let mut client = connecting(on, Duration::from_secs(20));
             let mut index = 0_u32;
             while !stop.load(Ordering::Relaxed) {
                 index = index.saturating_add(1);
@@ -9945,7 +9966,7 @@ fn acknowledged_writes_at_a_majority_survive_followers_that_had_not_received_the
         let (stop, outcomes) = (Arc::clone(&stop), Arc::clone(&outcomes));
         let on = STALLED[leader].0;
         std::thread::spawn(move || {
-            let mut client = Client::connect(on).unwrap();
+            let mut client = connecting(on, Duration::from_secs(20));
             let mut index = 0_u32;
             while !stop.load(Ordering::Relaxed) {
                 index = index.saturating_add(1);
@@ -10021,7 +10042,7 @@ fn a_local_majority_counts_the_voters_of_the_leaders_region() {
         .filter(|index| *index != leader)
         .collect();
     let (local, remote) = (followers[0], followers[1]);
-    let mut client = Client::connect(LOCAL_REGIONS[leader].0).unwrap();
+    let mut client = connecting(LOCAL_REGIONS[leader].0, Duration::from_secs(20));
     client
         .run(
             &format!(
@@ -10427,7 +10448,11 @@ fn over_http_as(address: &str, path: &str, body: &str, credential: &str) -> Stri
 /// One request from a client that greets at minor 0 — built before the
 /// redirect frame existed, so it can never follow one — and the frame kind and
 /// body it is answered with.
-fn ask_as_an_old_client(address: &str, script: &str, who: Option<(&str, &str)>) -> (u8, Vec<u8>) {
+fn ask_as_an_old_connecting(
+    address: &str,
+    script: &str,
+    who: Option<(&str, &str)>,
+) -> (u8, Vec<u8>) {
     use std::io::{Read, Write};
 
     let mut socket = TcpStream::connect(address).unwrap();
@@ -10517,7 +10542,7 @@ fn a_follower_answers_a_client_that_cannot_follow_a_redirect() {
     );
 
     // The wire, from a client that cannot follow a redirect.
-    let (kind, body) = ask_as_an_old_client(
+    let (kind, body) = ask_as_an_old_connecting(
         on_follower,
         &format!("{in_orders} CREATE item:78 = {{ n: 78 }};"),
         ada,
@@ -10777,7 +10802,7 @@ fn a_peer_certificate_rotates_under_writes_and_a_revoked_one_is_cut_off() {
         })
     };
     let run = |script: &str| {
-        let mut client = Client::connect(ROTATED[leader].0).unwrap();
+        let mut client = connecting(ROTATED[leader].0, Duration::from_secs(20));
         client.run(script, None).unwrap();
     };
     let write = |key: &str| run(&into_item(key, ""));
