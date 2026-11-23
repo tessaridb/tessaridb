@@ -35,6 +35,13 @@
 // `expect_used` and `as_conversions` govern production code; a test states its own expectations.
 #![cfg_attr(test, allow(clippy::expect_used, clippy::as_conversions))]
 
+// The server is allocation-shaped: records, frames and renders all live
+// short and plentiful. mimalloc over the system allocator is measured by
+// the bench harness (F-5, 2026-11-23); the counting bench build keeps its
+// own instrument behind its feature and excludes this one.
+#[global_allocator]
+static MIMALLOC: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 mod arguments;
 mod balancing_round;
 mod bootstrap;

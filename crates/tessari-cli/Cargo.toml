@@ -53,6 +53,7 @@ tessari-session.workspace = true
 tessari-storage.workspace = true
 tessari-types.workspace = true
 tessari-wire.workspace = true
+mimalloc = "0.1"
 
 [dev-dependencies]
 tessari-session = { workspace = true, features = ["test-support"] }

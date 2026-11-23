@@ -264,12 +264,27 @@ fn a_peer_that_answers_no_syn() -> (std::net::TcpListener, Vec<TcpStream>, Socke
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("a loopback port");
     let address = listener.local_addr().expect("its address");
     let mut held = Vec::new();
-    while held.len() < 1024 {
+    // A connect can fail for load as easily as for a full queue, and only the
+    // second means the black hole exists (F-5, 2026-11-23: under a parallel
+    // suite a single 200 ms timeout breaks this loop early with the queue
+    // still open, and the dial below connects — the test then fails for a
+    // reason that says nothing about the deadline). Consecutive failures are
+    // the queue-full signal; a lone slow connect is retried.
+    let mut refused: u32 = 0;
+    while held.len() < 1024 && refused < 8 {
         match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
-            Ok(stream) => held.push(stream),
-            Err(_) => break,
+            Ok(stream) => {
+                held.push(stream);
+                refused = 0;
+            }
+            Err(_) => refused = refused.saturating_add(1),
         }
     }
+    assert!(
+        refused >= 8,
+        "the listener never filled: {} connects, then no consistent refusal",
+        held.len()
+    );
     assert!(
         held.len() < 1024,
         "a thousand connects to a listener that never accepts all completed"

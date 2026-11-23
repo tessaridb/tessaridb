@@ -17,6 +17,12 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
 
+## 0.52.1 — 2026-11-23
+
+Faster: the server binary allocates through mimalloc, measured at roughly
+13% across the benchmark suite's scenario groups (paging, vector, update,
+write and range each 10% or better).
+
 ## 0.52.0 — 2026-11-22
 
 A vector index may be partitioned: the corpus is split into trained
