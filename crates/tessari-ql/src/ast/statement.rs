@@ -9,86 +9,19 @@ use super::{
 };
 use crate::token::Span;
 use tessari_types::{
-    Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind, Number,
+    Acknowledgement, Assertion, ConflictPolicy, Duration, FieldKind, Filter, IdentityKind,
     PoolKinds, RecordId, Replication, ReplicationClass,
 };
 
-/// `ON CONFLICT [(name, …)] DO …` — the arbiter clause an insert may carry.
-///
-/// The target names the columns the arbiter index must hold exactly, in any
-/// order — the inference rule the dialect this statement speaks on the wire
-/// uses. An empty target names every unique index, which only `DO NOTHING`
-/// may say: an update that merges into "whatever conflicts" would have no
-/// shape a caller could reason about.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct OnConflict {
-    /// The conflict target: column names, empty for `DO NOTHING` alone.
-    pub target: Vec<Name>,
-    /// What a collision on the arbiter does instead of refusing the row.
-    pub action: ConflictAction,
-}
+mod conflict;
+mod forms;
+mod search;
+mod values;
 
-/// The alternative a collision on the arbiter takes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConflictAction {
-    /// `DO NOTHING` — the row is skipped, its siblings land.
-    Nothing,
-    /// `DO UPDATE SET … [WHERE …]` — the proposed row merges into the record
-    /// the arbiter index already holds. Boxed so the action enum stays the
-    /// size of its cheapest arm.
-    Update(Box<ConflictUpdate>),
-}
-
-/// What a `DO UPDATE` action carries: the SET assignments and the optional
-/// per-row condition, one payload rather than two loose fields.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConflictUpdate {
-    /// The SET assignments — the same edit shape an `UPDATE` carries, so the
-    /// two cannot drift.
-    pub edit: Edit,
-    /// An optional condition, read against the existing record with the
-    /// proposed row beside it as `excluded`; a false condition skips the row
-    /// rather than refusing the statement.
-    pub condition: Option<Expr>,
-}
-
-/// A load margin as hundredths of one (150 is 1.5), the fixed-point spelling
-/// a ratio takes in the statement tree: the kind derives `Eq`, and a float
-/// field would take that away from every match over statements.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Ratio(u64);
-
-impl Ratio {
-    /// The stored hundredths, for the catalog row, the render, and every
-    /// comparison: hundredths is the ratio's only spelling — a float would
-    /// re-introduce the precision question the fixed-point spelling exists
-    /// to close, and nothing here needs one.
-    pub fn hundredths(self) -> u64 {
-        self.0
-    }
-
-    /// The margin as hundredths, refused when it is not above one by at least
-    /// a hundredth, or past a ceiling where a ratio is a typo rather than a
-    /// policy.
-    pub fn of_hundredths(hundredths: u64) -> Option<Self> {
-        (101..=1_000_000_000)
-            .contains(&hundredths)
-            .then_some(Self(hundredths))
-    }
-
-    /// The nearest hundredths to `times`, when it is a finite margin in the
-    /// range [`Self::of_hundredths`] admits.
-    pub fn nearest(times: f64) -> Option<Self> {
-        let hundredths = times * 100.0;
-        if !hundredths.is_finite() || !(101.0..=1_000_000_000.0).contains(&hundredths) {
-            return None;
-        }
-        // Range-checked above to a figure `u64` holds with room, and `std`
-        // offers no fallible float-to-int conversion to take instead of this:
-        // round-tripping the decimal spelling is the `as`-free way to land it.
-        Self::of_hundredths(hundredths.round().to_string().parse::<u64>().ok()?)
-    }
-}
+pub use conflict::{ConflictAction, ConflictUpdate, OnConflict};
+pub use forms::{BackupForm, RollupCompute, RowGuard};
+pub use search::{SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator};
+pub use values::{Ratio, VaultKey};
 
 /// The statement forms this milestone accepts.
 ///
@@ -2564,146 +2497,4 @@ pub enum StatementKind {
     /// It exists because there was no way to ask *"would this be refused?"*
     /// other than to be refused, and being refused means having sent the write.
     Verify,
-}
-
-/// Which backup a `BACKUP` statement answers with (ADR-0091).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BackupForm {
-    /// `BACKUP` — the store's log: every commit, in order.
-    Log,
-    /// `BACKUP STATE` — the store's current state at one version.
-    State,
-    /// `BACKUP SCRIPT` — the store's current state as TessariQL that rebuilds it.
-    Script,
-}
-
-/// What a `SEARCH` index keeps beside its postings, as the statement said it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct SearchCosts {
-    /// `POSITIONS`: each posting carries the term's token ordinals.
-    pub positions: bool,
-    /// `OFFSETS`: each posting carries the term's byte ranges.
-    pub offsets: bool,
-    /// `NO SCORE`: no collection statistics, and a score over it is refused.
-    pub unscored: bool,
-}
-
-/// One table of a `DEFINE SEARCH` and the fields it contributes (ADR-0105).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchMember {
-    /// The table.
-    pub table: TableRef,
-    /// Its fields, in the order written — the order a field's statistics are
-    /// stored in.
-    pub fields: Vec<SearchField>,
-}
-
-/// One field of a search, with what it allows and how much it weighs.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct SearchField {
-    /// The field, possibly nested.
-    pub path: FieldPath,
-    /// `WEIGHT w`, when written: the field's BM25F weight. Absent is one.
-    pub weight: Option<Number>,
-    /// Whether a `MATCHES FUZZY` word may be answered here (`NO FUZZY` clears it).
-    pub fuzzy: bool,
-    /// Whether a prefix word may be answered here (`NO PREFIX` clears it).
-    pub prefix: bool,
-    /// Whether a quoted phrase may be answered here (`NO PHRASE` clears it).
-    pub phrase: bool,
-    /// `SYNONYMS <set>`: alternatives a word is also answered by, in this field.
-    pub synonyms: Option<Name>,
-    /// `SNIPPET`: the field a best window may be taken from.
-    pub snippet: bool,
-}
-
-/// What a `FROM SEARCH` asks of the search.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SearchAsk {
-    /// `MATCHES [PREFIX | FUZZY | INFIX] <query>` — the records, ranked.
-    Matches {
-        /// How the query's words are read.
-        operator: SearchOperator,
-        /// The query string.
-        query: Box<Expr>,
-    },
-    /// `COMPLETE <beginning>` — the words the search holds that begin with it,
-    /// ranked by how many records hold them.
-    Complete {
-        /// What was typed.
-        beginning: Box<Expr>,
-    },
-}
-
-/// How the words of a search query are read.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SearchOperator {
-    /// `MATCHES`: whole words, `OR`, `NOT`, quoted phrases and starred words.
-    Words,
-    /// `MATCHES PREFIX`: every word a beginning.
-    Prefix,
-    /// `MATCHES FUZZY`: every word within the edit budget.
-    Fuzzy,
-    /// `MATCHES INFIX`: every word a piece of a held word.
-    Infix,
-}
-
-/// One `COMPUTE fold(field) AS name` of a `DEFINE ROLLUP`.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RollupCompute {
-    /// The fold word.
-    pub fold: Name,
-    /// The raw field it folds; `None` for `count(*)`.
-    pub of: Option<Name>,
-    /// The rank `approx_quantile(field, rank)` keeps (ADR-0122 C5).
-    pub rank: Option<tessari_types::Number>,
-    /// The name the value answers under.
-    pub name: Name,
-}
-
-/// The rows a [`StatementKind::Grant`] reaches (ADR-0140).
-///
-/// The source text is authoritative — it is what the catalog stores — and the
-/// parsed form is what the granting statement is validated with before the
-/// grant is written. Carrying both saves a second parse at every use and makes
-/// a stored guard answerable byte-for-byte.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RowGuard {
-    /// The predicate exactly as written, without the surrounding parentheses.
-    pub text: String,
-    /// Its parsed form over the record's fields.
-    pub predicate: Expr,
-}
-
-/// A 256-bit key presented for a vault in keyed custody (ADR-0136).
-///
-/// Built only by the vault surface from a frame field — no statement text spells one — and never printed. Cleared
-/// when dropped.
-#[derive(Clone, PartialEq, Eq)]
-pub struct VaultKey([u8; 32]);
-
-impl VaultKey {
-    /// Hold a key that arrived as a field.
-    #[must_use]
-    pub const fn new(bytes: [u8; 32]) -> Self {
-        Self(bytes)
-    }
-
-    /// The key's bytes, for the one caller that derives with them.
-    #[must_use]
-    pub const fn expose(&self) -> &[u8; 32] {
-        &self.0
-    }
-}
-
-impl Drop for VaultKey {
-    fn drop(&mut self) {
-        zeroize::Zeroize::zeroize(&mut self.0);
-    }
-}
-
-impl std::fmt::Debug for VaultKey {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("<redacted>")
-    }
 }
