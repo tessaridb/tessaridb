@@ -310,3 +310,235 @@ fn explaining_an_exact_read_and_running_it_agree() {
     assert_eq!(field(&answered, "exact"), Some(&Value::Bool(true)));
     assert!(field(explained, "inexact").is_none());
 }
+
+// ---- G099 W2 (C2): the search term bloom narrows, never answers ----
+
+/// A richer corpus fixture with the search index present, returning the
+/// backend beside the store so a test can inspect or plant the bloom a read
+/// consults.
+fn corpus() -> (std::sync::Arc<MemoryBackend>, Store) {
+    let backend = std::sync::Arc::new(MemoryBackend::new());
+    let held = Store::open(backend.clone() as std::sync::Arc<dyn KvBackend>)
+        .now()
+        .unwrap();
+    let mut session = Session::new(&held);
+    session
+        .run_now(&format!(
+            "{PLACE}\
+             DEFINE ANALYZER english FILTERS lowercase, ascii, stemmer;\n\
+             DEFINE COLLECTION notes;\n\
+             DEFINE FIELD body ON notes TYPE string ANALYZER english;\n\
+             DEFINE INDEX by_body ON notes FIELDS body SEARCH;\n\
+             CREATE notes:1 = {{ body: 'Vector search over a store of records', city: 'Paris' }};\n\
+             CREATE notes:2 = {{ body: 'A container for the analyzer and its filters', city: 'Lyon' }};\n\
+             CREATE notes:3 = {{ body: 'Locking, contention and queues', city: 'Paris' }};\n\
+             CREATE notes:4 = {{ body: 'The analyzer stems gently', city: 'Rome' }};",
+        ))
+        .unwrap();
+    (backend, held)
+}
+
+fn bloom_address(held: &Store) -> tessari_encoding::IndexAddress {
+    use tessari_encoding::{IndexAddress, StoreKey as _};
+    let mut reading = held.begin().now().unwrap();
+    let catalog = tessari_storage::Catalog::new(&mut reading);
+    let table = catalog
+        .table_id(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            "notes",
+        )
+        .now()
+        .unwrap()
+        .unwrap();
+    let index = catalog
+        .indexes_on(
+            tessari_types::NamespaceId::new(1),
+            tessari_types::DatabaseId::new(1),
+            table,
+        )
+        .now()
+        .unwrap()
+        .into_iter()
+        .find(|index| index.name == "by_body")
+        .unwrap();
+    IndexAddress::new(index.namespace, index.database, index.table, index.id)
+}
+
+/// The tenancy a read-only script needs — `PLACE` *defines* the namespace
+/// and so is for fixtures alone.
+const TENANCY: &str = "USE NAMESPACE prod; USE DATABASE shop;";
+
+fn ids_of(held: &Store, script: &str) -> Vec<String> {
+    let mut session = Session::new(held);
+    let outcomes = session.run_now(script).unwrap();
+    let mut found: Vec<String> = outcomes
+        .last()
+        .unwrap()
+        .records()
+        .unwrap_or_default()
+        .iter()
+        .map(|(id, _)| format!("{id:?}"))
+        .collect();
+    found.sort();
+    found
+}
+
+/// The corpus read with the term bloom active answers exactly what the same
+/// corpus answers with the filter stood down (its estimate planted past
+/// capacity, so every probe falls through to the walk) — recall is
+/// byte-identical across present terms, absent terms, OR mixes,
+/// conjunctions and prefixes.
+#[test]
+fn a_term_bloom_answers_what_plain_postings_answer() {
+    let (_backend, indexed) = corpus();
+    let (plain_backend, plain) = corpus();
+    {
+        use tessari_encoding::{SearchBloom, SearchBloomKey, StoreKey as _, StoreValue as _};
+        let address = bloom_address(&plain);
+        // Stand the filter down: the estimate names more terms than the
+        // capacity, so the read walks every posting the plain index walks.
+        let stood_down = SearchBloom::new(u64::MAX, vec![0_u8; 1280]).encode();
+        plain_backend
+            .apply(tessari_kv::WriteBatch::new().put(
+                SearchBloomKey::keyspace(),
+                SearchBloomKey::new(address).encode(),
+                stood_down,
+            ))
+            .now()
+            .unwrap();
+    }
+    for query in [
+        "SELECT * FROM notes WHERE body MATCHES 'vector';",
+        "SELECT * FROM notes WHERE body MATCHES 'absentword';",
+        "SELECT * FROM notes WHERE body MATCHES 'vector OR absentword';",
+        "SELECT * FROM notes WHERE body MATCHES 'analyzer AND container';",
+        "SELECT * FROM notes WHERE body MATCHES 'analyzer OR absentword';",
+        "SELECT * FROM notes WHERE body MATCHES PREFIX 'vec';",
+        "SELECT * FROM notes WHERE body MATCHES 'locking';",
+        "SELECT * FROM notes WHERE body MATCHES 'the';",
+    ] {
+        let script = format!("{TENANCY}{query}");
+        assert_eq!(
+            ids_of(&indexed, &script),
+            ids_of(&plain, &script),
+            "{query}"
+        );
+    }
+}
+
+/// The bloom describes committed state; a record this transaction has just
+/// written is found by its brand-new term anyway — the read settles its own
+/// writes against the record, not the filter, so a deny can never hide the
+/// writer's own work from the writer.
+#[test]
+fn the_bloom_never_hides_this_transactions_own_writes() {
+    let (_backend, held) = corpus();
+    let mut session = Session::new(&held);
+    session
+        .run_now(&format!(
+            "{TENANCY}\
+             BEGIN;\n\
+             CREATE notes:9 = {{ body: 'A zebra among the records', city: 'Nice' }};\n\
+             SELECT * FROM notes WHERE body MATCHES 'zebra';\n\
+             COMMIT;"
+        ))
+        .unwrap();
+    // Inside the transaction the new record's brand-new term must answer too:
+    // the bloom describes committed state and cannot know 'zebra' yet, so the
+    // read's own-write settle is the only path to it.
+    assert_eq!(
+        {
+            let mut session = Session::new(&held);
+            let outcomes = session
+                .run_now(&format!(
+                    "{TENANCY}                     BEGIN;\n\
+                     CREATE notes:10 = {{ body: 'Another zebra', city: 'Lyon' }};\n\
+                     SELECT * FROM notes WHERE body MATCHES 'zebra';
+\
+                     COMMIT;"
+                ))
+                .unwrap();
+            let read = outcomes
+                .iter()
+                .find(|outcome| outcome.plan().is_some())
+                .expect("the SELECT answers with a plan");
+            let mut found: Vec<String> = read
+                .records()
+                .unwrap_or_default()
+                .iter()
+                .map(|(id, _)| format!("{id:?}"))
+                .collect();
+            found.sort();
+            found
+        },
+        vec!["Int(10)", "Int(9)"],
+        "the writer finds its own uncommitted term beside the committed one"
+    );
+    // The same read after the commit: the bloom now holds the term, and the
+    // answer must be the same one either way.
+    assert_eq!(
+        ids_of(
+            &held,
+            &format!("{TENANCY} SELECT * FROM notes WHERE body MATCHES 'zebra';")
+        ),
+        vec!["Int(10)", "Int(9)"],
+    );
+}
+
+/// The injection arm: a bloom planted to deny a term the dictionary holds
+/// starves the read of that term's rows. This test asserts the DENY is
+/// observable — which is what makes the differential above a guard rather
+/// than a rubber stamp: a filter that lost the soundness property would
+/// surface here as answers that changed.
+#[test]
+fn a_lying_bloom_is_observable() {
+    use tessari_encoding::{SearchBloom, SearchBloomKey, StoreKey as _, StoreValue as _};
+    let (backend, held) = corpus();
+    let address = bloom_address(&held);
+    // All-zero bits: every probe denies. The estimate sits inside the
+    // capacity so the size gate does not stand the filter down.
+    let lying = SearchBloom::new(1, vec![0_u8; 1280]).encode();
+    backend
+        .apply(tessari_kv::WriteBatch::new().put(
+            SearchBloomKey::keyspace(),
+            SearchBloomKey::new(address).encode(),
+            lying,
+        ))
+        .now()
+        .unwrap();
+    assert!(
+        ids_of(
+            &held,
+            &format!("{TENANCY} SELECT * FROM notes WHERE body MATCHES 'vector';")
+        )
+        .is_empty(),
+        "the planted deny is observable: the term's rows are gone"
+    );
+}
+
+/// The size gate: a bloom whose estimate names more terms than its capacity
+/// has stood down — the read walks the postings and answers whole.
+#[test]
+fn a_bloom_past_its_capacity_stands_down() {
+    use tessari_encoding::{SearchBloom, SearchBloomKey, StoreKey as _, StoreValue as _};
+    let (backend, held) = corpus();
+    let address = bloom_address(&held);
+    let over = SearchBloom::new(u64::MAX, vec![0_u8; 1280]).encode();
+    backend
+        .apply(tessari_kv::WriteBatch::new().put(
+            SearchBloomKey::keyspace(),
+            SearchBloomKey::new(address).encode(),
+            over,
+        ))
+        .now()
+        .unwrap();
+    assert_eq!(
+        ids_of(
+            &held,
+            &format!("{TENANCY} SELECT * FROM notes WHERE body MATCHES 'vector';")
+        ),
+        vec!["Int(1)"],
+        "past capacity the filter declines and the walk answers"
+    );
+}

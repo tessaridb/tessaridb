@@ -65,6 +65,49 @@ impl BloomBits {
         bits
     }
 
+    /// An empty filter sized for `values` at the filter's bit density —
+    /// what a long-lived filter (the search index's term bloom) starts from,
+    /// grown later only by insertion.
+    pub(crate) fn with_value_capacity(values: usize) -> Self {
+        let byte_count = values
+            .saturating_mul(BITS_PER_VALUE)
+            .max(MIN_BIT_COUNT)
+            .div_ceil(8);
+        Self {
+            bytes: vec![0_u8; byte_count],
+            bit_count: byte_count.saturating_mul(8),
+            hash_count: HASH_COUNT,
+        }
+    }
+
+    /// A filter over caller-provided bytes, for a stored filter read back.
+    /// `cap` bounds the length a hostile value could name before any
+    /// allocation sizes itself from it.
+    pub(crate) fn from_bytes(bytes: Vec<u8>, cap: usize) -> crate::error::Result<Self> {
+        if bytes.is_empty() || bytes.len() > cap {
+            return Err(crate::error::Error::ColumnarTruncated {
+                needed: 1,
+                len: bytes.len(),
+            });
+        }
+        Ok(Self {
+            bit_count: bytes.len().saturating_mul(8),
+            bytes,
+            hash_count: HASH_COUNT,
+        })
+    }
+
+    /// The filter's bytes, for storage.
+    pub(crate) fn bytes(&self) -> &[u8] {
+        &self.bytes
+    }
+
+    /// How many values the filter was sized for at the bit density — the
+    /// capacity a caller compares its estimate against.
+    pub(crate) fn value_capacity(&self) -> usize {
+        self.bit_count / BITS_PER_VALUE
+    }
+
     /// Whether the payload's value may be in the set — always true when it
     /// is, sometimes true when it is not (the declared false-positive rate).
     /// Read by SG3's pruning scan.
@@ -102,8 +145,9 @@ impl BloomBits {
         })
     }
 
-    /// Insert one payload's worth of bits.
-    fn insert(&mut self, payload: &[u8]) {
+    /// Insert one payload's worth of bits — how the search index's term
+    /// bloom absorbs a batch's arriving terms.
+    pub(crate) fn insert(&mut self, payload: &[u8]) {
         for at in positions(fnv1a_64(payload), self.bit_count, self.hash_count) {
             if let Some(byte) = self.bytes.get_mut(at >> 3) {
                 *byte |= 1_u8 << (at & 7);

@@ -41,7 +41,7 @@
 
 use tessari_encoding::ColumnFamily;
 use tessari_ql::{BinaryOp, Expr, ExprKind, Select, Source};
-use tessari_storage::{Catalog, ColumnarCompare, ColumnarPredicate, Transaction};
+use tessari_storage::{Catalog, ColumnarCompare, ColumnarPredicate, ColumnarTest, Transaction};
 use tessari_types::{RecordId, TableId, Value};
 
 use crate::condition::boolean;
@@ -115,30 +115,67 @@ impl Session<'_> {
         let mut predicates = Vec::with_capacity(conjuncts.len());
         let mut pin: Option<u64> = None;
         for (name, op, value) in conjuncts {
-            if matches!(value, Value::Null | Value::None) {
-                // Null semantics are the row engine's third-valued logic;
-                // the scan only narrows on non-null constants.
-                return Ok(None);
-            }
             let Some(field) = fields.iter().find(|field| field.name == name) else {
                 return Ok(None);
             };
             if !field_visible(&visible, &name) {
                 return Ok(None);
             }
+            let family = ColumnFamily::Id(field.id);
+            let test = match op {
+                BinaryOp::In => {
+                    // A bounded list of non-null constants is one IN probe of
+                    // the projection; anything else about the list (a null
+                    // member, a bound above the scan's budget) is the row
+                    // walk's job — the gate declines and the walk answers
+                    // exactly, as it always did.
+                    let Value::Array(members) = &value else {
+                        return Ok(None);
+                    };
+                    if members.is_empty()
+                        || members.len() > tessari_constants::COLUMNAR_IN_MAX
+                        || members
+                            .iter()
+                            .any(|member| matches!(member, Value::Null | Value::None))
+                    {
+                        return Ok(None);
+                    }
+                    ColumnarTest::In {
+                        values: members.clone(),
+                    }
+                }
+                BinaryOp::Equal
+                | BinaryOp::NotEqual
+                | BinaryOp::Less
+                | BinaryOp::LessOrEqual
+                | BinaryOp::Greater
+                | BinaryOp::GreaterOrEqual => {
+                    if matches!(value, Value::Null | Value::None) {
+                        // Null semantics are the row engine's third-valued
+                        // logic; the scan only narrows on non-null constants.
+                        return Ok(None);
+                    }
+                    let compare = match op {
+                        BinaryOp::Equal => ColumnarCompare::Equal,
+                        BinaryOp::NotEqual => ColumnarCompare::NotEqual,
+                        BinaryOp::Less => ColumnarCompare::Less,
+                        BinaryOp::LessOrEqual => ColumnarCompare::LessOrEqual,
+                        BinaryOp::Greater => ColumnarCompare::Greater,
+                        BinaryOp::GreaterOrEqual => ColumnarCompare::GreaterOrEqual,
+                        // gather_conjuncts only yields the seven comparisons.
+                        _ => return Ok(None),
+                    };
+                    ColumnarTest::Compare {
+                        compare,
+                        value: value.clone(),
+                    }
+                }
+                // gather_conjuncts only yields the comparisons above.
+                _ => return Ok(None),
+            };
             predicates.push(ColumnarPredicate {
-                family: ColumnFamily::Id(field.id),
-                compare: match op {
-                    BinaryOp::Equal => ColumnarCompare::Equal,
-                    BinaryOp::NotEqual => ColumnarCompare::NotEqual,
-                    BinaryOp::Less => ColumnarCompare::Less,
-                    BinaryOp::LessOrEqual => ColumnarCompare::LessOrEqual,
-                    BinaryOp::Greater => ColumnarCompare::Greater,
-                    BinaryOp::GreaterOrEqual => ColumnarCompare::GreaterOrEqual,
-                    // gather_conjuncts only yields the six comparisons.
-                    _ => return Ok(None),
-                },
-                value: value.clone(),
+                family: family.clone(),
+                test,
             });
             // An equality on the partition key names one lane: the scan
             // reads that lane alone (the design record). The constant rides
@@ -521,13 +558,24 @@ fn field_visible(visible: &Visible, name: &str) -> bool {
 }
 
 /// Collect the condition's top-level `AND` conjuncts when every one is a
-/// plain comparison between one root field and one literal. `false` means
-/// the condition is richer than the scan's grammar — the caller routes to
-/// the row walk.
+/// plain comparison between one root field and one literal, or one root
+/// field and a literal array (`field IN […]`). `false` means the condition
+/// is richer than the scan's grammar — the caller routes to the row walk.
 fn gather_conjuncts(condition: &Expr, into: &mut Vec<(String, BinaryOp, Value)>) -> bool {
     match &condition.kind {
         ExprKind::And(left, right) => gather_conjuncts(left, into) && gather_conjuncts(right, into),
         ExprKind::Binary { left, right, op } => {
+            if *op == BinaryOp::In {
+                // Only `field IN <array literal>` qualifies: the reversed
+                // `array IN field` asks whether the array is an element of
+                // the field's value — a different question the scan cannot
+                // narrow, and the row engine answers it.
+                if let (Some(name), Some(values)) = (root_field(left), array_literals(right)) {
+                    into.push((name, BinaryOp::In, Value::Array(values)));
+                    return true;
+                }
+                return false;
+            }
             let Some(compare) = plain_comparison(*op) else {
                 return false;
             };
@@ -584,6 +632,16 @@ fn root_field(expr: &Expr) -> Option<String> {
 fn literal(expr: &Expr) -> Option<Value> {
     match &expr.kind {
         ExprKind::Literal(value) => Some(value.clone()),
+        _ => None,
+    }
+}
+
+/// An array literal of literal elements, as one bound value. A non-literal
+/// element (anything the bind stage did not collapse to a constant)
+/// disqualifies the whole list.
+fn array_literals(expr: &Expr) -> Option<Vec<Value>> {
+    match &expr.kind {
+        ExprKind::Array(elements) => elements.iter().map(literal).collect(),
         _ => None,
     }
 }

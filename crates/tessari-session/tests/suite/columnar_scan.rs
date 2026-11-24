@@ -467,3 +467,123 @@ fn a_grant_hidden_field_is_never_pruned_on() {
         "the wide caller reads through"
     );
 }
+
+// ---- W1 (G099 C1): the gate qualifies IN-lists ----
+
+/// An IN-list over a declared, visible field qualifies: the read answers
+/// through the projection, reports the pruning figures, and answers exactly
+/// what the row walk would.
+#[test]
+fn an_in_list_answers_through_the_columnar_path() {
+    let store = store();
+    let (mut session, _) = ready(&store, 16_400);
+
+    let script = "SELECT * FROM events WHERE seq IN [12345, 3];";
+    assert_eq!(
+        access(&mut session, script),
+        AccessPath::Columnar,
+        "the gate qualifies a bounded IN-list of constants"
+    );
+    assert_eq!(
+        ids(&mut session, script),
+        vec![
+            tessari_types::RecordId::Int(3),
+            tessari_types::RecordId::Int(12345)
+        ]
+    );
+
+    let note = columnar_note(&mut session, script);
+    let Note::Columnar {
+        chunks_examined,
+        chunks_skipped,
+        rows_decoded,
+        rows_returned,
+    } = note
+    else {
+        panic!("the note is columnar: {note:?}");
+    };
+    assert_eq!(chunks_examined, 3, "two sealed chunks and the open one");
+    assert!(
+        chunks_skipped <= 1,
+        "the open chunk is denied unless its bloom false-positives: {chunks_skipped}"
+    );
+    assert!(
+        rows_decoded >= 8192 * 2,
+        "both sealed chunks decoded to test their members: {rows_decoded}"
+    );
+    assert_eq!(rows_returned, 2);
+}
+
+/// The IN-list differential battery: every read answers what the mirror
+/// answers, across members living in different chunks and null members
+/// excluded (a null never satisfies an equality).
+#[test]
+fn in_lists_answer_what_the_mirror_answers() {
+    let store = store();
+    let (mut session, _) = ready(&store, 16_400);
+    for script in [
+        "SELECT * FROM events WHERE seq IN [0, 8191, 8192, 16383];",
+        "SELECT * FROM events WHERE kind IN ['kind-1', 'kind-2'] AND seq > 16380;",
+        "SELECT * FROM events WHERE seq IN [7] AND kind = 'kind-0';",
+        "SELECT * FROM events WHERE seq IN [3, 9000] AND kind IN ['kind-1'];",
+    ] {
+        let mut expected = ids(&mut session, &script.replace("FROM events", "FROM mirror"));
+        expected.sort();
+        let mut found = ids(&mut session, script);
+        found.sort();
+        assert_eq!(found, expected, "{script}");
+    }
+}
+
+/// Gate refusal arms: a null member, and a list above the gate's bound, are
+/// the row walk's job — EXPLAIN names the scan, one gate decides both ways.
+#[test]
+fn in_list_refusal_arms_name_the_scan() {
+    let store = store();
+    let (mut session, _) = ready(&store, 16_400);
+
+    let above: Vec<String> = (0..100).map(|value| value.to_string()).collect();
+    let above = format!("SELECT * FROM events WHERE seq IN [{}];", above.join(", "));
+
+    for script in [
+        "SELECT * FROM events WHERE seq IN [5, null];",
+        "EXPLAIN SELECT * FROM events WHERE seq IN [5, null];",
+        &above,
+        &format!("EXPLAIN {above}"),
+    ] {
+        let outcomes = session.run_now(script).unwrap();
+        let last = outcomes.last().unwrap();
+        let access = match last {
+            Outcome::Value(Value::Object(fields)) => fields
+                .get("access")
+                .and_then(|value| match value {
+                    Value::String(word) => Some(word.to_lowercase()),
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("an access answered with {last:?}")),
+            other => format!(
+                "{:?}",
+                other
+                    .plan()
+                    .unwrap_or_else(|| panic!("a plan answered with {other:?}"))
+                    .access
+            )
+            .to_lowercase(),
+        };
+        assert_eq!(
+            access,
+            format!("{:?}", AccessPath::Scan).to_lowercase(),
+            "the row walk answers this shape: {script}"
+        );
+    }
+
+    // The answers still come back right on the refusal arms.
+    let mut found = ids(&mut session, "SELECT * FROM events WHERE seq IN [5, null];");
+    found.sort();
+    assert_eq!(found, vec![tessari_types::RecordId::Int(5)]);
+    assert_eq!(
+        ids(&mut session, &above).len(),
+        100,
+        "the over-bound list still answers through the walk"
+    );
+}

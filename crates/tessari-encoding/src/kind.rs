@@ -179,6 +179,12 @@ pub enum KeyKind {
     /// One record's product-quantized codes, keyed by partition then record,
     /// so one partition is a prefix range (ADR-0141).
     VectorCodes,
+    /// The monotonic term bloom one search index carries: every term the
+    /// dictionary has held, OR'd in and never removed, so a negative probe
+    /// skips a posting walk for a term that is certainly absent (G099 C2).
+    /// Deletions never clear a bit — a stale bit costs a read, a cleared one
+    /// would cost a row.
+    SearchBloom,
 }
 
 impl KeyKind {
@@ -238,6 +244,7 @@ impl KeyKind {
         Self::ResolvedOf,
         Self::VectorTrained,
         Self::VectorCodes,
+        Self::SearchBloom,
     ];
 
     /// The leading byte that identifies this kind on disk.
@@ -302,6 +309,7 @@ impl KeyKind {
             Self::ResolvedOf => 0x55,
             Self::VectorTrained => 0x49,
             Self::VectorCodes => 0x4a,
+            Self::SearchBloom => 0x4b,
         }
     }
 
@@ -335,7 +343,8 @@ impl KeyKind {
             | Self::Containment
             | Self::RetiredIndex
             | Self::VectorTrained
-            | Self::VectorCodes => Keyspace::INDEX,
+            | Self::VectorCodes
+            | Self::SearchBloom => Keyspace::INDEX,
             Self::LogEntry => Keyspace::LOG,
             Self::FormatVersion
             | Self::AppliedPosition
@@ -421,6 +430,7 @@ impl KeyKind {
             Self::ResolvedOf => "resolved-of",
             Self::VectorTrained => "vector-trained",
             Self::VectorCodes => "vector-codes",
+            Self::SearchBloom => "search-bloom",
         }
     }
 
@@ -531,6 +541,7 @@ mod tests {
             (KeyKind::ResolvedOf, 0x55),
             (KeyKind::VectorTrained, 0x49),
             (KeyKind::VectorCodes, 0x4a),
+            (KeyKind::SearchBloom, 0x4b),
         ];
         assert_eq!(expected.len(), KeyKind::ALL.len(), "a kind is untested");
         for (kind, tag) in expected {

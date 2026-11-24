@@ -225,3 +225,147 @@ fn a_binding_survives_a_transaction() {
         .unwrap();
     assert_eq!(rows(&outcomes[4]), 2);
 }
+
+// ---- G099 W3 (C3): the statement compile cache ----
+
+/// A repeated statement answers and plans identically — the compiled form a
+/// cache hands back is the same tree parse+bind produced.
+#[test]
+fn a_repeated_statement_answers_and_plans_identically() {
+    let store = store();
+    let mut session = ready(&store);
+    let script = "SELECT * FROM users WHERE city = 'london';";
+    let first = session.run_now(script).unwrap();
+    let again = session.run_now(script).unwrap();
+    assert_eq!(rows(first.last().unwrap()), 2);
+    assert_eq!(
+        first.last().unwrap().plan().unwrap().access,
+        again.last().unwrap().plan().unwrap().access,
+        "the cached compile plans the way the fresh one did"
+    );
+    assert_eq!(rows(again.last().unwrap()), 2);
+    assert!(
+        session.compile_cache_len() > 0,
+        "a repeated statement lands in the compile cache"
+    );
+}
+
+/// Bound values partition the cache: the same text under different
+/// parameters is a different compiled statement, and each answers its own.
+#[test]
+fn bound_values_partition_the_compile_cache() {
+    let store = store();
+    let mut session = ready(&store);
+    // The fixture's own script is a cached entry; the assertion counts the
+    // delta the three bound forms add.
+    let before = session.compile_cache_len();
+    for (name, expect) in [("ada", 1_usize), ("grace", 1), ("nobody", 0)] {
+        let mut parameters = Parameters::new();
+        parameters.insert("who".to_owned(), Value::String(name.to_owned()));
+        let outcomes = session
+            .run_with_now("SELECT * FROM users WHERE name = $who;", &parameters)
+            .unwrap();
+        assert_eq!(rows(outcomes.last().unwrap()), expect, "{name}");
+    }
+    assert_eq!(
+        session.compile_cache_len(),
+        before + 3,
+        "three distinct bound forms, three entries"
+    );
+}
+
+/// The cache never freezes catalog-derived behaviour: a catalog change
+/// between two identical calls is visible in the second call's plan — names
+/// re-resolve at run, and the catalog rows themselves invalidate the way
+/// they always have (G072).
+#[test]
+fn a_catalog_change_between_identical_calls_is_visible() {
+    let store = store();
+    let mut session = ready(&store);
+    let script = "SELECT * FROM users WHERE city = 'london';";
+    let before = session.run_now(script).unwrap();
+    assert_eq!(
+        before.last().unwrap().plan().unwrap().access,
+        AccessPath::Scan,
+        "no index yet: the walk answers"
+    );
+    session
+        .run_now("DEFINE INDEX by_city ON users FIELDS city;")
+        .unwrap();
+    let after = session.run_now(script).unwrap();
+    assert_eq!(rows(after.last().unwrap()), 2, "the answer does not change");
+    assert_eq!(
+        after.last().unwrap().plan().unwrap().access,
+        AccessPath::Index,
+        "the cached compile re-resolved: the new index serves the second call"
+    );
+}
+
+/// The cache is bounded: past the capacity the oldest entries give way, and
+/// the cache never grows past the constant.
+#[test]
+fn the_compile_cache_is_bounded() {
+    let store = store();
+    let mut session = ready(&store);
+    let cap =
+        usize::try_from(tessari_constants::COMPILE_CACHE_MAX).expect("the capacity fits a usize");
+    for at in 0..cap.saturating_add(4) {
+        session
+            .run_now(&format!("SELECT * FROM users WHERE name = 'n{at}';"))
+            .unwrap();
+    }
+    assert_eq!(
+        session.compile_cache_len(),
+        cap,
+        "the cache holds at most the capacity"
+    );
+    // The oldest statement was evicted: it compiles afresh — which answers
+    // identically, the property the cache may never break.
+    let outcomes = session
+        .run_now("SELECT * FROM users WHERE name = 'n0';")
+        .unwrap();
+    assert_eq!(rows(outcomes.last().unwrap()), 0);
+}
+
+/// C3's measured figure: the compile a cache hit saves. The miss path runs
+/// distinct statements (every one parses+binds); the hit path runs one
+/// statement repeatedly (every run after the first is a cache hit). Both
+/// include the same execution, so the difference is the compile. Timings
+/// print rather than assert, the C3 idiom — what is asserted is exactness.
+#[test]
+fn c3_compile_latency_before_and_after() {
+    let store = store();
+    let mut session = ready(&store);
+    const K: usize = 200;
+
+    // Hit path: one statement, K runs, the first compile discounted by
+    // running it once before the clock starts.
+    let repeated = "SELECT * FROM users WHERE city = 'london' AND age > 30;";
+    session.run_now(repeated).unwrap();
+    let started = std::time::Instant::now();
+    for _ in 0..K {
+        let outcomes = session.run_now(repeated).unwrap();
+        assert_eq!(rows(outcomes.last().unwrap()), 2);
+    }
+    let hit_ns = started.elapsed().as_nanos() / (K as u128);
+
+    // Miss path: K distinct statements, every one a fresh compile. K stays
+    // under the cache's capacity so eviction does not charge the miss path.
+    let started = std::time::Instant::now();
+    for at in 0..K {
+        let outcomes = session
+            .run_now(&format!("SELECT * FROM users WHERE name = 'n{at}';"))
+            .unwrap();
+        assert_eq!(rows(outcomes.last().unwrap()), 0);
+    }
+    let miss_ns = started.elapsed().as_nanos() / (K as u128);
+
+    // The figures print; a timing ordering is not asserted (a timing
+    // assertion is a flake wearing a criterion — the C3 idiom). What the
+    // suite holds is exactness: every run above answered the rows its
+    // statement names.
+    eprintln!(
+        "C3 compile figures ({K} runs each): miss path {miss_ns} ns/run, hit path {hit_ns} ns/run, parse+bind saved ≈ {} ns/run",
+        miss_ns.saturating_sub(hit_ns),
+    );
+}

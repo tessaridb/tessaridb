@@ -3976,6 +3976,21 @@ took. Analytical reads — folds and filters over many rows — skip chunks the
 projection's per-chunk statistics rule out, and a `GROUP BY` on the partition
 key folds each partition's lanes and merges the partials.
 
+The filter shapes the projection serves are a top-level `AND` of plain
+comparisons `field <op> constant` (`=`, `<`, `<=`, `>`, `>=` — `!=` walks,
+since a record whose field is null satisfies it and the projection holds no
+row to name such a record) and a bounded `field IN [constants]` list, every
+field declared and visible to the reader, the transaction at the tail holding
+no writes on the table. Anything richer is the row walk's job, and `EXPLAIN`
+names which. Two skipping levels stand under the figures the answer reports:
+each lane's sealed-range statistics in the pointer — a predicate outside them
+never reads a chunk head, and the still-open chunk is consulted every time —
+and each chunk's min/max and bloom, with a sorted chunk answering an equality
+or range by binary search. A chunk the statistics skip is a chunk the writer
+proved cannot match in the same commit batch that wrote the data; every
+survivor is still re-tested against the row, which is why the path changes
+what a read costs and never what it answers.
+
 - **`STORE ROW` is the default, and the word `INFO FOR TABLE` and
   `BACKUP SCRIPT` render.** A script that never says the word reads back with
   it said, on the rule that a declaration leaning on a default changes meaning
@@ -11778,7 +11793,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.53.0", "build": "0.53.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.54.0", "build": "0.54.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

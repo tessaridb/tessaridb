@@ -52,8 +52,8 @@ pub use posting::{Located, Posting};
 pub use quantized::{QuantizedVector, StoredVector};
 pub use retired::RetiredIndexKey;
 pub use search::{
-    PostingKey, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
-    SearchTermKey, TermStatistics, UniqueIndexKey,
+    PostingKey, SearchBloom, SearchBloomKey, SearchStatistics, SearchStatisticsKey,
+    SearchSuffixKey, SearchSurfaceKey, SearchTermKey, TermStatistics, UniqueIndexKey,
 };
 pub use statistics::{IndexChanges, IndexChangesKey, IndexStatistics, IndexStatisticsKey};
 pub use vectors::{

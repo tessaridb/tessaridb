@@ -143,8 +143,7 @@ fn answers(store: &Store, ids: (u32, u32, u32)) -> Vec<Vec<RecordId>> {
         |compare: tessari_storage::ColumnarCompare, family: &ColumnFamily, value: Value| {
             vec![tessari_storage::ColumnarPredicate {
                 family: family.clone(),
-                compare,
-                value,
+                test: tessari_storage::ColumnarTest::Compare { compare, value },
             }]
         };
     let mut answers = Vec::new();

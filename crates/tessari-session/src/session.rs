@@ -10,6 +10,7 @@
 
 mod acknowledging;
 mod across;
+mod compiled;
 pub use across::{
     AcrossAnswer, AcrossAsk, AcrossRefusal, Asking, PartRefused, Participants, Recovery,
     RefusalKind, Staged, across_lapse_millis, recover_staging,
@@ -24,7 +25,7 @@ pub use atomic::Atomic;
 use std::path::Path;
 use std::sync::Arc;
 
-use tessari_ql::{Parameters, StatementKind, parse};
+use tessari_ql::{Parameters, Script, StatementKind, parse};
 use tessari_storage::{Catalog, Store, Transaction};
 
 use crate::effect::{Effect, admits};
@@ -149,6 +150,9 @@ pub struct Session<'a> {
     /// text. A `DashMap` because a session crosses threads between
     /// statements; the guard discipline lives with [`crate::guard`].
     pub(crate) guard_cache: dashmap::DashMap<String, std::sync::Arc<tessari_ql::Expr>>,
+    /// The compiled-form cache (G099 C3): pure-syntax trees keyed by the
+    /// call's tenancy, source and bound values. See `session/compiled.rs`.
+    pub(crate) compiled: compiled::Compiled,
 }
 
 /// Who a session is, to a queue.
@@ -195,6 +199,7 @@ impl<'a> Session<'a> {
             now: std::time::SystemTime::now(),
             held: None,
             guard_cache: dashmap::DashMap::new(),
+            compiled: compiled::Compiled::default(),
         }
     }
 
@@ -338,8 +343,39 @@ impl<'a> Session<'a> {
         source: &str,
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
-        let script = self.bind_script(parse(source)?, parameters).await?;
+        let script = self.compiled_script(source, parameters).await?;
         self.run_script(script, None).await
+    }
+
+    /// The compiled form of `source` under `parameters`: the cache's when
+    /// held, a fresh parse+bind otherwise (held when it asked the store
+    /// nothing — a script that bound database defaults is not cached, for
+    /// the reason `session/compiled.rs` states).
+    async fn compiled_script(&mut self, source: &str, parameters: &Parameters) -> Result<Script> {
+        if let Some(script) = self
+            .compiled
+            .get(&self.namespace, &self.database, source, parameters)
+        {
+            return Ok(script);
+        }
+        let (script, cacheable) = self.bind_script(parse(source)?, parameters).await?;
+        if cacheable {
+            self.compiled.put(
+                &self.namespace,
+                &self.database,
+                source,
+                parameters,
+                script.clone(),
+            );
+        }
+        Ok(script)
+    }
+
+    /// How many compiled forms this session holds — the introspection the
+    /// cache's bounded test reads.
+    #[must_use]
+    pub fn compile_cache_len(&self) -> usize {
+        self.compiled.len()
     }
 
     /// [`Session::run_with`] for a surface that holds a transaction across
@@ -368,7 +404,7 @@ impl<'a> Session<'a> {
         source: &str,
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
-        let script = self.bind_script(parse(source)?, parameters).await?;
+        let script = self.compiled_script(source, parameters).await?;
         self.run_script_holding(script).await
     }
 

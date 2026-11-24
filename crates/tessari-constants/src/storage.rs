@@ -135,6 +135,19 @@ pub const HISTORY_SCAN_RECORDS: usize = 2_048;
 /// timeline has been used against a real store.
 pub const HISTORY_EVENTS: usize = 50;
 
+/// How many constants an IN-list probe of the columnar scan may qualify with.
+///
+/// The scan tests every member against every consulted chunk head, so the
+/// list is bounded like the other scan-shaped budgets: generous enough for
+/// the hand-written lists a dashboard actually sends, small enough that a
+/// pathological list is the row walk's job rather than the projection's.
+/// Above the bound the gate declines and the read answers exactly through
+/// the row path, the way it did before this surface existed.
+///
+/// Sixty-four is a starting value. Provisional until the panel's filter
+/// shapes have been measured against a real store.
+pub const COLUMNAR_IN_MAX: usize = 64;
+
 /// How many quarantined messages one Kafka consumer keeps findable (Q-708).
 ///
 /// Past it the oldest of the lowest partition goes. A thousand is generous for a

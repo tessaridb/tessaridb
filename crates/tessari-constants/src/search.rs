@@ -109,6 +109,21 @@ pub const SEARCH_PREFIX_MINIMUM: usize = 3;
 /// that many posting lists. Sixty-four is enough for every prefix a person
 /// actually types at three characters or more and small enough that the union
 /// stays cheaper than the scan it replaces.
+/// The fewest terms a search index's term bloom is sized for at creation.
+///
+/// A young index's first batches hold few words, and a filter sized to them
+/// would stand down after a handful of commits — so the initial filter is
+/// granted headroom it has not earned yet. 1 024 terms is 1.25 KiB at the
+/// filter's bit density: cheap to carry, far enough for the dictionary to
+/// prove the filter out.
+pub const SEARCH_BLOOM_MINIMUM_TERMS: usize = 1024;
+
+/// The largest term bloom a stored value may claim, in bytes — a hostile or
+/// torn value that names more is refused before any allocation sizes itself
+/// from it. 1 MiB covers a quarter-million terms at the bit density, far
+/// past where a dictionary should ride one filter rather than re-derive.
+pub const SEARCH_BLOOM_MAX_BYTES: usize = 1024 * 1024;
+
 pub const SEARCH_PREFIX_EXPANSION_CAP: usize = 64;
 
 /// How many dictionary terms a scored prefix reads before it ranks them by

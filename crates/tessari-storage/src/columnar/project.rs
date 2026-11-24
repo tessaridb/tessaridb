@@ -77,62 +77,252 @@ fn partition_of(
     Ok(hashed.checked_rem(count).unwrap_or(0))
 }
 
+/// A lane's sealed-range statistics: the [min, max] over every SEALED chunk
+/// of the lane (the design record, OLAP ref 02 M2 — write-path invariant,
+/// computed by `project_table`'s flush in the same batch as the chunks).
+///
+/// Conservatism rules, all in the direction of reading more, never less:
+/// the merge only ever widens; a sealed chunk without range statistics (a
+/// NaN disabled it, or the lane's history predates this wave) leaves the
+/// lane without statistics, and absence is sticky — a lane that once could
+/// hold anything keeps that doubt for good. The open chunk is never
+/// covered: the scan consults it every time.
+#[derive(Clone, Debug)]
+pub(crate) struct LaneRange {
+    /// The least sealed value under the store's one declared order.
+    pub(crate) min: tessari_types::Value,
+    /// The greatest sealed value under the same order.
+    pub(crate) max: tessari_types::Value,
+}
+
+/// One lane of a family's pointer: where the open chunk is, and what the
+/// sealed chunks statistically span.
+#[derive(Clone, Debug)]
+pub(crate) struct LanePointer {
+    /// The seq the open chunk has advanced to; chunks with a smaller local
+    /// seq are sealed.
+    pub(crate) open: u64,
+    /// The sealed-range statistics, or `None` when absent.
+    pub(crate) range: Option<LaneRange>,
+    /// Whether the lane's statistics are disabled for good: a sealed chunk
+    /// a NaN disabled, or a lane whose history predates this wave and whose
+    /// sealed chunks are unknown. Sticky — the flush never upgrades a
+    /// disabled lane, because a range over unknown history would understate
+    /// what the lane can hold. A lane born under this wave is not disabled
+    /// until a NaN says so, so its young-table `None` upgrades freely.
+    pub(crate) disabled: bool,
+}
+
+/// One sealed chunk's contribution to its lane's range: what it spans, that
+/// it holds nothing to span, or that it disables the lane's range.
+#[derive(Clone, Debug)]
+pub(crate) enum SealedStat {
+    /// The chunk's [min, max].
+    Ranged(tessari_types::Value, tessari_types::Value),
+    /// The chunk holds no non-null values: no contribution, no disable.
+    Empty,
+    /// Range statistics were disabled for the chunk (a NaN sat the column):
+    /// the chunk can hold anything, so the lane's range is disabled.
+    Disabled,
+}
+
+/// The pointer value's v2 marker. A v1 value begins with its lane count;
+/// four billion lanes is not a value any store can hold, so a v1 parser
+/// meets this only by refusing on truncation — old builds refuse new
+/// pointers, the documented upgrade direction.
+const POINTER_MAGIC: u32 = u32::MAX;
+
+/// `flags` bits in the v2 form: range statistics present, statistics
+/// disabled for good.
+const FLAG_RANGE: u8 = 0x01;
+const FLAG_DISABLED: u8 = 0x02;
+
 /// A family's pointer value: the open chunk seq of every partition lane it
-/// holds, `[count:u32][(partition:u32, open:u64) * count]` in partition
-/// order. An eight-byte value is the pre-partitioning form — one lane at
-/// partition 0 — so a dev store written before SG4 still reads.
-pub(crate) fn lanes_to_bytes(lanes: &BTreeMap<u64, u64>) -> Vec<u8> {
-    let mut out = u32::try_from(lanes.len())
-        .unwrap_or(u32::MAX)
-        .to_be_bytes()
-        .to_vec();
-    for (partition, open) in lanes {
+/// holds, plus each lane's sealed-range statistics. Two legacy forms
+/// survive: the bare eight-byte form (one lane at partition 0, no
+/// statistics) and the v1 lane-count form without statistics — both parse
+/// with `range: None`, because absence disables pruning, it never guesses.
+///
+/// v2 layout: `[magic u32][count u32]` then per lane
+/// `[partition u32][open u64][flags u8]` and, when [`FLAG_RANGE`], the
+/// `[min][max]` payloads (each a u32 length + the store's own encoding).
+pub(crate) fn lanes_to_bytes(lanes: &BTreeMap<u64, LanePointer>) -> Vec<u8> {
+    let mut out = POINTER_MAGIC.to_be_bytes().to_vec();
+    out.extend_from_slice(&u32::try_from(lanes.len()).unwrap_or(u32::MAX).to_be_bytes());
+    for (partition, lane) in lanes {
         out.extend_from_slice(&u32::try_from(*partition).unwrap_or(u32::MAX).to_be_bytes());
-        out.extend_from_slice(&open.to_be_bytes());
+        out.extend_from_slice(&lane.open.to_be_bytes());
+        let mut flags = 0_u8;
+        if lane.range.is_some() {
+            flags |= FLAG_RANGE;
+        }
+        if lane.disabled {
+            flags |= FLAG_DISABLED;
+        }
+        out.push(flags);
+        if let Some(range) = &lane.range {
+            put_stat(&mut out, &range.min);
+            put_stat(&mut out, &range.max);
+        }
     }
     out
 }
 
-/// The lanes a pointer value names — [`lanes_to_bytes`] read back, with the
-/// eight-byte legacy form tolerated.
-pub(crate) fn lanes_from_bytes(bytes: &[u8]) -> Result<BTreeMap<u64, u64>> {
+/// One statistic payload: a u32 length + the store's own encoding, the same
+/// shape the chunk head uses.
+fn put_stat(out: &mut Vec<u8>, value: &tessari_types::Value) {
+    let encoded = tessari_encoding::encode_payload(value).into_bytes();
+    out.extend_from_slice(
+        &u32::try_from(encoded.len())
+            .unwrap_or(u32::MAX)
+            .to_be_bytes(),
+    );
+    out.extend_from_slice(&encoded);
+}
+
+/// The lanes a pointer value names — [`lanes_to_bytes`] read back. Legacy
+/// forms (the bare eight-byte open seq, the v1 lane-count form) parse with
+/// no range statistics; anything cut short refuses rather than guesses.
+pub(crate) fn lanes_from_bytes(bytes: &[u8]) -> Result<BTreeMap<u64, LanePointer>> {
     let mut lanes = BTreeMap::new();
     if bytes.len() == 8 {
         lanes.insert(
             0,
-            u64::from_be_bytes(bytes.try_into().map_err(|_| {
-                crate::error::Error::ColumnarTruncated {
-                    needed: 8,
-                    len: bytes.len(),
-                }
-            })?),
+            LanePointer {
+                open: u64::from_be_bytes(bytes.try_into().map_err(|_| {
+                    crate::error::Error::ColumnarTruncated {
+                        needed: 8,
+                        len: bytes.len(),
+                    }
+                })?),
+                range: None,
+                // The bare form predates lane statistics: the lane's sealed
+                // history is unknown, and unknown is disabled.
+                disabled: true,
+            },
         );
         return Ok(lanes);
     }
-    let mut cursor = super::codec::Cursor::new(bytes);
-    let count = u32::from_be_bytes(cursor.take(4)?.try_into().map_err(|_| {
+    if bytes.len() < 4 {
+        return Err(crate::error::Error::ColumnarTruncated {
+            needed: 4,
+            len: bytes.len(),
+        });
+    }
+    let first = u32::from_be_bytes(bytes[..4].try_into().map_err(|_| {
         crate::error::Error::ColumnarTruncated {
             needed: 4,
             len: bytes.len(),
         }
     })?);
+    if first == POINTER_MAGIC {
+        return lanes_from_v2(bytes);
+    }
+    lanes_from_v1(bytes)
+}
+
+/// The v2 form past the magic.
+fn lanes_from_v2(bytes: &[u8]) -> Result<BTreeMap<u64, LanePointer>> {
+    let mut lanes = BTreeMap::new();
+    let mut cursor = super::codec::Cursor::new(bytes);
+    let magic = cursor.u32()?;
+    debug_assert_eq!(magic, POINTER_MAGIC);
+    let count = cursor.u32()?;
     for _ in 0..count {
-        let partition = u32::from_be_bytes(cursor.take(4)?.try_into().map_err(|_| {
-            crate::error::Error::ColumnarTruncated {
-                needed: 4,
-                len: bytes.len(),
-            }
-        })?);
-        let open = u64::from_be_bytes(cursor.take(8)?.try_into().map_err(|_| {
+        let partition = u64::from(cursor.u32()?);
+        let open_bytes = cursor.take(8)?;
+        let open = u64::from_be_bytes(open_bytes.try_into().map_err(|_| {
             crate::error::Error::ColumnarTruncated {
                 needed: 8,
-                len: bytes.len(),
+                len: open_bytes.len(),
             }
         })?);
-        lanes.insert(u64::from(partition), open);
+        let flags = cursor.u8()?;
+        let range = if flags & FLAG_RANGE != 0 {
+            let min = read_stat(&mut cursor)?;
+            let max = read_stat(&mut cursor)?;
+            Some(LaneRange { min, max })
+        } else {
+            None
+        };
+        lanes.insert(
+            partition,
+            LanePointer {
+                open,
+                range,
+                disabled: flags & FLAG_DISABLED != 0,
+            },
+        );
     }
     cursor.finish()?;
     Ok(lanes)
+}
+
+/// The v1 lane-count form, without statistics.
+fn lanes_from_v1(bytes: &[u8]) -> Result<BTreeMap<u64, LanePointer>> {
+    let mut lanes = BTreeMap::new();
+    let mut cursor = super::codec::Cursor::new(bytes);
+    let count = cursor.u32()?;
+    for _ in 0..count {
+        let partition = u64::from(cursor.u32()?);
+        let open_bytes = cursor.take(8)?;
+        let open = u64::from_be_bytes(open_bytes.try_into().map_err(|_| {
+            crate::error::Error::ColumnarTruncated {
+                needed: 8,
+                len: open_bytes.len(),
+            }
+        })?);
+        lanes.insert(
+            partition,
+            LanePointer {
+                open,
+                range: None,
+                // The v1 form predates lane statistics: unknown history is
+                // disabled history.
+                disabled: true,
+            },
+        );
+    }
+    cursor.finish()?;
+    Ok(lanes)
+}
+
+/// One statistic payload read back.
+fn read_stat(cursor: &mut super::codec::Cursor<'_>) -> Result<tessari_types::Value> {
+    let len = usize::try_from(cursor.u32()?).unwrap_or(usize::MAX);
+    let raw = cursor.take(len)?;
+    tessari_encoding::decode_payload(raw).map_err(crate::Error::from)
+}
+
+/// Merge the lane's previous range with the contributions of the chunks one
+/// commit sealed: the widened [min, max]. [`SealedStat::Empty`] contributes
+/// nothing; [`SealedStat::Disabled`] disables the lane's range — one chunk
+/// that can hold anything makes the whole lane's range a guess. The sticky
+/// half of the rule (never upgrading a lane whose sealed history is
+/// unknown) is the caller's, on the strength of the pointer's `disabled`
+/// flag.
+pub(crate) fn merge_lane_range(
+    previous: Option<LaneRange>,
+    sealed: &[SealedStat],
+) -> Option<LaneRange> {
+    let mut merged = previous;
+    for stat in sealed {
+        match stat {
+            SealedStat::Ranged(min, max) => {
+                let (min, max) = (min.clone(), max.clone());
+                merged = Some(match merged {
+                    None => LaneRange { min, max },
+                    Some(existing) => LaneRange {
+                        min: min.min(existing.min),
+                        max: max.max(existing.max),
+                    },
+                });
+            }
+            SealedStat::Empty => {}
+            SealedStat::Disabled => return None,
+        }
+    }
+    merged
 }
 
 /// Derive the columnar projection's writes from one commit's record, into
@@ -207,7 +397,7 @@ async fn project_table(
         .collect();
 
     let mut writers: BTreeMap<(ColumnFamily, u64), ChunkWriter> = BTreeMap::new();
-    let mut lanes: BTreeMap<ColumnFamily, BTreeMap<u64, u64>> = BTreeMap::new();
+    let mut lanes: BTreeMap<ColumnFamily, BTreeMap<u64, LanePointer>> = BTreeMap::new();
     let mut maps: Vec<(RecordId, Vec<(ColumnFamily, u64)>)> = Vec::new();
     let mut cows: Vec<(u64, ColumnFamily, Vec<u8>)> = Vec::new();
 
@@ -297,8 +487,9 @@ async fn project_table(
     }
 
     // Flush: copy-on-write rewrites first, then the sealed and open chunks,
-    // the pointer moved to each family's open seq, and the map entries — all
-    // versioned puts in the one batch.
+    // the pointer moved to each family's open seq with the lane statistics
+    // merged forward, and the map entries — all versioned puts in the one
+    // batch.
     let mut batch = batch;
     for (seq, family, bytes) in cows {
         batch = batch.put(
@@ -309,7 +500,45 @@ async fn project_table(
     }
     for ((family, partition), writer) in writers {
         let open_seq = split_seq(partition, writer.seq());
-        for sealed in writer.finish() {
+        // The lane statistics this batch leaves behind. The open chunk is
+        // never part of them: `finish` rides it home as the last entry, but
+        // appends continue into it in later commits, and a range a later
+        // append can exceed would deny rows it has never seen (the design
+        // record: the scan consults the open chunk every time).
+        let open_local = writer.seq();
+        let finished = writer.finish();
+        let contributions: Vec<SealedStat> = finished
+            .iter()
+            .filter(|sealed| sealed.seq != open_local)
+            .map(|sealed| {
+                let stat = super::chunk::decode_head(&sealed.bytes)?.1;
+                if stat.range_disabled {
+                    Ok(SealedStat::Disabled)
+                } else {
+                    Ok(match stat.min.zip(stat.max) {
+                        Some((min, max)) => SealedStat::Ranged(min, max),
+                        None => SealedStat::Empty,
+                    })
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        let held = lanes.entry(family.clone()).or_default();
+        // A lane upgrades from absence only while its sealed history is
+        // fully known: it was born under this wave and no NaN has disabled
+        // it. Legacy pointers and NaN-disabled lanes read as `disabled` and
+        // keep the doubt for good — a range over unknown history would
+        // understate what the lane can hold, and an understated range
+        // deletes rows.
+        let base = match held.get(&partition) {
+            Some(lane) if !lane.disabled => lane.range.clone(),
+            _ => None,
+        };
+        let merged = merge_lane_range(base, &contributions);
+        let disabled = contributions
+            .iter()
+            .any(|stat| matches!(stat, SealedStat::Disabled))
+            || held.get(&partition).is_some_and(|lane| lane.disabled);
+        for sealed in finished {
             batch = batch.put(
                 ChunkKey::keyspace(),
                 ChunkKey::new(
@@ -324,10 +553,14 @@ async fn project_table(
                 Value::from(sealed.bytes),
             );
         }
-        lanes
-            .entry(family.clone())
-            .or_default()
-            .insert(partition, open_seq);
+        held.insert(
+            partition,
+            LanePointer {
+                open: open_seq,
+                range: merged,
+                disabled,
+            },
+        );
     }
     for (family, held) in lanes {
         batch = batch.put(
@@ -381,7 +614,7 @@ async fn load_writer(
     table: TableId,
     family: &ColumnFamily,
     partition: u64,
-    lanes: &mut BTreeMap<u64, u64>,
+    lanes: &mut BTreeMap<u64, LanePointer>,
 ) -> Result<ChunkWriter> {
     if lanes.is_empty() {
         *lanes = match newest_under(
@@ -396,7 +629,7 @@ async fn load_writer(
     }
     let local = lanes
         .get(&partition)
-        .map(|open| local_of_seq(*open))
+        .map(|lane| local_of_seq(lane.open))
         .unwrap_or(0);
     match newest_under(
         store,

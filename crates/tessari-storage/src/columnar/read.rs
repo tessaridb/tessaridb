@@ -41,7 +41,8 @@ pub(crate) async fn family_chunks(
         None => return Ok(Vec::new()),
     };
     let mut chunks = Vec::new();
-    for (partition, open) in lanes {
+    for (partition, lane) in lanes {
+        let open = lane.open;
         let mut local = 0_u64;
         while local <= super::chunk::local_of_seq(open) {
             let seq = super::chunk::split_seq(partition, local);

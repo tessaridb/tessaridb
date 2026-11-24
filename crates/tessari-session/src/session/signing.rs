@@ -208,6 +208,7 @@ impl<'a> Session<'a> {
             held: None,
             // A probe parses no guards: it never reaches a guarded read.
             guard_cache: dashmap::DashMap::new(),
+            compiled: Default::default(),
         };
         probe.acting_as(id).await?;
         Ok(probe)

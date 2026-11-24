@@ -117,10 +117,15 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
     // compared by key only or not at all, and both for a stated reason: a
     // vector node's neighbour list depends on the order its graph was built in
     // (ADR-0091 amendment 4), and recall, refinement and the planner's
-    // statistics and change counters are measurements, which no copy carries.
+    // Statistics and change counters are measurements, which no copy carries.
     // Retired entries are left out for the same reason: they are this node's
     // history, kept for snapshots older than the removals it applied (Q-S3-34),
     // and no transaction on a copy can hold a snapshot older than the copy.
+    // The search term bloom is monotonic — deleted terms keep their bits, so
+    // a replayed derivation (every term the history ever held) and a rebuilt
+    // one (the live vocabulary) diverge by construction. Its contract is
+    // answer-preservation, not byte-equality, and that is asserted in the
+    // engine's exactness suite.
     let comparable = |entries: Vec<(Vec<u8>, Vec<u8>)>| -> Vec<(Vec<u8>, Vec<u8>)> {
         entries
             .into_iter()
@@ -134,7 +139,8 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
                             | INDEX_CHANGES
                             | FIELD_STATISTICS
                             | FIELD_CHANGES
-                            | RETIRED_INDEX)
+                            | RETIRED_INDEX
+                            | SEARCH_BLOOM)
                     )
                 )
             })
@@ -153,6 +159,7 @@ fn a_follower_that_fell_behind_answers_what_its_leader_answers_after_a_copy() {
 
 /// Key-kind tags (docs/key-grammar.md §3).
 const VECTOR_NODE: u8 = 0x13;
+const SEARCH_BLOOM: u8 = 0x4b;
 const VECTOR_RECALL: u8 = 0x17;
 const SPATIAL_REFINEMENT: u8 = 0x18;
 const INDEX_STATISTICS: u8 = 0x40;

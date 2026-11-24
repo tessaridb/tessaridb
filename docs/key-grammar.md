@@ -118,6 +118,7 @@ because renumbering after data exists is a full rebuild.
 | `0x48` | `FieldChanges` (writes one table has gained or lost on this node) | `index` | implemented — the freshness counter for `0x47` (G083); node-local, never in the log |
 | `0x49` | `VectorTrained` (a partitioned vector index's centroids and codebooks) | `index` | implemented — see §6.2c-2 (ADR-0141); format 17 |
 | `0x4a` | `VectorCodes` (one record's product-quantized codes, by partition) | `index` | implemented — see §6.2c-2 (ADR-0141); format 17 |
+| `0x4b` | `SearchBloom` (a search index's monotonic term bloom — every term the dictionary has held, OR'd in and never removed, so a negative probe skips a posting walk for a term certainly absent) | `index` | implemented — see §6.2b-7 (ADR-0147); format 18 |
 | `0x50` | `TransactionRecord` (one transaction across leaders) | `meta` | implemented — see §6.5 |
 | `0x51` | `IntentOf` (an intent this node holds, by transaction) | `meta` | implemented — see §6.5 |
 | `0x52` | `AcrossPart` (where a transaction's part in one range landed here) | `meta` | implemented — see §6.5 |
@@ -791,6 +792,25 @@ The entry with an empty surface and an empty term is the marker the build writes
 (count `0`): an index built before this kind existed has none, and a fuzzy read
 over it is answered by the scan. `REBUILD INDEX` writes it.
 
+### 6.2b-7 `SearchBloom` — keyspace `index`
+
+```
+key    <0x4b> <namespace:u32> <database:u32> <table:u32> <index:u32>
+value  <terms:u64> <byte-len:u32> <bits:byte-len>
+```
+
+One entry per search index — the address is the whole key, so finding it is a
+point read. The bits are a bloom over the order-encoded bytes of every term the
+index's dictionary has held; the estimate names how many terms the bits were
+folded from. The filter is **monotonic**: terms enter and never leave, because a
+term deleted from the dictionary keeps its bits — a stale bit costs a read, a
+cleared bit would cost a row, since a negative probe is trusted and skips the
+posting walk. Settled in the same batch as the dictionary itself, one read and
+one write per index per batch; an index a batch built starts the filter fresh.
+A read whose estimate exceeds the bits' capacity consults nothing: past
+capacity the filter denies nothing usefully, and falling through to the walk
+is cheaper than reading through it. First written at format 18 (ADR-0147).
+
 ### 6.2b-2 `VectorRecall` — keyspace `index`
 
 ```
@@ -1275,6 +1295,7 @@ and is rewritten at open only where the row below says so.
 | `15` | the catalog keeps the load-balancing policy in system table `34` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `34` | opened as is and keeps its stamp; `DEFINE BALANCER` is refused (`FormatNotFinalized`) until the store is finalized |
 | `16` | the catalog keeps a namespace's workload pools in system table `35` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `35` | opened as is and keeps its stamp; `DEFINE POOL` is refused (`FormatNotFinalized`) until the store is finalized |
 | `17` | a vector index may be partitioned (ADR-0141): key kinds `0x49` (a partitioned index's trained centroids and codebooks) and `0x4a` (one record's product-quantized codes, by partition) — entries a build before it neither reads nor clears, so a store holding them is one it must not open | opened as is and keeps its stamp; a partitioned vector index is refused (`FormatNotFinalized`) until the store is finalized |
+| `18` | a search index keeps a monotonic term bloom, key kind `0x4b` (ADR-0147) — a value a build before it neither reads nor writes, so a store holding it is one it must not open | opened as is and keeps its stamp; nothing a pre-18 build does changes or is changed by the bloom, and a store below keeps reading through its postings as before |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the
