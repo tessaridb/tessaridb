@@ -38,8 +38,8 @@ pub use expr::{
 pub use select::{
     Admitted, AnsweredBy, Approximation, Combination, CompoundTail, Fill, FillMode, Fusion, Hop,
     JoinSide, Level, LevelKind, LockMode, Locking, Neighbour, Nulls, Ordering, Outer,
-    ParameterSlot, PathTo, Projected, Projection, Select, SetOperation, Source, Staleness, Timeout,
-    Using, Version, WindowFunction, Windowed,
+    ParameterSlot, PathTo, Projected, Projection, Repeat, Select, SetOperation, Source, Staleness,
+    Timeout, Using, Version, WindowFunction, Windowed,
 };
 pub use statement::{
     BackupForm, ConflictAction, ConflictUpdate, OnConflict, Ratio, RollupCompute, RowGuard,

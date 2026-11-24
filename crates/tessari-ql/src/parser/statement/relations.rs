@@ -4,10 +4,11 @@ use super::Parser;
 
 use crate::ast::{
     Direction, EdgeClause, EdgeEndpoints, EdgeOrdering, ExprKind, Hop, PathTo, RangeExpr,
-    RecordTarget, Source, StatementKind,
+    RecordTarget, Repeat, Source, StatementKind,
 };
 use crate::error::{Error, Result};
-use crate::token::{Keyword, Punct};
+use crate::token::{Keyword, Punct, Token};
+use tessari_types::Number;
 
 impl Parser<'_> {
     /// `FROM users TO users ORDER BY at DESC` after `EDGE`, when it is there.
@@ -77,10 +78,18 @@ impl Parser<'_> {
         let mut hops = Vec::new();
         loop {
             let edges = self.table_ref()?;
+            let repeat = self.segment()?;
             let Some(second) = self.arrow() else {
+                // A segment is the step's landing set, and a step ending on the
+                // edges has nothing to land — refused here, where the shape is
+                // known, rather than answered with nothing (ADR-0143).
+                if let Some(segment) = repeat {
+                    return Err(Error::RepeatNeedsTarget { span: segment.span });
+                }
                 hops.push(Hop {
                     edges,
                     target: None,
+                    repeat: None,
                 });
                 break;
             };
@@ -91,6 +100,7 @@ impl Parser<'_> {
             hops.push(Hop {
                 edges,
                 target: Some(target),
+                repeat,
             });
             match self.arrow() {
                 Some(next) if next == direction => {}
@@ -123,9 +133,31 @@ impl Parser<'_> {
                 } else {
                     None
                 };
+                // `ALL` or `K n` — every minimal-cost path, or the n best by
+                // the order the single path already uses. Both together are
+                // two answers to one question (ADR-0143's companion).
+                let all = self.eat_word("all");
+                let k = if self.eat_word("k") {
+                    Some(self.k_bound()?)
+                } else {
+                    None
+                };
+                let all = if !all && self.eat_word("all") {
+                    if k.is_some() {
+                        return Err(Error::PathAllWithK { span: path_at });
+                    }
+                    true
+                } else {
+                    all
+                };
+                if all && k.is_some() {
+                    return Err(Error::PathAllWithK { span: path_at });
+                }
                 Some(Box::new(PathTo {
                     to,
                     weight,
+                    all,
+                    k,
                     span: path_at,
                 }))
             }
@@ -149,6 +181,61 @@ impl Parser<'_> {
             return Some(Direction::Incoming);
         }
         None
+    }
+
+    /// `[*m..n]` after a step's edge kind, when it is there (ADR-0143).
+    ///
+    /// Both bounds are integer literals — the walk states its own length where
+    /// the statement is read, the same discipline `depth_bound` holds `DEPTH`
+    /// to. A negative bound refuses as the below-one or above-max shape it
+    /// lands in, exactly as `DEPTH` refuses a negative.
+    fn segment(&mut self) -> Result<Option<Repeat>> {
+        if self.peek() != Some(&Token::Punct(Punct::BracketOpen)) {
+            return Ok(None);
+        }
+        let span = self.span_here();
+        self.advance();
+        self.expect_punct(Punct::Star, "`*` and the segment's lower bound")?;
+        let min = self.segment_bound("`..` and the upper bound")?;
+        self.expect_punct(Punct::DotDot, "`..` between the segment's bounds")?;
+        let max = self.segment_bound("`]`, then the arrow and the node it lands on")?;
+        self.expect_punct(
+            Punct::BracketClose,
+            "`]`, then the arrow and the node it lands on",
+        )?;
+        if min == 0 {
+            return Err(Error::RepeatBelowOne { span });
+        }
+        if min > max {
+            return Err(Error::RepeatAboveMax { span });
+        }
+        Ok(Some(Repeat { min, max, span }))
+    }
+
+    /// The literal path count after `K`: a whole number, one or more.
+    fn k_bound(&mut self) -> Result<u64> {
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here("`K n` — a whole number of paths, written out"));
+        };
+        let count = u64::try_from(*count).unwrap_or(0);
+        self.advance();
+        if count == 0 {
+            return Err(Error::KBelowOne { span });
+        }
+        Ok(count)
+    }
+
+    /// One integer bound of a segment. A non-integer refuses as not-a-number;
+    /// a negative reads as zero and is refused by the bound's own rule, as
+    /// `DEPTH` does.
+    fn segment_bound(&mut self, after: &'static str) -> Result<u64> {
+        let Some(Token::Number(Number::Integer(bound))) = self.peek() else {
+            return Err(self.error_here(after));
+        };
+        let bound = u64::try_from(*bound).unwrap_or(0);
+        self.advance();
+        Ok(bound)
     }
 
     /// `RELATE users:1->follows->users:2 = { since: … }`

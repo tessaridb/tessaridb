@@ -347,6 +347,11 @@ impl Parser<'_> {
             return Ok(None);
         }
         let span = self.span_here();
+        // The segment is the bound; `DEPTH` beside one would be a second
+        // spelling for an argument, refused as that (ADR-0143).
+        if hops.iter().any(|hop| hop.repeat.is_some()) {
+            return Err(Error::DepthWithRepeat { span });
+        }
         // Checked before the number is read, so `DEPTH x` on a chain refuses as
         // the chain it is rather than as a missing integer — the first fault a
         // reader can act on is the one worth reporting.

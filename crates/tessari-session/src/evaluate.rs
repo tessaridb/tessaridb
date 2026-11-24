@@ -42,6 +42,7 @@ mod delete;
 mod folded;
 mod fused;
 mod graph;
+mod graph_algo;
 mod join;
 mod json;
 mod keys;

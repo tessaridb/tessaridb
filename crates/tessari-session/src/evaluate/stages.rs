@@ -22,7 +22,14 @@ pub(crate) type Joined = (Vec<(RecordId, Value)>, Plan, Searched);
 /// Both halves are lists of the same length only by coincidence, and the second
 /// is empty whenever the step named no node — so they are named rather than left
 /// as a tuple two `Vec`s wide that a caller could read in either order.
-pub(crate) type Hopped = (Vec<(RecordId, Value)>, Vec<RecordRef>);
+// First-reach provenance rides as the third element: (child, parent) record
+// pairs this hop produced, for path reconstruction over segment walks
+// (ADR-0143).
+pub(crate) type Hopped = (
+    Vec<(RecordId, Value)>,
+    Vec<RecordRef>,
+    Vec<(RecordRef, RecordRef)>,
+);
 
 /// The records a read reached, how it reached them, and whether reaching them
 /// settled the condition.

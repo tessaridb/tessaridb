@@ -190,6 +190,7 @@ pub(crate) fn write_source(out: &mut String, source: &Source, span: Span) -> Res
         Source::Record(_) => unwritten("a read of one record"),
         Source::Range { .. } => unwritten("a read of a span of identities"),
         Source::Traverse { .. } => unwritten("a traversal"),
+        Source::GraphRead { .. } => unwritten("a graph algorithm"),
         Source::Join { .. } => unwritten("a join"),
         Source::Subquery { .. } => unwritten("a materialised read"),
         Source::Search { .. } => unwritten("a read of a search"),

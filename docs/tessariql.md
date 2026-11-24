@@ -1971,6 +1971,56 @@ ending on the edges themselves has nothing for a second round to start from;
 both are refused rather than answered one way in silence. Repeating a *pattern*
 is a different feature and is not in this language yet.
 
+### A bounded segment repeats one step: `[*m..n]`
+
+```
+SELECT * FROM person:1->knows[*1..3]->person;
+SELECT * FROM person:1->knows[*2..2]->person->wrote[*1..1]->post;
+```
+
+A step written `->knows[*1..3]->` repeats **that one step** between one and
+three times, breadth-first over the same seen set `DEPTH` uses, and the step
+then lands on every record first reached at a distance inside the window.
+`[*2..2]` is exactly two steps; `[*1..n]` on a lone step answers what
+`DEPTH n` answers. The window is two integer literals — the bound is written
+where the statement is read, and the walk costs the reachable subgraph
+however large the numbers are written.
+
+A segment may stand anywhere in a chain, between fixed steps, and the walk
+continues from its landing set: `person:1->knows[*1..2]->person->wrote->post`
+binds the middle table to everyone reachable in one or two steps and then
+takes one written step on. The seen set is per statement, so a record reached
+by the segment is not re-expanded by a later step that could reach it again —
+each record is expanded once, and a cycle terminates the walk rather than
+feeding it.
+
+The segment walks a declared edge kind, beside the node, in the direction its
+arrows point. The refusals say the shape rather than answering it one way:
+`RepeatNeedsTarget` when the step names no node, `RepeatBelowOne` at a zero
+lower bound, `RepeatAboveMax` when the minimum exceeds the maximum,
+`RepeatOnEdgeTable` over an edge table (the segment is served by adjacency,
+and an edge table is the record-behind-an-index shape), and `DepthWithRepeat`
+when `DEPTH` stands beside a segment — the segment is the bound, and two
+bounds on one walk would be a second spelling for an argument. `PATH TO` is
+unchanged and does not take segments.
+
+**The path rides the projection.** In a `SELECT` whose source holds a
+segment, the route `path` resolves to the array of record references from the
+origin to the answered record, along the first-reach chain the walk itself
+computed:
+
+```
+SELECT name, path FROM person:1->knows[*1..3]->person;
+```
+
+`path` is a route, contextual the way `$after` is: it exists because the walk
+produced it, not as a stored thing. Where the source holds no segment there
+is no chain to name, and the projection refuses (`PathWithoutWalk`) rather
+than answering with an empty array that would read as a walked-and-found-
+nothing. A record's own path is its identity alone when the segment's window
+admits the direct edge, and the array order is the walk's order — origin
+first, the answered record last.
+
 ### The shortest path: `PATH TO`
 
 ```
@@ -1982,6 +2032,26 @@ The answer is the path's records, **start to end, in order** — the start alone
 when it is the end, nothing when no path fits within `DEPTH`. A `path` note says
 how many steps it took and what they cost: the steps again, or with `WEIGHT` the
 sum of that edge field along the way (from `0.22.0-beta`).
+
+**Every path of the minimum, or the best `k`.** `ALL` answers every path whose
+cost equals the minimum the search finds; `K n` answers the `n` best by the same
+rule the one path uses — cheapest, fewest steps, smallest sequence of record
+ids. Both take the written `DEPTH` as their bound and refuse by name below one
+(`K 0`), and together (`ALL K 3` — two answers to one question):
+
+```
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 ALL;
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 WEIGHT km K 3;
+```
+
+With `ALL` or `K` the answer is **one row per path**, each row the array of the
+path's records in order, origin first, each path carrying its own `path` note —
+the one-path shape stays what it always was. The search enumerates the simple
+paths the written `DEPTH` admits and refuses at 4096 examined paths
+(`PathSearchTooWide`), naming the ceiling rather than running past it; a
+narrower `DEPTH` is the remedy it points at. A path through a record the
+reader's grants do not reach is not answered: a chain the caller cannot see is
+not a chain.
 
 **One path, by a rule.** The cheapest, then the fewest steps, then the one whose
 record ids, read in order, come first — so the same graph always answers the
@@ -2004,6 +2074,47 @@ that loops. The step walks a **declared** edge kind (`DEFINE EDGE … IN`); an e
 table is refused (`PathOverEdgeTable`). A deleted node drops out of every path,
 and the records answered are read under the reader's grants, as a `DEPTH` walk
 reads them.
+
+### Algorithms over a declared graph: `FROM GRAPH … BY`
+
+```
+SELECT * FROM GRAPH web BY pagerank;
+SELECT * FROM GRAPH web BY sssp FROM place:1;
+SELECT * FROM GRAPH web BY pagerank USING knows;
+```
+
+A whole-graph analytic is a **read source**: `BY` names the algorithm, and
+the answer is one row per node — `{ node: <record>, score: <number> }`,
+`{ node, cost }` for `sssp` — under the reader's snapshot and grants. A node
+the reader may not see is not in the answer, as a walk they cannot see is
+not a walk. The rows are ordinary rows: `WHERE`, `ORDER BY`, `LIMIT` and the
+folds run over them like over any other read.
+
+The first six algorithms, each deterministic by construction — fixed
+iteration counts and min-id tie-breaks, so the same graph answers the same
+rows on every run:
+
+| algorithm | what the score is |
+|---|---|
+| `pagerank` | the rank after a fixed number of rounds (damping 0.85) — a float |
+| `wcc` | the weakly-connected component's label — the smallest member id |
+| `cdlp` | the community label after a fixed number of synchronous propagation rounds |
+| `betweenness` | the Brandes betweenness count — a float |
+| `harmonic` | the harmonic centrality — the sum of `1/distance` over reachable nodes |
+| `sssp` | the fewest-steps cost from the start node |
+
+`USING` names one declared edge kind to walk; without it every edge kind the
+graph declares takes part. `FROM` names the start node `sssp` needs and is
+refused beside an algorithm that takes none (`AlgorithmTakesNoStart`), as
+`sssp` without one is refused (`AlgorithmNeedsStart`). The refusals name
+their shapes: `GraphNotDeclared` for a graph the catalog does not hold,
+`UnknownAlgorithm` for a name the language does not have, and
+`EdgeKindNotInGraph` for a `USING` the graph does not declare.
+
+These are whole-graph passes: they read every node of the graph's member
+tables once and walk adjacency, and a graph that does not fit the statement's
+budget refuses through the ordinary budget and `TIMEOUT` machinery rather
+than a separate ceiling.
 
 ### A table and its columns in one statement
 
@@ -11667,7 +11778,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.52.1", "build": "0.52.1", "endpoints": ["db-1.internal:9000"],
+ "version": "0.53.0", "build": "0.53.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

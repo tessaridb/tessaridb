@@ -5,7 +5,7 @@ mod window;
 
 use super::{Direction, Expr, FieldPath, Identity, Name, RecordTarget, TableRef};
 use crate::token::Span;
-pub use source::{Fill, FillMode, Hop, JoinSide, Outer, PathTo, Source};
+pub use source::{Fill, FillMode, Hop, JoinSide, Outer, PathTo, Repeat, Source};
 use tessari_types::{Duration, Number};
 pub use window::{Neighbour, WindowFunction, Windowed};
 

@@ -135,6 +135,11 @@ pub(crate) fn bind_select(select: &mut Select, binding: &Binding<'_>) -> Result<
             bind_identity(lower, *span, binding)?;
             bind_identity(upper, *span, binding)?;
         }
+        Source::GraphRead { start, .. } => {
+            if let Some(start) = start {
+                bind_target(start, binding)?;
+            }
+        }
         Source::Traverse { from, path, .. } => {
             bind_target(from, binding)?;
             // `PATH TO users:$who` — the far end is a record like the start.

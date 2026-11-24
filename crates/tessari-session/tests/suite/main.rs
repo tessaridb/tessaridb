@@ -87,6 +87,7 @@ mod geo_store;
 mod geometry_ingest;
 mod geometry_query;
 mod grants;
+mod graph_algorithms;
 mod graph_container;
 mod graph_engine;
 mod graph_paths;

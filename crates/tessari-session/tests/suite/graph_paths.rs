@@ -19,7 +19,7 @@ use tessari_session::RunNow;
 use tessari_kv::{KvBackend, MemoryBackend};
 use tessari_session::{Error, Note, Outcome, Session};
 use tessari_storage::Store;
-use tessari_types::{Number, RecordId};
+use tessari_types::{Number, RecordId, Value};
 
 const NODES: i64 = 12;
 
@@ -344,4 +344,179 @@ fn an_unbounded_or_unweighable_path_is_refused_by_name() {
         ),
         (vec![1, 5], Some((1, 1.0)))
     );
+}
+
+/// Every simple path from `from` to `to` within `depth` steps, in the order
+/// the enumeration visits them (ids ascending at each step).
+fn brute_all(
+    edges: &Edges,
+    from: i64,
+    to: i64,
+    depth: usize,
+    weighted: bool,
+) -> Vec<(Vec<i64>, f64)> {
+    fn walk(
+        edges: &Edges,
+        to: i64,
+        weighted: bool,
+        path: &mut Vec<i64>,
+        left: usize,
+        cost: f64,
+        found: &mut Vec<(Vec<i64>, f64)>,
+    ) {
+        let Some(at) = path.last().copied() else {
+            return;
+        };
+        if at == to {
+            found.push((path.clone(), cost));
+            return;
+        }
+        let Some(rest) = left.checked_sub(1) else {
+            return;
+        };
+        let out: Vec<(i64, f64)> = edges
+            .get(&at)
+            .into_iter()
+            .flatten()
+            .map(|(next, km)| (*next, *km))
+            .collect();
+        for (next, km) in out {
+            if path.contains(&next) {
+                continue;
+            }
+            path.push(next);
+            let step = if weighted { km } else { 1.0 };
+            walk(edges, to, weighted, path, rest, cost + step, found);
+            path.pop();
+        }
+    }
+    let mut found = Vec::new();
+    walk(edges, to, weighted, &mut vec![from], depth, 0.0, &mut found);
+    found
+}
+
+/// The path rows an `ALL`/`K` read answered: one row per path, the row's
+/// value the array of the path's `n` fields in order, with the stated notes.
+fn asked_paths(session: &mut Session<'_>, read: &str) -> Vec<(Vec<i64>, (u64, f64))> {
+    let outcomes = session.run_now(read).unwrap();
+    let Some(Outcome::Records { records, notes, .. }) = outcomes.last() else {
+        panic!("{read}: {:?}", outcomes.last());
+    };
+    records
+        .iter()
+        .map(|(_, value)| {
+            let Value::Array(items) = value else {
+                panic!("not a path array: {value:?}");
+            };
+            let ids: Vec<i64> = items
+                .iter()
+                .map(|item| match item {
+                    Value::Object(fields) => match fields.get("n") {
+                        Some(Value::Number(Number::Integer(n))) => *n,
+                        other => panic!("no n: {other:?}"),
+                    },
+                    other => panic!("not a record: {other:?}"),
+                })
+                .collect();
+            let stated = notes.iter().find_map(|note| match note {
+                Note::Path { steps, cost } => Some((
+                    *steps,
+                    match cost {
+                        Number::Integer(held) => f64::from(i32::try_from(*held).unwrap()),
+                        Number::Float(held) => *held,
+                        other => panic!("{other:?}"),
+                    },
+                )),
+                _ => None,
+            });
+            (ids, stated.expect("a path note per path"))
+        })
+        .collect()
+}
+
+#[test]
+fn all_shortest_paths_answers_every_minimal_cost_path_and_k_the_best_in_order() {
+    // 1 → 2 → 4 and 1 → 3 → 4 share the minimum; 2 → 3 makes the graph worth
+    // enumerating. Unweighted: both two-step paths. K 1 is the single PATH TO
+    // answer; K 2 answers both, cheapest-first then the smallest ids.
+    let mut edges = Edges::new();
+    edges.entry(1).or_default().insert(2, 1.0);
+    edges.entry(1).or_default().insert(3, 1.0);
+    edges.entry(2).or_default().insert(3, 1.0);
+    edges.entry(2).or_default().insert(4, 1.0);
+    edges.entry(3).or_default().insert(4, 1.0);
+    let store = store_of(&edges);
+    let mut session = Session::new(&store);
+    session
+        .run_now("USE NAMESPACE prod; USE DATABASE town;")
+        .unwrap();
+
+    let all = asked_paths(
+        &mut session,
+        "SELECT * FROM place:1->road->place PATH TO place:4 DEPTH 4 ALL;",
+    );
+    let mut paths: Vec<Vec<i64>> = all.iter().map(|(ids, _)| ids.clone()).collect();
+    paths.sort();
+    assert_eq!(paths, vec![vec![1, 2, 4], vec![1, 3, 4]]);
+    assert!(
+        all.iter()
+            .all(|(_, (steps, cost))| *steps == 2 && *cost == 2.0)
+    );
+
+    let one = asked_paths(
+        &mut session,
+        "SELECT * FROM place:1->road->place PATH TO place:4 DEPTH 4 K 1;",
+    );
+    assert_eq!(one.len(), 1);
+    assert_eq!(one[0].0, vec![1, 2, 4]);
+
+    let two = asked_paths(
+        &mut session,
+        "SELECT * FROM place:1->road->place PATH TO place:4 DEPTH 4 K 2;",
+    );
+    assert_eq!(two.len(), 2);
+    assert_eq!(two[0].0, vec![1, 2, 4]);
+    assert_eq!(two[1].0, vec![1, 3, 4]);
+}
+
+#[test]
+fn k_paths_on_generated_graphs_equals_the_brute_force_enumeration() {
+    let mut compared = 0_usize;
+    for seed in 0..25_u64 {
+        let edges = generated(seed);
+        let store = store_of(&edges);
+        let mut session = Session::new(&store);
+        session
+            .run_now("USE NAMESPACE prod; USE DATABASE town;")
+            .unwrap();
+        let mut rolls = Rolls(seed);
+        for _ in 0..4 {
+            let from = i64::try_from(rolls.below(12)).unwrap() + 1;
+            let to = i64::try_from(rolls.below(12)).unwrap() + 1;
+            let depth = usize::try_from(rolls.below(5)).unwrap() + 1;
+            let k = usize::try_from(rolls.below(3)).unwrap() + 1;
+            for weighted in [false, true] {
+                let weight = if weighted { " WEIGHT km" } else { "" };
+                let read = format!(
+                    "SELECT * FROM place:{from}->road->place PATH TO place:{to} DEPTH {depth}{weight} K {k};"
+                );
+                let answered = asked_paths(&mut session, &read);
+                let mut expected = brute_all(&edges, from, to, depth, weighted);
+                expected.sort_by(|left, right| {
+                    left.1.total_cmp(&right.1).then_with(|| {
+                        left.0
+                            .len()
+                            .cmp(&right.0.len())
+                            .then_with(|| left.0.cmp(&right.0))
+                    })
+                });
+                expected.truncate(k);
+                let expected: Vec<Vec<i64>> = expected.into_iter().map(|(ids, _)| ids).collect();
+                let got: Vec<Vec<i64>> = answered.into_iter().map(|(ids, _)| ids).collect();
+                assert_eq!(got, expected, "{read}");
+                compared += 1;
+            }
+        }
+    }
+    assert!(compared > 50);
 }

@@ -8,6 +8,12 @@ pub struct PathTo {
     /// The edge field a step costs, when the path is weighted; each step costs
     /// one otherwise.
     pub weight: Option<Name>,
+    /// `ALL` — every path of the minimal cost, not only the one the tie-break
+    /// would pick.
+    pub all: bool,
+    /// `K n` — the n best paths by the order the single path uses (cheapest,
+    /// fewest steps, smallest id sequence), n written as a literal.
+    pub k: Option<u64>,
     /// Where `PATH` is.
     pub span: Span,
 }
@@ -25,6 +31,23 @@ pub struct Hop {
     pub edges: TableRef,
     /// The table the far endpoint is read from, when the statement names one.
     pub target: Option<TableRef>,
+    /// `->knows[*1..3]->` — this one step repeated between the literal bounds
+    /// (ADR-0143). Breadth-first over the walk's seen set; the step's landing
+    /// set is every record first reached at a distance inside the window.
+    pub repeat: Option<Repeat>,
+}
+
+/// `[*m..n]` on a traversal step: the step repeated between two integer
+/// literals, both written — the bound lives where the statement is read, the
+/// same discipline as `DEPTH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repeat {
+    /// The fewest times the step runs — `1` or more.
+    pub min: u64,
+    /// The most times the step runs — `min` or more.
+    pub max: u64,
+    /// Where the segment was written.
+    pub span: Span,
 }
 
 /// The three access paths the store has, named by what the statement targets.
@@ -59,6 +82,19 @@ pub enum Source {
     /// this node does not invent a row for itself that the catalog did not
     /// write.
     Nodes,
+    /// `FROM GRAPH web BY pagerank [FROM place:1] [USING knows]` — a
+    /// whole-graph analytic as a read source (ADR-0144). Answers one row per
+    /// node: `{ node: <record>, score: <number> }` (`cost` for `sssp`).
+    GraphRead {
+        /// The graph the algorithm reads.
+        graph: Name,
+        /// The algorithm: pagerank, wcc, cdlp, betweenness, harmonic, sssp.
+        algorithm: Name,
+        /// The start node, for the one algorithm that needs one (`sssp`).
+        start: Option<RecordTarget>,
+        /// The one edge kind the pass walks, when the statement names one.
+        using: Option<Name>,
+    },
     /// One record, by its identity.
     Record(RecordTarget),
     /// Every record of a table.

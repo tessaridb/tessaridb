@@ -62,6 +62,11 @@ pub(super) fn erase_select(select: &mut Select) {
 pub(super) fn erase_source(source: &mut Source) {
     match source {
         Source::Node | Source::Nodes => {}
+        Source::GraphRead { start, .. } => {
+            if let Some(start) = start {
+                erase_record(start);
+            }
+        }
         Source::Record(record) => erase_record(record),
         Source::Table(table) => erase_table(table),
         Source::Range { table, span, .. } => {

@@ -16,6 +16,29 @@ catalog, not the history: `VERSION` reads and change-feed positions from before 
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
+## 0.53.0 — 2026-11-25
+
+Strong graphs, taken to the maximum and verified on a cluster.
+
+- **Bounded segments** — `->knows[*1..3]->` repeats one step between literal
+  bounds, composing with fixed steps over one statement-wide seen set.
+  Cycles terminate the work; each record is expanded once. The `path`
+  projection answers each record's first-reach chain. Refusals:
+  `RepeatNeedsTarget`, `RepeatBelowOne`, `RepeatAboveMax`,
+  `RepeatOnEdgeTable`, `DepthWithRepeat`, `PathWithoutWalk`.
+- **`PATH TO` extensions** — `ALL` answers every minimal-cost path, `K n` the
+  n best by the standing order (cheapest, fewest steps, smallest ids). One
+  array row per path with its own note; a 4096-path ceiling refuses as
+  `PathSearchTooWide`.
+- **Graph algorithms as a read source** — `FROM GRAPH web BY pagerank | wcc |
+  cdlp | betweenness | harmonic | sssp [FROM <record>] [USING <kind>]` answers
+  one `{node, score}` row per node under the reader's grants.
+- **Traversal plans carry per-hop estimates** — the landing table's record
+  count from `ANALYZE TABLE` statistics on every graph plan (read and
+  `EXPLAIN`), silent where no statistics exist.
+- Known limitation (Q-990): graph node tables cannot be split; a cluster
+  bring-up must found its membership with `REPLICATES STORE` (a founding
+  `DATABASE`/`NAMESPACE` subscription does not elect).
 
 ## 0.52.1 — 2026-11-23
 

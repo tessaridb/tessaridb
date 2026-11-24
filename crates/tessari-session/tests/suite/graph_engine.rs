@@ -562,3 +562,181 @@ fn depth_over_a_cycle_terminates_and_answers_each_record_once() {
     // a count of the others.
     assert!(!found.contains(&"Ada".to_owned()));
 }
+
+#[test]
+fn a_segment_answers_the_records_first_reached_inside_its_window() {
+    let store = store();
+    let mut session = chain(&store);
+
+    // 1 -> 2 -> 3 -> 4. The window [1..2] lands on Grace and Katherine; [2..2]
+    // is Katherine alone; [1..1] is what one written step answers, and the
+    // segment spelling agrees with the written one at one step.
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows[*1..2]->person;"
+        ),
+        vec!["Grace".to_owned(), "Katherine".to_owned()]
+    );
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows[*2..2]->person;"
+        ),
+        vec!["Katherine".to_owned()]
+    );
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows[*1..1]->person;"
+        ),
+        names(&mut session, "SELECT * FROM person:1->knows->person;")
+    );
+}
+
+#[test]
+fn a_segment_composes_with_a_fixed_step_and_the_seen_set_spans_the_statement() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE social; USE DATABASE social;\n\
+             DEFINE GRAPH web;\n\
+             DEFINE TABLE person (name string) IN web;\n\
+             DEFINE EDGE knows IN web FROM person TO person;\n\
+             CREATE person:1 = { name: 'Ada' };\n\
+             CREATE person:2 = { name: 'Grace' };\n\
+             CREATE person:3 = { name: 'Katherine' };\n\
+             CREATE person:4 = { name: 'Dorothy' };\n\
+             RELATE person:1->knows->person:2;\n\
+             RELATE person:2->knows->person:3;\n\
+             RELATE person:1->knows->person:3;\n\
+             RELATE person:3->knows->person:4;",
+        )
+        .unwrap();
+
+    // The segment lands on {2, 3}. The fixed step after it follows knows from
+    // both — 3 reaches 4, and 2 reaches 3, which the statement-level seen set
+    // already holds, so 3 is not in the answer a second time: each record is
+    // expanded once across the whole walk.
+    assert_eq!(
+        names(
+            &mut session,
+            "SELECT * FROM person:1->knows[*1..1]->person->knows->person;"
+        ),
+        vec!["Dorothy".to_owned()]
+    );
+}
+
+#[test]
+fn a_segment_over_a_cycle_terminates_and_answers_each_record_once() {
+    let store = store();
+    let mut session = chain(&store);
+    session
+        .run_now("RELATE person:4->knows->person:1;")
+        .unwrap();
+
+    // The same contract DEPTH holds: the literals bound the rounds, the seen
+    // set bounds the work, and a lap around the cycle adds nothing.
+    let found = names(
+        &mut session,
+        "SELECT * FROM person:1->knows[*1..100]->person;",
+    );
+    assert_eq!(
+        found,
+        vec![
+            "Dorothy".to_owned(),
+            "Grace".to_owned(),
+            "Katherine".to_owned()
+        ]
+    );
+}
+
+#[test]
+fn a_segment_over_an_edge_table_is_refused_by_name() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+             DEFINE DATABASE social; USE DATABASE social;\n\
+             DEFINE TABLE person (name string);\n\
+             DEFINE TABLE follows (at datetime) EDGE FROM person TO person;\n\
+             CREATE person:1 = { name: 'Ada' };\n\
+             CREATE person:2 = { name: 'Grace' };\n\
+             RELATE person:1->follows->person:2;",
+        )
+        .unwrap();
+
+    let error = session
+        .run_now("SELECT * FROM person:1->follows[*1..2]->person;")
+        .unwrap_err();
+    assert!(matches!(error, Error::RepeatOnEdgeTable { .. }), "{error}");
+}
+
+#[test]
+fn the_path_route_answers_the_first_reach_chain() {
+    let store = store();
+    let mut session = chain(&store);
+
+    // The route is contextual: it exists because the segment walk produced
+    // it. Grace's chain is 1 -> 2; Katherine's is 1 -> 2 -> 3, the first-reach
+    // order the breadth-first walk itself computed.
+    let found = rows(
+        &mut session,
+        "SELECT name, path FROM person:1->knows[*1..2]->person;",
+    );
+    let mut chains: Vec<(String, Vec<String>)> = found
+        .iter()
+        .map(|row| match row {
+            Value::Object(fields) => {
+                let name = match fields.get("name") {
+                    Some(Value::String(text)) => text.clone(),
+                    other => panic!("no name: {other:?}"),
+                };
+                let path = match fields.get("path") {
+                    Some(Value::Array(items)) => items
+                        .iter()
+                        .map(|item| match item {
+                            Value::Record(reference) => format!("person:{}", reference.id),
+                            other => panic!("not a record ref: {other:?}"),
+                        })
+                        .collect(),
+                    other => panic!("no path: {other:?}"),
+                };
+                (name, path)
+            }
+            other => panic!("not a record: {other:?}"),
+        })
+        .collect();
+    chains.sort();
+    assert_eq!(
+        chains,
+        vec![
+            (
+                "Grace".to_owned(),
+                vec!["person:1".to_owned(), "person:2".to_owned()]
+            ),
+            (
+                "Katherine".to_owned(),
+                vec![
+                    "person:1".to_owned(),
+                    "person:2".to_owned(),
+                    "person:3".to_owned()
+                ]
+            ),
+        ]
+    );
+}
+
+#[test]
+fn the_path_route_without_a_segment_is_refused() {
+    let store = store();
+    let mut session = chain(&store);
+
+    let error = session
+        .run_now("SELECT path FROM person:1->knows->person;")
+        .unwrap_err();
+    assert!(matches!(error, Error::PathWithoutWalk { .. }), "{error}");
+}

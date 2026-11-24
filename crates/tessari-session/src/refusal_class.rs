@@ -175,6 +175,14 @@ impl Error {
             | Self::RollupsDependOn { .. }
             | Self::RecipientIsNotAName { .. }
             | Self::NotAnEdgeTable { .. }
+            | Self::RepeatOnEdgeTable { .. }
+            | Self::PathWithoutWalk { .. }
+            | Self::GraphNotDeclared { .. }
+            | Self::UnknownAlgorithm { .. }
+            | Self::AlgorithmNeedsStart { .. }
+            | Self::AlgorithmTakesNoStart { .. }
+            | Self::EdgeKindNotInGraph { .. }
+            | Self::PathSearchTooWide { .. }
             | Self::EndpointsNotDeclared { .. }
             | Self::TableBelongsToGraph { .. }
             | Self::NotRenamed { .. }

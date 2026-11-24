@@ -206,6 +206,7 @@ impl Session<'_> {
             // about what this rewrite declined to do.
             source @ (Source::Node
             | Source::Nodes
+            | Source::GraphRead { .. }
             | Source::Record(_)
             | Source::Range { .. }
             | Source::Traverse { .. }) => (source, false),

@@ -126,7 +126,7 @@ mod worth;
 pub(crate) use candidate::{Candidate, Served};
 pub(crate) use estimate::{narrows_to, serving};
 pub(crate) use reads::roots_read;
-pub use reported::{Expected, Plan};
+pub use reported::{Expected, HopEstimate, Plan};
 pub(crate) use statement::{
     Bounded, Closest, Nearest, Scored, answers, bound, closest, nearest, ordered, scored,
     walked_for,
