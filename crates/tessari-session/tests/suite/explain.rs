@@ -304,3 +304,80 @@ fn only_a_read_can_be_explained() {
         assert!(refused.is_err(), "{script} was accepted: {refused:?}");
     }
 }
+
+#[test]
+fn a_walks_plan_carries_per_hop_estimates_from_table_statistics() {
+    let first = store();
+    let mut session = ready(&first);
+    session
+        .run_now(
+            "DEFINE GRAPH social;\n\
+             DEFINE TABLE person (name string) IN social;\n\
+             DEFINE TABLE post (title string) IN social;\n\
+             DEFINE EDGE wrote IN social FROM person TO post;\n\
+             CREATE person:1 = { name: 'ada' };\n\
+             CREATE post:1 = { title: 't' };\n\
+             CREATE post:2 = { title: 'u' };\n\
+             RELATE person:1->wrote->post:1;\n\
+             ANALYZE TABLE person;\n\
+             ANALYZE TABLE post;",
+        )
+        .unwrap();
+    let outcomes = session
+        .run_now("EXPLAIN SELECT * FROM person:1->wrote->post;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        panic!("a plan answered with {:?}", outcomes.last());
+    };
+    // Per ADR-0145 the written order is the executed order and the plan says
+    // what each hop is expected to expand: the landing table's record count
+    // from the catalog's statistics.
+    let hops = fields.get("hops").expect("per-hop estimates");
+    let Value::Array(rows) = hops else {
+        panic!("not a hop list: {hops:?}");
+    };
+    assert_eq!(rows.len(), 1);
+    let Value::Object(hop) = &rows[0] else {
+        panic!("not a hop: {rows:?}");
+    };
+    assert_eq!(
+        hop.get("table"),
+        Some(&Value::from("post")),
+        "the hop names its landing table"
+    );
+    assert_eq!(
+        hop.get("estimate"),
+        Some(&Value::Number(tessari_types::Number::Integer(2))),
+        "two posts is what the hop can expand to"
+    );
+
+    // Without statistics the hop is silent about its estimate rather than
+    // inventing one.
+    let fresh_store = store();
+    let mut session = ready(&fresh_store);
+    session
+        .run_now(
+            "DEFINE GRAPH social;\n\
+             DEFINE TABLE person (name string) IN social;\n\
+             DEFINE TABLE post (title string) IN social;\n\
+             DEFINE EDGE wrote IN social FROM person TO post;\n\
+             CREATE person:1 = { name: 'ada' };",
+        )
+        .unwrap();
+    let outcomes = session
+        .run_now("EXPLAIN SELECT * FROM person:1->wrote->post;")
+        .unwrap();
+    let Some(Outcome::Value(Value::Object(fields))) = outcomes.last() else {
+        panic!("a plan answered with {:?}", outcomes.last());
+    };
+    // The hop is still named; its estimate is silent rather than invented.
+    let hops = fields.get("hops").expect("the hops are named");
+    let Value::Array(rows) = hops else {
+        panic!("not a hop list: {hops:?}");
+    };
+    let Value::Object(hop) = &rows[0] else {
+        panic!("not a hop: {rows:?}");
+    };
+    assert_eq!(hop.get("table"), Some(&Value::from("post")));
+    assert_eq!(hop.get("estimate"), None);
+}

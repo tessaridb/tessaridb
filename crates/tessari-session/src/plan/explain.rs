@@ -329,7 +329,16 @@ impl Session<'_> {
             // A graph pass reads adjacency whole, as a walk does; the
             // algorithm name is in the statement, not the plan.
             Source::GraphRead { .. } => Ok(Plan::new(AccessPath::Graph)),
-            Source::Traverse { .. } => Ok(Plan::new(AccessPath::Graph)),
+            // Per ADR-0145 the plan says what each hop is expected to expand —
+            // the landing table's record count from the catalog's statistics,
+            // silent where none exist. The written order is the executed order.
+            Source::Traverse { hops, .. } => {
+                let estimates = self.hop_estimates(transaction, hops).await;
+                Ok(Plan {
+                    hops: Some(estimates.into_boxed_slice()),
+                    ..Plan::new(AccessPath::Graph)
+                })
+            }
             // Neither side's own path is how a joined answer is reached, so
             // there is one word for it. What is worth naming is the index the
             // right side would be **probed** through — the difference between a

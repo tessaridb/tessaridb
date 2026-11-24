@@ -419,8 +419,15 @@ impl Session<'_> {
                         path_span.is_some(),
                     )
                     .await?;
+                let estimates = self.hop_estimates(transaction, hops).await;
                 Ok((
-                    Prepared::Held(found, Box::new(Plan::new(AccessPath::Graph))),
+                    Prepared::Held(
+                        found,
+                        Box::new(Plan {
+                            hops: Some(estimates.into_boxed_slice()),
+                            ..Plan::new(AccessPath::Graph)
+                        }),
+                    ),
                     Searched::default(),
                 ))
             }

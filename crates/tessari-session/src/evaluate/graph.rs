@@ -586,6 +586,35 @@ fn reach_chain(
     chain
 }
 
+impl Session<'_> {
+    /// Per-hop landing estimates for a traversal's plan (ADR-0145): the
+    /// landing table's record count from the catalog's statistics, silent
+    /// where none exist. Shared by the read and `EXPLAIN`, so the two plans
+    /// cannot diverge.
+    pub(crate) async fn hop_estimates(
+        &self,
+        transaction: &mut Transaction<'_>,
+        hops: &[Hop],
+    ) -> Vec<crate::plan::HopEstimate> {
+        let mut estimates = Vec::with_capacity(hops.len());
+        for hop in hops {
+            let Some(target) = hop.target.as_ref() else {
+                continue;
+            };
+            let Ok((_, table)) = self.resolve_table(transaction, target).await else {
+                continue;
+            };
+            let name = target.name.text.clone();
+            let count = Catalog::new(transaction).record_count(table).await.ok();
+            estimates.push(crate::plan::HopEstimate {
+                table: name,
+                estimate: count.flatten(),
+            });
+        }
+        estimates
+    }
+}
+
 /// Refuse a hop over `table` while its edges are indexed at another moment
 /// than the reader sees them.
 ///

@@ -70,6 +70,16 @@ impl Expected {
     }
 }
 
+/// One traversal hop's estimate: the table it lands on and the record
+/// count the catalog's statistics hold for it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HopEstimate {
+    /// The landing table's name.
+    pub table: String,
+    /// Its record count, when statistics exist.
+    pub estimate: Option<u64>,
+}
+
 /// What a read does, or what it would do.
 ///
 /// Built once per read and once per `EXPLAIN`, from the same enumeration and the
@@ -133,6 +143,11 @@ pub struct Plan {
     /// estimate came from statistics, so a reader sees the freshness of
     /// the one number in the plan that may be wrong.
     pub statistics_age: Option<u64>,
+    /// Per-hop landing estimates of a traversal (ADR-0145): the landing
+    /// table's record count from the catalog's statistics, one entry per
+    /// hop, silent when no statistics exist. The written order is the
+    /// executed order; these say what each hop is expected to expand.
+    pub hops: Option<Box<[HopEstimate]>>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -160,6 +175,7 @@ impl Plan {
             left_rows: None,
             right_rows: None,
             partitions: None,
+            hops: None,
             exact: access.exactness(),
         }
     }
@@ -246,6 +262,25 @@ impl Plan {
     #[must_use]
     pub fn to_value(&self) -> Value {
         let mut plan = BTreeMap::new();
+        if let Some(hops) = &self.hops {
+            let rows: Vec<Value> = hops
+                .iter()
+                .map(|hop| {
+                    let mut row = std::collections::BTreeMap::new();
+                    row.insert("table".to_owned(), Value::from(hop.table.as_str()));
+                    if let Some(estimate) = hop.estimate {
+                        row.insert(
+                            "estimate".to_owned(),
+                            Value::Number(Number::Integer(
+                                i64::try_from(estimate).unwrap_or(i64::MAX),
+                            )),
+                        );
+                    }
+                    Value::Object(row)
+                })
+                .collect();
+            plan.insert("hops".to_owned(), Value::Array(rows));
+        }
         plan.insert("access".to_owned(), Value::from(self.access.name()));
         plan.insert("exact".to_owned(), Value::Bool(self.exact.is_exact()));
         if let Some(why) = self.exact.reason() {
