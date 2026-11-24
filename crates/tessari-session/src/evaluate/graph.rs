@@ -46,6 +46,7 @@ impl Session<'_> {
         direction: Direction,
         hops: &[Hop],
         depth: Option<u64>,
+        want_path: bool,
     ) -> Result<Vec<(RecordId, Value)>> {
         // Refused rather than served, and refused here rather than at the index
         // lookup below, which would report `NotAnEdgeTable` and send a reader
@@ -74,6 +75,14 @@ impl Session<'_> {
         }
         let (origin, start) = self.address(transaction, from).await?;
         let anchors = vec![RecordRef::new(start.table, start.id.clone())];
+        // A segment changes the walk's contract from written steps to a
+        // statement-wide seen set (ADR-0143), so it runs its own walker rather
+        // than bending the written-out one.
+        if hops.iter().any(|hop| hop.repeat.is_some()) {
+            return self
+                .walk_segmented(transaction, &origin, anchors, direction, hops, want_path)
+                .await;
+        }
         match depth {
             None => {
                 self.walk_written_out(transaction, &origin, anchors, direction, hops)
@@ -105,7 +114,7 @@ impl Session<'_> {
     ) -> Result<Vec<(RecordId, Value)>> {
         let mut answer = Vec::new();
         for hop in hops {
-            let (found, next) = self
+            let (found, next, _provenance) = self
                 .one_hop(transaction, origin, &anchors, direction, hop)
                 .await?;
             answer = found;
@@ -159,7 +168,7 @@ impl Session<'_> {
             if frontier.is_empty() {
                 break;
             }
-            let (found, next) = self
+            let (found, next, _provenance) = self
                 .one_hop(transaction, origin, &frontier, direction, hop)
                 .await?;
             // One pass, and the answer is filtered against a SET rather than
@@ -221,6 +230,18 @@ impl Session<'_> {
                 span: hop.edges.span,
             });
         }
+        // The segment is served by adjacency; an edge table is the
+        // record-behind-an-index shape, and the refusal names that rather than
+        // walking it one record at a time (ADR-0143).
+        if hop.repeat.is_some() {
+            return Err(Error::RepeatOnEdgeTable {
+                table: hop.edges.name.text.clone(),
+                span: hop
+                    .repeat
+                    .as_ref()
+                    .map_or(hop.edges.span, |segment| segment.span),
+            });
+        }
         edges_settled(transaction, edge_table, &hop.edges).await?;
         let Some(index) = self
             .index_on_path(
@@ -254,7 +275,7 @@ impl Session<'_> {
         let Some(target) = hop.target.as_ref() else {
             // This step named no node, so the edges themselves are the answer
             // and there is nothing for a next step to start from.
-            return Ok((found, Vec::new()));
+            return Ok((found, Vec::new(), Vec::new()));
         };
 
         let (context, target_table) = self.resolve_table(transaction, target).await?;
@@ -287,7 +308,7 @@ impl Session<'_> {
             .keys()
             .map(|id| RecordRef::new(target_table, id.clone()))
             .collect();
-        Ok((reached.into_iter().collect(), next))
+        Ok((reached.into_iter().collect(), next, Vec::new()))
     }
 
     /// One hop over adjacency, and the anchors the next hop starts from.
@@ -319,11 +340,16 @@ impl Session<'_> {
         };
 
         let mut edges = Vec::new();
+        let mut provenance: Vec<(RecordRef, RecordRef)> = Vec::new();
         for anchor in anchors {
             for neighbour in transaction
                 .neighbours(&declared, anchor.table, &anchor.id, along)
                 .await?
             {
+                provenance.push((
+                    RecordRef::new(neighbour.table, neighbour.id.clone()),
+                    anchor.clone(),
+                ));
                 edges.push((anchor.clone(), neighbour));
             }
         }
@@ -355,7 +381,7 @@ impl Session<'_> {
                     (id, Value::Object(fields))
                 })
                 .collect();
-            return Ok((answer, Vec::new()));
+            return Ok((answer, Vec::new(), provenance));
         };
 
         let (context, target_table) = self.resolve_table(transaction, target).await?;
@@ -387,8 +413,177 @@ impl Session<'_> {
             .keys()
             .map(|id| RecordRef::new(target_table, id.clone()))
             .collect();
-        Ok((reached.into_iter().collect(), next))
+        Ok((reached.into_iter().collect(), next, provenance))
     }
+
+    /// A chain that carries a segment: written steps and windows over one
+    /// statement-wide seen set (ADR-0143).
+    ///
+    /// The seen set is what the segment buys: every record is expanded once
+    /// across the whole walk, so a cycle terminates the work rather than
+    /// feeding it, and a record reached by an early step is not re-answered by
+    /// a later one. Each hop contributes only records first reached at its
+    /// own step: a segment contributes the records first reached at a
+    /// distance inside its window; a written step contributes what it freshly
+    /// reached. The answer is the last hop's contribution, as it is for the
+    /// written-out walk.
+    ///
+    /// `want_path` asks the walk to attach each answered record's first-reach
+    /// chain under the `path` field: the route is contextual (ADR-0143), and
+    /// the projection reads it like any other field on the answer.
+    pub(super) async fn walk_segmented(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        start: Vec<RecordRef>,
+        direction: Direction,
+        hops: &[Hop],
+        want_path: bool,
+    ) -> Result<Vec<(RecordId, Value)>> {
+        let mut ledger = WalkLedger {
+            seen: start
+                .iter()
+                .map(|anchor| (anchor.table, anchor.id.clone()))
+                .collect(),
+            parents: BTreeMap::new(),
+        };
+        let mut anchors = start;
+        let mut answer: Vec<(RecordId, Value)> = Vec::new();
+        for hop in hops {
+            let (found, next) = if hop.repeat.is_some() {
+                self.segment_rounds(transaction, origin, &mut ledger, anchors, direction, hop)
+                    .await?
+            } else {
+                let (found, next, proven) = self
+                    .one_hop(transaction, origin, &anchors, direction, hop)
+                    .await?;
+                for (child, parent) in proven {
+                    ledger
+                        .parents
+                        .entry((child.table, child.id.clone()))
+                        .or_insert((parent.table, parent.id.clone()));
+                }
+                let mut fresh = Vec::new();
+                let mut fresh_ids = std::collections::BTreeSet::new();
+                for anchor in next {
+                    if ledger.seen.insert((anchor.table, anchor.id.clone())) {
+                        fresh_ids.insert(anchor.id.clone());
+                        fresh.push(anchor);
+                    }
+                }
+                (
+                    found
+                        .into_iter()
+                        .filter(|(id, _)| fresh_ids.contains(id))
+                        .collect(),
+                    fresh,
+                )
+            };
+            answer = found;
+            anchors = next;
+        }
+        if !want_path {
+            return Ok(answer);
+        }
+        // Every record one hop lands on shares the hop's target table, so the
+        // landing anchors name the table the answer's chains belong to.
+        let Some(table) = anchors.first().map(|anchor| anchor.table) else {
+            return Ok(answer);
+        };
+        let mut with_paths = Vec::with_capacity(answer.len());
+        for (id, value) in answer {
+            let Value::Object(mut fields) = value else {
+                with_paths.push((id, value));
+                continue;
+            };
+            let chain = reach_chain(&ledger.parents, (table, id.clone()));
+            fields.insert("path".to_owned(), Value::Array(chain));
+            with_paths.push((id, Value::Object(fields)));
+        }
+        Ok(with_paths)
+    }
+
+    /// The windowed expansion of one segment: the step taken `min..max` times,
+    /// breadth-first, contributing the records first reached at a distance
+    /// inside the window and returning that set as the next step's anchors.
+    async fn segment_rounds(
+        &self,
+        transaction: &mut Transaction<'_>,
+        origin: &crate::context::Context,
+        ledger: &mut WalkLedger,
+        anchors: Vec<RecordRef>,
+        direction: Direction,
+        hop: &Hop,
+    ) -> Result<(Vec<(RecordId, Value)>, Vec<RecordRef>)> {
+        // The parser has already established the segment's shape (ADR-0143), so
+        // this indexes rather than re-checks — a second copy of the rule would
+        // be a second place for it to disagree with itself.
+        let Some(segment) = hop.repeat.as_ref() else {
+            unreachable!("segment_rounds serves a step carrying a segment");
+        };
+        let mut frontier = anchors;
+        let mut answer: BTreeMap<RecordId, Value> = BTreeMap::new();
+        let mut landing: Vec<RecordRef> = Vec::new();
+        for round in 1..=segment.max {
+            if frontier.is_empty() {
+                break;
+            }
+            let (found, next, proven) = self
+                .one_hop(transaction, origin, &frontier, direction, hop)
+                .await?;
+            for (child, parent) in proven {
+                ledger
+                    .parents
+                    .entry((child.table, child.id.clone()))
+                    .or_insert((parent.table, parent.id.clone()));
+            }
+            let mut fresh = Vec::new();
+            for anchor in next {
+                if ledger.seen.insert((anchor.table, anchor.id.clone())) {
+                    fresh.push(anchor);
+                }
+            }
+            if round >= segment.min {
+                let fresh_ids: std::collections::BTreeSet<RecordId> =
+                    fresh.iter().map(|anchor| anchor.id.clone()).collect();
+                for (id, value) in found {
+                    if fresh_ids.contains(&id) {
+                        answer.insert(id, value);
+                    }
+                }
+                landing.extend(fresh.iter().cloned());
+            }
+            frontier = fresh;
+        }
+        Ok((answer.into_iter().collect(), landing))
+    }
+}
+
+/// The statement-wide bookkeeping a segmented walk keeps: the seen set that
+/// bounds the work, and the first-reach parent map the `path` route reads
+/// back (ADR-0143).
+struct WalkLedger {
+    seen: BTreeSet<(TableId, RecordId)>,
+    parents: BTreeMap<(TableId, RecordId), (TableId, RecordId)>,
+}
+
+/// The first-reach chain from a walk's origin to `end`, origin first, built
+/// from the parent map the walk recorded (ADR-0143).
+fn reach_chain(
+    parents: &BTreeMap<(TableId, RecordId), (TableId, RecordId)>,
+    end: (TableId, RecordId),
+) -> Vec<Value> {
+    let mut chain = vec![Value::Record(RecordRef::new(end.0, end.1.clone()))];
+    let mut at = end;
+    while let Some((parent_table, parent_id)) = parents.get(&at) {
+        chain.push(Value::Record(RecordRef::new(
+            *parent_table,
+            parent_id.clone(),
+        )));
+        at = (*parent_table, parent_id.clone());
+    }
+    chain.reverse();
+    chain
 }
 
 /// Refuse a hop over `table` while its edges are indexed at another moment

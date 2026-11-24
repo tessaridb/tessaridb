@@ -1,6 +1,6 @@
 //! Deciding how a read reaches its records, and refusing the reads a caller may not make.
 
-use tessari_ql::{Expr, Select, Source, TableRef};
+use tessari_ql::{Expr, ExprKind, Projection, Select, Source, TableRef};
 use tessari_storage::{Catalog, RecordAddress, TableDefinition, Transaction};
 use tessari_types::TableId;
 
@@ -381,8 +381,23 @@ impl Session<'_> {
                         Searched::default(),
                     ));
                 }
+                // The contextual `path` route (ADR-0143): offered where the
+                // walk carries a segment, refused by name where it does not.
+                let path_span = path_route_span(select);
+                if let Some(span) =
+                    path_span.filter(|_| !hops.iter().any(|hop| hop.repeat.is_some()))
+                {
+                    return Err(Error::PathWithoutWalk { span });
+                }
                 let found = self
-                    .traverse(transaction, from, *direction, hops, *depth)
+                    .traverse(
+                        transaction,
+                        from,
+                        *direction,
+                        hops,
+                        *depth,
+                        path_span.is_some(),
+                    )
                     .await?;
                 Ok((
                     Prepared::Held(found, Box::new(Plan::new(AccessPath::Graph))),
@@ -596,4 +611,24 @@ impl Session<'_> {
             }
         }
     }
+}
+
+/// The span of a projection value that is exactly the route `path` — the
+/// contextual chain route a segment walk answers (ADR-0143). A route with more
+/// steps, or a `path` under any other shape, is an ordinary projection the
+/// binder resolves; only the bare route asks the walk for its chain.
+fn path_route_span(select: &Select) -> Option<tessari_ql::Span> {
+    let Projection::Values { values, .. } = &select.projection else {
+        return None;
+    };
+    let bare_path = tessari_types::Path::field("path");
+    values
+        .iter()
+        .find_map(|projected| match &projected.value.kind {
+            // A bare name reads as the record route `path` and nothing under it;
+            // a route with steps (`path[0]`, a longer route) is an ordinary
+            // projection the binder resolves.
+            ExprKind::Path(field_path) if field_path.path == bare_path => Some(field_path.span),
+            _ => None,
+        })
 }

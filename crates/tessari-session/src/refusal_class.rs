@@ -175,6 +175,8 @@ impl Error {
             | Self::RollupsDependOn { .. }
             | Self::RecipientIsNotAName { .. }
             | Self::NotAnEdgeTable { .. }
+            | Self::RepeatOnEdgeTable { .. }
+            | Self::PathWithoutWalk { .. }
             | Self::EndpointsNotDeclared { .. }
             | Self::TableBelongsToGraph { .. }
             | Self::NotRenamed { .. }
