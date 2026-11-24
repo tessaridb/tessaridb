@@ -82,6 +82,19 @@ pub enum Source {
     /// this node does not invent a row for itself that the catalog did not
     /// write.
     Nodes,
+    /// `FROM GRAPH web BY pagerank [FROM place:1] [USING knows]` — a
+    /// whole-graph analytic as a read source (ADR-0144). Answers one row per
+    /// node: `{ node: <record>, score: <number> }` (`cost` for `sssp`).
+    GraphRead {
+        /// The graph the algorithm reads.
+        graph: Name,
+        /// The algorithm: pagerank, wcc, cdlp, betweenness, harmonic, sssp.
+        algorithm: Name,
+        /// The start node, for the one algorithm that needs one (`sssp`).
+        start: Option<RecordTarget>,
+        /// The one edge kind the pass walks, when the statement names one.
+        using: Option<Name>,
+    },
     /// One record, by its identity.
     Record(RecordTarget),
     /// Every record of a table.

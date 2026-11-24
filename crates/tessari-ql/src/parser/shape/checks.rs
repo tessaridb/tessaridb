@@ -56,6 +56,7 @@ pub(crate) fn check_cursor(
         Source::Record(target) => &target.table.name,
         Source::Node
         | Source::Nodes
+        | Source::GraphRead { .. }
         | Source::Traverse { .. }
         | Source::Join { .. }
         | Source::Subquery { .. }
@@ -236,6 +237,7 @@ pub(crate) fn check_fold_positions(
 ) -> Result<()> {
     match from {
         Source::Where { condition, .. } => no_fold(condition)?,
+        Source::GraphRead { .. } => {}
         Source::Join {
             condition: Some(condition),
             ..

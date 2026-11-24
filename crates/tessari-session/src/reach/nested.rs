@@ -138,6 +138,9 @@ pub(crate) fn in_source(from: &Source) -> Vec<&TableRef> {
             found.extend(in_expr(condition));
             found
         }
+        // A graph pass names its graph, not its tables: the member tables are
+        // resolved at the pass and granted there, as a walk grants each hop.
+        Source::GraphRead { .. } => Vec::new(),
         // **Every** table in the chain counts, not only the first and the last.
         // A traversal that could read records in a table nobody granted, because
         // the edge table was granted, is a way around the grant rather than a

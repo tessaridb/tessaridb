@@ -2075,6 +2075,47 @@ table is refused (`PathOverEdgeTable`). A deleted node drops out of every path,
 and the records answered are read under the reader's grants, as a `DEPTH` walk
 reads them.
 
+### Algorithms over a declared graph: `FROM GRAPH … BY`
+
+```
+SELECT * FROM GRAPH web BY pagerank;
+SELECT * FROM GRAPH web BY sssp FROM place:1;
+SELECT * FROM GRAPH web BY pagerank USING knows;
+```
+
+A whole-graph analytic is a **read source**: `BY` names the algorithm, and
+the answer is one row per node — `{ node: <record>, score: <number> }`,
+`{ node, cost }` for `sssp` — under the reader's snapshot and grants. A node
+the reader may not see is not in the answer, as a walk they cannot see is
+not a walk. The rows are ordinary rows: `WHERE`, `ORDER BY`, `LIMIT` and the
+folds run over them like over any other read.
+
+The first six algorithms, each deterministic by construction — fixed
+iteration counts and min-id tie-breaks, so the same graph answers the same
+rows on every run:
+
+| algorithm | what the score is |
+|---|---|
+| `pagerank` | the rank after a fixed number of rounds (damping 0.85) — a float |
+| `wcc` | the weakly-connected component's label — the smallest member id |
+| `cdlp` | the community label after a fixed number of synchronous propagation rounds |
+| `betweenness` | the Brandes betweenness count — a float |
+| `harmonic` | the harmonic centrality — the sum of `1/distance` over reachable nodes |
+| `sssp` | the fewest-steps cost from the start node |
+
+`USING` names one declared edge kind to walk; without it every edge kind the
+graph declares takes part. `FROM` names the start node `sssp` needs and is
+refused beside an algorithm that takes none (`AlgorithmTakesNoStart`), as
+`sssp` without one is refused (`AlgorithmNeedsStart`). The refusals name
+their shapes: `GraphNotDeclared` for a graph the catalog does not hold,
+`UnknownAlgorithm` for a name the language does not have, and
+`EdgeKindNotInGraph` for a `USING` the graph does not declare.
+
+These are whole-graph passes: they read every node of the graph's member
+tables once and walk adjacency, and a graph that does not fit the statement's
+budget refuses through the ordinary budget and `TIMEOUT` machinery rather
+than a separate ceiling.
+
 ### A table and its columns in one statement
 
 A table's fields can be declared with it, in parentheses after the name:

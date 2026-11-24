@@ -2897,3 +2897,57 @@ fn path_to_takes_all_or_k_paths_beside_the_bound() {
     ));
     assert!(parse("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 K $n;").is_err());
 }
+
+#[test]
+fn from_graph_by_reads_an_algorithm_over_a_declared_graph() {
+    // ADR-0144: whole-graph analytics are a read source. USING restricts the
+    // pass to one edge kind; FROM names the start sssp needs.
+    let StatementKind::Select(select) = one("SELECT * FROM GRAPH web BY pagerank;") else {
+        panic!("not a read");
+    };
+    let Source::GraphRead {
+        graph,
+        algorithm,
+        start,
+        using,
+    } = &select.from
+    else {
+        panic!("not a graph read");
+    };
+    assert_eq!(graph.text, "web");
+    assert_eq!(algorithm.text, "pagerank");
+    assert!(start.is_none());
+    assert!(using.is_none());
+
+    let StatementKind::Select(select) = one("SELECT * FROM GRAPH web BY sssp FROM place:1;") else {
+        panic!("not a read");
+    };
+    let Source::GraphRead {
+        algorithm, start, ..
+    } = &select.from
+    else {
+        panic!("not a graph read");
+    };
+    assert_eq!(algorithm.text, "sssp");
+    assert!(start.is_some());
+
+    let StatementKind::Select(select) = one("SELECT * FROM GRAPH web BY wcc USING knows;") else {
+        panic!("not a read");
+    };
+    let Source::GraphRead {
+        algorithm, using, ..
+    } = &select.from
+    else {
+        panic!("not a graph read");
+    };
+    assert_eq!(algorithm.text, "wcc");
+    assert_eq!(using.as_ref().map(|name| name.text.as_str()), Some("knows"));
+
+    // `GRAPH` is the reserved word the declaration owns — no table can carry
+    // it — and a table starting with the same letters still reads as a table:
+    // the analytic spelling needs the name and `BY` both.
+    let StatementKind::Select(select) = one("SELECT * FROM graphite;") else {
+        panic!("not a read");
+    };
+    assert!(matches!(&select.from, Source::Table(name) if name.name.text == "graphite"));
+}

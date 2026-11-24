@@ -362,6 +362,26 @@ impl Session<'_> {
                     .await?;
                 Ok((Prepared::Held(found, Box::new(plan)), searched))
             }
+            Source::GraphRead {
+                graph,
+                algorithm,
+                start,
+                using,
+            } => {
+                let found = self
+                    .graph_read(
+                        transaction,
+                        graph,
+                        algorithm,
+                        start.as_ref(),
+                        using.as_ref(),
+                    )
+                    .await?;
+                Ok((
+                    Prepared::Held(found, Box::new(Plan::new(AccessPath::Graph))),
+                    Searched::default(),
+                ))
+            }
             Source::Traverse {
                 from,
                 direction,

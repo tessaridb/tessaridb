@@ -55,6 +55,47 @@ impl Parser<'_> {
         if self.eat_keyword(Keyword::Search) {
             return self.search_source();
         }
+        // `FROM GRAPH web BY pagerank` — a graph analytic (ADR-0144). `GRAPH`
+        // is the reserved word the declaration owns; the spelling is a graph
+        // name and the contextual `BY` (GROUP BY's word), so the shape is
+        // decided by two tokens of lookahead and nothing else changes meaning.
+        if self.peek_keyword() == Some(Keyword::Graph)
+            && matches!(
+                self.tokens
+                    .get(self.position.saturating_add(1))
+                    .map(|spanned| &spanned.token),
+                Some(Token::Ident(_))
+            )
+            && matches!(
+                self.tokens
+                    .get(self.position.saturating_add(2))
+                    .map(|spanned| &spanned.token),
+                Some(Token::Ident(word)) if word.eq_ignore_ascii_case("by")
+            )
+        {
+            self.advance();
+            let graph = self.name()?;
+            if !self.eat_word("by") {
+                return Err(self.error_here("`BY` and the algorithm to run"));
+            }
+            let algorithm = self.name()?;
+            let start = if self.eat_keyword(Keyword::From) {
+                Some(self.record_target()?)
+            } else {
+                None
+            };
+            let using = if self.eat_word("using") {
+                Some(self.name()?)
+            } else {
+                None
+            };
+            return Ok(Source::GraphRead {
+                graph,
+                algorithm,
+                start,
+                using,
+            });
+        }
         let table = self.table_ref()?;
         if self.peek() == Some(&Token::Punct(Punct::Colon)) {
             let record = self.record_target_after(table)?;
@@ -413,6 +454,7 @@ impl Parser<'_> {
         }
         match &from {
             Source::Where { condition, .. } => crate::parser::shape::check_several(condition)?,
+            Source::GraphRead { .. } => {}
             Source::Join { condition, .. } => {
                 if let Some(condition) = condition {
                     crate::parser::shape::check_several(condition)?;

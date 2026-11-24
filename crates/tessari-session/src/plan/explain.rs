@@ -326,6 +326,9 @@ impl Session<'_> {
             }
             // A walk reads an index per step, and which index is not a choice:
             // an edge table is given one on each endpoint when it is declared.
+            // A graph pass reads adjacency whole, as a walk does; the
+            // algorithm name is in the statement, not the plan.
+            Source::GraphRead { .. } => Ok(Plan::new(AccessPath::Graph)),
             Source::Traverse { .. } => Ok(Plan::new(AccessPath::Graph)),
             // Neither side's own path is how a joined answer is reached, so
             // there is one word for it. What is worth naming is the index the

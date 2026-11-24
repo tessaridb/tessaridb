@@ -1225,6 +1225,53 @@ pub enum Error {
         span: Span,
     },
 
+    /// `FROM GRAPH g BY …` naming a graph the catalog does not hold (ADR-0144).
+    #[error("{name} is not a graph this database declares (at {span})")]
+    GraphNotDeclared {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// `BY` naming an algorithm the language does not have (ADR-0144).
+    #[error("there is no graph algorithm called {name} (at {span})")]
+    UnknownAlgorithm {
+        /// The name as written.
+        name: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// `sssp` with no `FROM` start node (ADR-0144).
+    #[error("{algorithm} needs `FROM` and the record to start at (at {span})")]
+    AlgorithmNeedsStart {
+        /// The algorithm that needs a start.
+        algorithm: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// `FROM` beside an algorithm that takes no start (ADR-0144).
+    #[error("{algorithm} reads the whole graph and takes no `FROM` (at {span})")]
+    AlgorithmTakesNoStart {
+        /// The algorithm that takes none.
+        algorithm: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
+    /// `USING` naming an edge kind the graph does not declare (ADR-0144).
+    #[error("{kind} is not an edge kind of graph {graph} (at {span})")]
+    EdgeKindNotInGraph {
+        /// The kind as written.
+        kind: String,
+        /// The graph it was written against.
+        graph: String,
+        /// Where it was written.
+        span: tessari_ql::Span,
+    },
+
     /// A path enumeration above the ceiling: `ALL`/`K` enumerate the simple
     /// paths the written `DEPTH` admits, and a search that wide refuses with
     /// its bound named rather than running past it.
