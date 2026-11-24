@@ -13,7 +13,7 @@
 //! and the SG3 plan (`plans/2026-11-15/180502-g082-sg3-skip-indexes-and-
 //! pruning-plan.md`) for the pruning scan and its candidate contract.
 
-mod bloom;
+pub(crate) mod bloom;
 mod chunk;
 mod codec;
 mod project;

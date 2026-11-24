@@ -135,9 +135,18 @@ fn every_derived_byte_is_the_sources_rebuilt_because_it_was_derived_again() {
              REBUILD INDEX by_bio ON people; REBUILD INDEX by_at ON people;",
         )
         .unwrap();
+    // 0x4b (the search term bloom) is monotonic: a replayed derivation keeps
+    // deleted terms' bits where a rebuilt one starts from the live
+    // vocabulary, so the two diverge by construction. Its contract is
+    // answer-preservation, asserted in the engine's exactness suite.
     let measured = |held: &Vec<(Vec<u8>, Vec<u8>)>| {
         held.iter()
-            .filter(|(key, _)| !matches!(key.first(), Some(&(0x17 | 0x40 | 0x41 | 0x47 | 0x48))))
+            .filter(|(key, _)| {
+                !matches!(
+                    key.first(),
+                    Some(&(0x17 | 0x40 | 0x41 | 0x47 | 0x48 | 0x4b))
+                )
+            })
             .cloned()
             .collect::<Vec<_>>()
     };

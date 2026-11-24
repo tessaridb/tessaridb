@@ -122,7 +122,13 @@ impl FormatVersion {
     /// is one it must not open. A store below keeps its stamp, and a
     /// partitioned vector index refuses (`FormatNotFinalized`) until the
     /// store is finalized.
-    pub const CURRENT: Self = Self(17);
+    pub const CURRENT: Self = Self(18);
+
+    /// The first format whose search indexes carry a monotonic term bloom
+    /// (key kind `0x4b`): an older build would neither write it nor read it,
+    /// so a store holding it is one it must not open. Named for the reason
+    /// [`Self::HOMED_LOG`] is.
+    pub const SEARCH_BLOOM: Self = Self(18);
 
     /// The first format whose vector indexes may be partitioned (ADR-0141).
     /// Named for the reason [`Self::HOMED_LOG`] is.
@@ -224,6 +230,7 @@ impl FormatVersion {
             15 => (0, 50),
             16 => (0, 50),
             17 => (0, 52),
+            18 => (0, 54),
             _ => return None,
         };
         Some(crate::NodeVersion {

@@ -59,10 +59,11 @@ pub use index_keys::{
     ContainmentKey, FieldAddress, FieldChanges, FieldChangesKey, FieldStatistics,
     FieldStatisticsKey, INDEX_PREFIX_LEN, IndexAddress, IndexChanges, IndexChangesKey,
     IndexStatistics, IndexStatisticsKey, IndexTarget, IndexValues, Located, NoPayload, Posting,
-    PostingKey, QuantizedVector, RetiredIndexKey, SearchStatistics, SearchStatisticsKey,
-    SearchSuffixKey, SearchSurfaceKey, SearchTermKey, SecondaryIndexKey, SpatialRefinement,
-    SpatialRefinementKey, StoredVector, TermStatistics, UniqueIndexKey, VectorCodeKey, VectorCodes,
-    VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey, VectorTrained, VectorTrainedKey,
+    PostingKey, QuantizedVector, RetiredIndexKey, SearchBloom, SearchBloomKey, SearchStatistics,
+    SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey, SearchTermKey, SecondaryIndexKey,
+    SpatialRefinement, SpatialRefinementKey, StoredVector, TermStatistics, UniqueIndexKey,
+    VectorCodeKey, VectorCodes, VectorNode, VectorNodeKey, VectorRecall, VectorRecallKey,
+    VectorTrained, VectorTrainedKey,
 };
 pub use keys::{
     AppliedPositionKey, FormatVersionKey, LogKey, LogRetentionKey, LogStartKey, NodeIdentityKey,

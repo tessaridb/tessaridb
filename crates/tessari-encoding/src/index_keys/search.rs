@@ -1,6 +1,7 @@
 //! Keys for full-text postings, terms and the statistics a score is measured against.
 
 mod affixes;
+mod bloom;
 mod statistics;
 
 use super::{IndexAddress, IndexValues, Posting, SecondaryIndexKey, record_id, take_values};
@@ -10,6 +11,7 @@ use crate::kind::KeyKind;
 use crate::order::{KeyReader, KeyWriter};
 use crate::value::{StoreValue, split_header, with_header};
 pub use affixes::{SearchSuffixKey, SearchSurfaceKey};
+pub use bloom::{SearchBloom, SearchBloomKey};
 pub use statistics::TermStatistics;
 use tessari_kv::{Key, Value};
 use tessari_types::RecordId;

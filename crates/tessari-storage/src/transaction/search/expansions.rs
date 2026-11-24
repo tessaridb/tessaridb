@@ -4,10 +4,11 @@ use super::{Expansion, RangeWalk, RecordAddress, Transaction};
 use crate::catalog::IndexDefinition;
 use crate::error::Result;
 use std::collections::{BTreeMap, BTreeSet};
-use tessari_constants::SEARCH_FUZZY_EXAMINATION_CAP;
+use tessari_constants::{SEARCH_BLOOM_MAX_BYTES, SEARCH_FUZZY_EXAMINATION_CAP};
 use tessari_encoding::{
-    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchSuffixKey, SearchSurfaceKey,
-    SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue, decode_payload,
+    IndexAddress, IndexTarget, IndexValues, KeyKind, PostingKey, SearchBloom, SearchBloomKey,
+    SearchSuffixKey, SearchSurfaceKey, SearchTermKey, SecondaryIndexKey, StoreKey, StoreValue,
+    decode_payload,
 };
 use tessari_kv::{KeyRange, ScanDirection, ScanRequest};
 use tessari_types::{RecordId, Value, within_edits};
@@ -261,6 +262,12 @@ impl Transaction<'_> {
         term: &str,
     ) -> Result<BTreeSet<RecordId>> {
         let encoded = IndexValues::of(&[Value::from(term)]);
+        if self
+            .term_certainly_absent(address, encoded.as_slice())
+            .await?
+        {
+            return Ok(BTreeSet::new());
+        }
         let prefix = PostingKey::term_prefix(address, &encoded);
         let mut found = BTreeSet::new();
         let mut walk = RangeWalk::new(PostingKey::keyspace(), &KeyRange::prefix(&prefix));
@@ -270,6 +277,30 @@ impl Transaction<'_> {
             }
         }
         Ok(found)
+    }
+
+    /// Whether the index's term bloom proves `encoded` is absent — the
+    /// negative probe that skips a posting walk for a word the dictionary
+    /// certainly does not hold (G099 C2). `false` is the common answer: no
+    /// bloom, a bloom past its capacity (a filter that denies nothing
+    /// useful is stood down rather than read through), or a maybe — every
+    /// one of them falls through to the walk, which is the authority. The
+    /// bloom only ever errs toward the walk, never away from it.
+    async fn term_certainly_absent(&self, address: &IndexAddress, encoded: &[u8]) -> Result<bool> {
+        let keyspace = SearchBloomKey::keyspace();
+        let key = SearchBloomKey::new(*address).encode();
+        let Some(bytes) = self.store.backend().get(keyspace, &key).await? else {
+            return Ok(false);
+        };
+        let stored = SearchBloom::decode(bytes.as_slice())?;
+        let bloom =
+            crate::columnar::bloom::BloomBits::from_bytes(stored.bits, SEARCH_BLOOM_MAX_BYTES)?;
+        // Past capacity the filter is too dense to deny anything a walk
+        // would not deny cheaper: standing down is the size gate.
+        if stored.terms > u64::try_from(bloom.value_capacity()).unwrap_or(u64::MAX) {
+            return Ok(false);
+        }
+        Ok(!bloom.might_contain(encoded))
     }
 
     /// The records an index says hold a string beginning with `prefix`, as of

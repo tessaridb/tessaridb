@@ -5,8 +5,8 @@ use crate::error::Result;
 use crate::store::Store;
 use tessari_constants::SEARCH_PREFIX_MINIMUM;
 use tessari_encoding::{
-    IndexAddress, SearchStatistics, SearchStatisticsKey, SearchSuffixKey, SearchSurfaceKey,
-    SearchTermKey, StoreKey, StoreValue, TermStatistics,
+    IndexAddress, IndexValues, SearchBloom, SearchBloomKey, SearchStatistics, SearchStatisticsKey,
+    SearchSuffixKey, SearchSurfaceKey, SearchTermKey, StoreKey, StoreValue, TermStatistics,
 };
 use tessari_kv::WriteBatch;
 
@@ -184,7 +184,8 @@ pub(crate) async fn settle_terms(
             };
         }
     }
-    settle_surfaces(store, batch, pending).await
+    let batch = settle_surfaces(store, batch, pending).await?;
+    settle_blooms(store, batch, pending).await
 }
 
 /// Fold the per-pair surface deltas into the surface dictionary (Q-867): one
@@ -217,6 +218,83 @@ async fn settle_surfaces(
                 count => batch.put(keyspace, key, SearchSurfaceKey::count(count)),
             };
         }
+    }
+    Ok(batch)
+}
+
+/// Fold each batch's arriving terms into the index's monotonic term bloom
+/// (G099 C2): one read and one write per index the batch touched, in the
+/// same batch as the dictionary itself. Deletions never clear a bit — a
+/// stale bit costs a read; a cleared one would cost a row, because the read
+/// trusts a definite-absent answer and skips the posting walk.
+///
+/// An index this record **built** starts the filter fresh, for the reason
+/// [`settle`] gives for the collection statistics: its terms are the whole
+/// vocabulary, and folding them into what the old dictionary held would
+/// carry the old dictionary's ghost terms along.
+///
+/// The estimate the value carries only grows, and it over-counts on
+/// purpose: a term already present arriving again moves the estimate
+/// without moving the vocabulary. The estimate exists to tell a reader when
+/// the filter has outgrown its capacity and denies nothing useful — the
+/// conservative direction for that signal is to stand down early.
+async fn settle_blooms(
+    store: &Store,
+    mut batch: WriteBatch,
+    pending: &Pending,
+) -> Result<WriteBatch> {
+    let keyspace = SearchBloomKey::keyspace();
+    for (address, moved) in &pending.terms {
+        let arrivals: Vec<IndexValues> = moved
+            .iter()
+            .filter(|(_, moved)| moved.delta > 0)
+            .filter_map(|(term, _)| {
+                term.as_text()
+                    .map(|text| IndexValues::of(&[tessari_types::Value::from(text)]))
+            })
+            .collect();
+        if arrivals.is_empty() {
+            continue;
+        }
+        let key = SearchBloomKey::new(*address).encode();
+        let (mut bloom, terms) = if pending.built.contains(address) {
+            (
+                crate::columnar::bloom::BloomBits::with_value_capacity(
+                    arrivals
+                        .len()
+                        .max(tessari_constants::SEARCH_BLOOM_MINIMUM_TERMS),
+                ),
+                0_u64,
+            )
+        } else {
+            match store.backend().get(keyspace, &key).await? {
+                Some(bytes) => {
+                    let stored = SearchBloom::decode(bytes.as_slice())?;
+                    (
+                        crate::columnar::bloom::BloomBits::from_bytes(
+                            stored.bits,
+                            tessari_constants::SEARCH_BLOOM_MAX_BYTES,
+                        )?,
+                        stored.terms,
+                    )
+                }
+                None => (
+                    crate::columnar::bloom::BloomBits::with_value_capacity(
+                        tessari_constants::SEARCH_BLOOM_MINIMUM_TERMS,
+                    ),
+                    0,
+                ),
+            }
+        };
+        for arrival in &arrivals {
+            bloom.insert(arrival.as_slice());
+        }
+        let estimate = terms.saturating_add(u64::try_from(arrivals.len()).unwrap_or(u64::MAX));
+        batch = batch.put(
+            keyspace,
+            key,
+            SearchBloom::new(estimate, bloom.bytes().to_vec()).encode(),
+        );
     }
     Ok(batch)
 }
