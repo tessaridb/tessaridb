@@ -194,10 +194,12 @@ impl Session<'_> {
                     &mut graph,
                     &start.id,
                     &end.id,
-                    depth,
                     path,
-                    &visible,
-                    &rows,
+                    &SearchContext {
+                        depth,
+                        visible,
+                        rows,
+                    },
                 )
                 .await;
         }
@@ -249,17 +251,15 @@ impl Session<'_> {
         graph: &mut Graph<'_>,
         start: &RecordId,
         end: &RecordId,
-        depth: u64,
         path: &PathTo,
-        visible: &crate::redact::Visible,
-        rows: &crate::guard::Rows,
+        search: &SearchContext,
     ) -> Result<Answered> {
         let found = enumerate(
             transaction,
             graph,
             start,
             end,
-            usize::try_from(depth).unwrap_or(usize::MAX),
+            usize::try_from(search.depth).unwrap_or(usize::MAX),
         )
         .await?;
         if found.is_empty() {
@@ -311,9 +311,9 @@ impl Session<'_> {
                     admissible = false;
                     break;
                 };
-                let record = self.record_of(&payload, visible)?;
+                let record = self.record_of(&payload, &search.visible)?;
                 let Some(record) = self
-                    .permitted(transaction, id, record, visible, rows)
+                    .permitted(transaction, id, record, &search.visible, &search.rows)
                     .await?
                 else {
                     admissible = false;
@@ -341,6 +341,15 @@ impl Session<'_> {
         }
         Ok((answered, notes))
     }
+}
+
+/// What a path enumeration carries besides its graph: the written depth, and
+/// what a record is checked against — the field visibility and the row guards
+/// of the table the path walks, resolved once per search.
+struct SearchContext {
+    depth: u64,
+    visible: crate::redact::Visible,
+    rows: crate::guard::Rows,
 }
 
 /// The most paths an `ALL`/`K` enumeration examines before it refuses: the
@@ -372,7 +381,7 @@ async fn enumerate(
         if at == *end {
             if found.len() >= ENUMERATION_CEILING {
                 return Err(Error::PathSearchTooWide {
-                    limit: ENUMERATION_CEILING as u64,
+                    limit: u64::try_from(ENUMERATION_CEILING).unwrap_or(u64::MAX),
                     span: graph.span,
                 });
             }
