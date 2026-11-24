@@ -16,6 +16,44 @@ catalog, not the history: `VERSION` reads and change-feed positions from before 
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
+## 0.54.0 — 2026-11-25
+
+Columnar pruning, a search-term fingerprint filter, and a statement compile
+cache.
+
+### Added
+
+- **STORE COLUMN tables carry per-lane statistics.** The column family's
+  pointer records each lane's sealed min/max, and prunes nothing while a
+  lane's history is unknown (a pointer written before this release reads as
+  disabled, never as a range that might understate). An equality or
+  `IN`-list probe on a stored column skips chunks the range cannot hold
+  before their heads are read; chunks written sorted binary-search their
+  hits. Measured on 1M rows: an out-of-range equality costs one chunk head
+  where the scan read 128, and a 100-member `IN` list answers in 94 ms
+  where the row walk took 4 526 ms. Exactness is unchanged — pruning
+  narrows the candidates, and the read re-confirms every row it returns.
+- **A monotonic term bloom on every search index.** One filter (key kind
+  `0x4b`) holds the terms the index has seen; a term it definitely lacks
+  answers empty without the posting walk. Deletions never clear a bit — a
+  stale bit costs a read, a cleared one would cost a row — and past its
+  capacity the filter stands down rather than deny on noise. The exactness
+  contract of every index read is untouched: the bloom narrows, the read
+  re-confirms.
+- **A bounded statement compile cache.** A session holds the parse-and-bind
+  of a script — at most 256 entries, least-recently-used — keyed by the
+  tenancy, the source and the bound values. Names re-resolve against the
+  live catalog at every run, so a catalog change between two identical
+  calls is visible in the second call's plan.
+
+### Store format
+
+- **Format 18** (the `0x4b` kind). A store written by `0.53.0` opens as is
+  and keeps its stamp until its first search index settles a bloom, and is
+  stamped 18 at that write — the moment a `0.53.0` build must start
+  refusing it at open. `ALTER STORE FINALIZE FORMAT` moves a store of
+  record without waiting for the write.
+
 ## 0.53.0 — 2026-11-25
 
 Strong graphs, taken to the maximum and verified on a cluster.
