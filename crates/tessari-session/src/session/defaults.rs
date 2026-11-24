@@ -14,17 +14,22 @@ impl Session<'_> {
     ///
     /// The catalog is read only when the caller's map leaves a name unbound, so
     /// a script that names no param pays nothing for the feature.
+    /// Bind a parsed script to its parameters. The second answer says
+    /// whether the bind asked the store for database defaults — the caller
+    /// uses it to decide whether the compiled form may be cached (a bound
+    /// default baked the store's answer into the tree, and a redefined
+    /// default must not be answered by the old one).
     pub(crate) async fn bind_script(
         &self,
         script: Script,
         parameters: &Parameters,
-    ) -> Result<Script> {
+    ) -> Result<(Script, bool)> {
         match script.clone().bind(parameters) {
             Err(tessari_ql::Error::UnboundParameter { .. }) => {
                 let defaults = self.database_params(&script).await?;
-                Ok(script.bind_with_defaults(parameters, &defaults)?)
+                Ok((script.bind_with_defaults(parameters, &defaults)?, false))
             }
-            bound => Ok(bound?),
+            bound => Ok((bound?, true)),
         }
     }
 

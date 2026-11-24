@@ -99,6 +99,7 @@ impl Detached {
             // only re-parses a guard text on its next use — an immutable
             // mapping, so nothing is lost but the parse.
             guard_cache: dashmap::DashMap::new(),
+            compiled: Default::default(),
         }
     }
 

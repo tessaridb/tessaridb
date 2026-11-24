@@ -36,7 +36,7 @@ impl Atomic<'_, '_> {
         parameters: &Parameters,
     ) -> Result<Vec<Outcome>> {
         let store = self.session.store;
-        let mut script = self.session.bind_script(parse(source)?, parameters).await?;
+        let (mut script, _) = self.session.bind_script(parse(source)?, parameters).await?;
         if let Some(verb) = script.statements.iter().find(|statement| {
             matches!(
                 statement.kind,

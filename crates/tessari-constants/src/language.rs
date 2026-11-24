@@ -30,3 +30,11 @@ pub const MAX_VIEW_DEPTH: usize = 8;
 /// and close enough that a cycle fails at once with its name rather than after
 /// minutes of writes that are then thrown away.
 pub const EVENT_DEPTH_LIMIT: u8 = 16;
+/// How many compiled statements one session keeps, at most.
+///
+/// A compiled statement is the parse+bind tree of one script under one set of
+/// bound values — pure syntax, independent of the catalog it will later
+/// resolve against — so the only thing a bound needs is a bound. Two hundred
+/// and fifty-six covers the working set of a panel or a client's request
+/// loop; past it the least-recently-compiled form gives way.
+pub const COMPILE_CACHE_MAX: usize = 256;
