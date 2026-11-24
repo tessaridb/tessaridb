@@ -654,6 +654,47 @@ pub enum Error {
         span: Span,
     },
 
+    /// `[*m..n]` on a step that names no node (ADR-0143): the segment is the
+    /// step's landing set, and a step ending on the edges has nothing to land.
+    #[error("a segment repeats a step that names the node it lands on (at {span})")]
+    RepeatNeedsTarget {
+        /// Where the segment is.
+        span: Span,
+    },
+
+    /// `[*0..n]` — a segment counts steps, so it starts at 1 (ADR-0143).
+    #[error("a segment counts steps, so it starts at 1 (at {span})")]
+    RepeatBelowOne {
+        /// Where the segment is.
+        span: Span,
+    },
+
+    /// `[*m..n]` with `m` above `n` (ADR-0143) — the window is empty, and an
+    /// empty window read as an empty answer would hide a transposed bound.
+    #[error("a segment's minimum is above its maximum (at {span})")]
+    RepeatAboveMax {
+        /// Where the segment is.
+        span: Span,
+    },
+
+    /// `[*m..n]` over an edge table (ADR-0143): the segment is served by
+    /// adjacency, the shape an edge table is not.
+    #[error("a segment walks a declared edge kind, and {table} is an edge table (at {span})")]
+    RepeatOnEdgeTable {
+        /// The table the segment tried to walk.
+        table: String,
+        /// Where the segment is.
+        span: Span,
+    },
+
+    /// `DEPTH` beside a segment (ADR-0143) — the segment is the bound, and two
+    /// bounds on one walk would be a second spelling for an argument.
+    #[error("`DEPTH` does not stand beside a segment — the segment is the bound (at {span})")]
+    DepthWithRepeat {
+        /// Where the clause is.
+        span: Span,
+    },
+
     /// A `group::name(…)` naming no function this language has.
     #[error("there is no function called {name} (at {span})")]
     NoSuchFunction {
@@ -1071,6 +1112,11 @@ impl Error {
             | Self::DepthNeedsOneHopToATable { span }
             | Self::PathNeedsDepth { span }
             | Self::DepthBelowOne { span }
+            | Self::RepeatNeedsTarget { span }
+            | Self::RepeatBelowOne { span }
+            | Self::RepeatAboveMax { span }
+            | Self::RepeatOnEdgeTable { span, .. }
+            | Self::DepthWithRepeat { span }
             | Self::VectorWidthBelowOne { span }
             | Self::VectorWidthAboveTheCeiling { span, .. }
             | Self::NestedTooDeep { span, .. }

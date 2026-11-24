@@ -1971,6 +1971,56 @@ ending on the edges themselves has nothing for a second round to start from;
 both are refused rather than answered one way in silence. Repeating a *pattern*
 is a different feature and is not in this language yet.
 
+### A bounded segment repeats one step: `[*m..n]`
+
+```
+SELECT * FROM person:1->knows[*1..3]->person;
+SELECT * FROM person:1->knows[*2..2]->person->wrote[*1..1]->post;
+```
+
+A step written `->knows[*1..3]->` repeats **that one step** between one and
+three times, breadth-first over the same seen set `DEPTH` uses, and the step
+then lands on every record first reached at a distance inside the window.
+`[*2..2]` is exactly two steps; `[*1..n]` on a lone step answers what
+`DEPTH n` answers. The window is two integer literals — the bound is written
+where the statement is read, and the walk costs the reachable subgraph
+however large the numbers are written.
+
+A segment may stand anywhere in a chain, between fixed steps, and the walk
+continues from its landing set: `person:1->knows[*1..2]->person->wrote->post`
+binds the middle table to everyone reachable in one or two steps and then
+takes one written step on. The seen set is per statement, so a record reached
+by the segment is not re-expanded by a later step that could reach it again —
+each record is expanded once, and a cycle terminates the walk rather than
+feeding it.
+
+The segment walks a declared edge kind, beside the node, in the direction its
+arrows point. The refusals say the shape rather than answering it one way:
+`RepeatNeedsTarget` when the step names no node, `RepeatBelowOne` at a zero
+lower bound, `RepeatAboveMax` when the minimum exceeds the maximum,
+`RepeatOnEdgeTable` over an edge table (the segment is served by adjacency,
+and an edge table is the record-behind-an-index shape), and `DepthWithRepeat`
+when `DEPTH` stands beside a segment — the segment is the bound, and two
+bounds on one walk would be a second spelling for an argument. `PATH TO` is
+unchanged and does not take segments.
+
+**The path rides the projection.** In a `SELECT` whose source holds a
+segment, the route `path` resolves to the array of record references from the
+origin to the answered record, along the first-reach chain the walk itself
+computed:
+
+```
+SELECT name, path FROM person:1->knows[*1..3]->person;
+```
+
+`path` is a route, contextual the way `$after` is: it exists because the walk
+produced it, not as a stored thing. Where the source holds no segment there
+is no chain to name, and the projection refuses (`PathWithoutWalk`) rather
+than answering with an empty array that would read as a walked-and-found-
+nothing. A record's own path is its identity alone when the segment's window
+admits the direct edge, and the array order is the walk's order — origin
+first, the answered record last.
+
 ### The shortest path: `PATH TO`
 
 ```

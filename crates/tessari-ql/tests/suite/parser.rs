@@ -2783,3 +2783,61 @@ fn alter_table_store_parses_as_the_immutable_change() {
         tessari_ql::TableChange::Store(tessari_ql::StoreKind::Row)
     ));
 }
+
+#[test]
+fn a_segment_repeats_one_step_between_literal_bounds() {
+    // ADR-0143: `->knows[*1..3]->` repeats one step breadth-first over the seen
+    // set. The bounds are literals — a walk states its own length where it is
+    // read, the same discipline as DEPTH.
+    let StatementKind::Select(select) = one("SELECT * FROM users:1->follows[*1..3]->users;") else {
+        panic!("not a read");
+    };
+    let Source::Traverse { hops, depth, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert!(depth.is_none());
+    assert_eq!(hops.len(), 1);
+    let repeat = hops[0].repeat.as_ref().expect("a segment on the step");
+    assert_eq!(repeat.min, 1);
+    assert_eq!(repeat.max, 3);
+
+    // A segment composes between fixed steps; the other steps stay plain.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM users:1->follows[*1..2]->users->wrote->post;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { hops, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert_eq!(hops.len(), 2);
+    let first = hops[0].repeat.as_ref().expect("segment on the first step");
+    assert_eq!((first.min, first.max), (1, 2));
+    assert!(hops[1].repeat.is_none());
+
+    // The path rides the projection as a contextual route (docs/tessariql.md
+    // §"A bounded segment repeats one step").
+    assert_eq!(
+        projected_names("SELECT name, path FROM users:1->follows[*1..3]->users;"),
+        ["name", "path"]
+    );
+
+    // A segment refuses the shapes ADR-0143 names rather than answering them
+    // one way — each refusal by its own name.
+    assert!(matches!(
+        parse("SELECT * FROM users:1->follows[*0..2]->users;"),
+        Err(Error::RepeatBelowOne { .. })
+    ));
+    assert!(matches!(
+        parse("SELECT * FROM users:1->follows[*3..2]->users;"),
+        Err(Error::RepeatAboveMax { .. })
+    ));
+    assert!(matches!(
+        parse("SELECT * FROM users:1->follows[*1..3];"),
+        Err(Error::RepeatNeedsTarget { .. })
+    ));
+    assert!(matches!(
+        parse("SELECT * FROM users:1->follows[*1..3]->users DEPTH 2;"),
+        Err(Error::DepthWithRepeat { .. })
+    ));
+}

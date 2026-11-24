@@ -25,6 +25,23 @@ pub struct Hop {
     pub edges: TableRef,
     /// The table the far endpoint is read from, when the statement names one.
     pub target: Option<TableRef>,
+    /// `->knows[*1..3]->` — this one step repeated between the literal bounds
+    /// (ADR-0143). Breadth-first over the walk's seen set; the step's landing
+    /// set is every record first reached at a distance inside the window.
+    pub repeat: Option<Repeat>,
+}
+
+/// `[*m..n]` on a traversal step: the step repeated between two integer
+/// literals, both written — the bound lives where the statement is read, the
+/// same discipline as `DEPTH`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Repeat {
+    /// The fewest times the step runs — `1` or more.
+    pub min: u64,
+    /// The most times the step runs — `min` or more.
+    pub max: u64,
+    /// Where the segment was written.
+    pub span: Span,
 }
 
 /// The three access paths the store has, named by what the statement targets.
