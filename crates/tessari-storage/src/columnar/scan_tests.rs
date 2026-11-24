@@ -6,7 +6,7 @@
 //! equivalence the OLAP skill calls the only proof a skipping structure is
 //! safe). The seam tests (gate, redaction, ordering, the answer's counters)
 //! live in the session suite.
-#![allow(clippy::panic, clippy::unwrap_used)]
+#![allow(clippy::panic, clippy::unwrap_used, clippy::cast_precision_loss)]
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -17,7 +17,9 @@ use tessari_types::{FieldId, FieldKind, RecordId, Value};
 
 use crate::catalog::{Catalog, FieldShape, StorageKind, TableShape};
 use crate::now::Now;
-use crate::{ColumnarCompare, ColumnarPredicate, RecordAddress, Store, columnar_scan};
+use crate::{
+    ColumnarCompare, ColumnarPredicate, ColumnarTest, RecordAddress, Store, columnar_scan,
+};
 
 use super::ROWS_PER_CHUNK;
 
@@ -136,8 +138,15 @@ pub(super) fn predicate(
 ) -> ColumnarPredicate {
     ColumnarPredicate {
         family,
-        compare,
-        value,
+        test: ColumnarTest::Compare { compare, value },
+    }
+}
+
+/// An IN-list predicate over bound constants (`field IN (…)`).
+pub(super) fn predicate_in(family: ColumnFamily, values: Vec<Value>) -> ColumnarPredicate {
+    ColumnarPredicate {
+        family,
+        test: ColumnarTest::In { values },
     }
 }
 
@@ -198,9 +207,17 @@ fn range_prunes_by_min_max() {
 
     let expect: Vec<RecordId> = (boundary + 1..rows).map(id).collect();
     assert_eq!(hits, expect);
+    // The lane statistics denied the two sealed chunks without reading a
+    // head; the open chunk — never covered by them — held the answer.
     assert_eq!(
-        report.chunks_skipped, 2,
-        "min/max proves the first two away"
+        report.chunks_examined, 1,
+        "only the open chunk was examined"
+    );
+    assert_eq!(report.chunks_skipped, 0);
+    assert_eq!(
+        report.rows_decoded,
+        u64::try_from(ROWS_PER_CHUNK).expect("rows fit a u64"),
+        "the open chunk decoded"
     );
 }
 
@@ -640,4 +657,217 @@ fn families_intersect() {
         .collect();
     assert_eq!(hits, expect);
     assert!(report.chunks_examined >= report.chunks_skipped);
+}
+
+// ---- W1 (G099 C1): lane statistics, IN-list probes, sorted-chunk search ----
+
+/// A namespace/database/columnar table with an int `seq` and a float
+/// `measure`, committed — the NaN control's tree.
+fn float_tree(store: &Store) -> (u32, u32, u32) {
+    let mut transaction = store.begin().now().expect("a transaction begins");
+    let mut catalog = Catalog::new(&mut transaction);
+    let namespace = catalog.create_namespace("prod").now().expect("namespace");
+    let database = catalog
+        .create_database(namespace.id, "analytics")
+        .now()
+        .expect("database");
+    let table = catalog
+        .create_table(
+            namespace.id,
+            database.id,
+            "readings",
+            TableShape {
+                schemafull: true,
+                storage_kind: Some(StorageKind::Column),
+                ..TableShape::default()
+            },
+        )
+        .now()
+        .expect("table");
+    catalog
+        .create_field(table.id, "seq", FieldKind::Int, FieldShape::default())
+        .now()
+        .expect("seq field");
+    catalog
+        .create_field(table.id, "measure", FieldKind::Float, FieldShape::default())
+        .now()
+        .expect("measure field");
+    let ids = (namespace.id.get(), database.id.get(), table.id.get());
+    transaction.commit().now().expect("the tree commits");
+    ids
+}
+
+fn float(value: f64) -> Value {
+    Value::Number(tessari_types::Number::float(value))
+}
+
+/// Insert `count` readings in one commit: `seq` and `measure` monotone,
+/// except every `nan_at`-th row's measure, which is a NaN (disabling that
+/// chunk's range statistics).
+fn insert_readings(store: &Store, ids: (u32, u32, u32), count: i64, nan_at: i64) {
+    let mut transaction = store.begin().now().expect("a transaction begins");
+    for row in 0..count {
+        let measure = if nan_at > 0 && row % nan_at == 0 {
+            float(f64::NAN)
+        } else {
+            // The fixture's rows are small; the conversion is exact there.
+            // `From<i64> for f64` does not exist, so the test allow-lists the
+            // precision lint rather than every call site inventing a parser.
+            float(row as f64)
+        };
+        let object = BTreeMap::from([
+            ("seq".to_owned(), int(row)),
+            ("measure".to_owned(), measure),
+        ]);
+        transaction.put(
+            address(ids, id(row)),
+            encode_payload(&Value::Object(object)).into_bytes(),
+        );
+    }
+    transaction.commit().now().expect("the insert commits");
+}
+
+/// An IN-list answers the union in one pass: each chunk is pruned against
+/// every value, the survivors decode once, and the hits are exact.
+#[test]
+fn in_list_prunes_and_answers_exactly() {
+    let (_backend, store) = store();
+    let ids = tree(&store);
+    let rows = i64::try_from(ROWS_PER_CHUNK.saturating_mul(3)).expect("rows fit an i64");
+    insert_events(&store, ids, rows);
+    let seq = family(&store, ids, "seq");
+    let (ns, db, table) = typed(ids);
+
+    let (hits, report) = columnar_scan(
+        &store,
+        ns,
+        db,
+        table,
+        &[predicate_in(seq, vec![int(10_000), int(14_000)])],
+        true,
+    )
+    .now()
+    .expect("the scan runs");
+
+    assert_eq!(hits, vec![id(10_000), id(14_000)]);
+    assert_eq!(report.chunks_examined, 3, "three sealed chunks");
+    assert_eq!(
+        report.chunks_skipped, 2,
+        "both values sit in the middle chunk; the neighbours deny both"
+    );
+    assert_eq!(
+        report.rows_decoded,
+        u64::try_from(ROWS_PER_CHUNK).expect("rows fit a u64"),
+        "one chunk decoded"
+    );
+    assert_eq!(report.rows_returned, 2);
+}
+
+/// The IN-list equivalence arm: pruning on and off answer the same set,
+/// alone and intersected with another family.
+#[test]
+fn in_list_pruning_matches_unpruned() {
+    let (_backend, store) = store();
+    let ids = tree(&store);
+    let rows = i64::try_from(ROWS_PER_CHUNK.saturating_mul(2)).expect("rows fit an i64");
+    insert_events(&store, ids, rows);
+    let seq = family(&store, ids, "seq");
+    let kind_family = family(&store, ids, "kind");
+    let (ns, db, table) = typed(ids);
+
+    for predicates in [
+        // All three values sit in the first chunk: the second denies every
+        // one of them.
+        vec![predicate_in(seq.clone(), vec![int(5), int(6), int(7)])],
+        vec![
+            predicate_in(seq.clone(), vec![int(5), int(6)]),
+            predicate(
+                kind_family,
+                ColumnarCompare::Equal,
+                Value::String("kind-1".to_owned()),
+            ),
+        ],
+    ] {
+        let (pruned, pruned_report) = columnar_scan(&store, ns, db, table, &predicates, true)
+            .now()
+            .expect("the pruned scan runs");
+        let (unpruned, unpruned_report) = columnar_scan(&store, ns, db, table, &predicates, false)
+            .now()
+            .expect("the unpruned scan runs");
+        assert_eq!(pruned, unpruned, "pruning never changes the answer");
+        assert!(
+            pruned_report.chunks_skipped > 0,
+            "the fixture is built to prune: {predicates:?}"
+        );
+        assert_eq!(unpruned_report.chunks_skipped, 0);
+    }
+}
+
+/// A predicate outside the lane's sealed range is denied at the lane head:
+/// the pointer's lane statistics are consulted first and no chunk head is
+/// read at all. Only the open chunk is examined.
+#[test]
+fn out_of_range_is_denied_at_the_lane() {
+    let (_backend, store) = store();
+    let ids = tree(&store);
+    let rows = i64::try_from(ROWS_PER_CHUNK.saturating_mul(3)).expect("rows fit an i64") + 5;
+    insert_events(&store, ids, rows);
+    let seq = family(&store, ids, "seq");
+    let (ns, db, table) = typed(ids);
+
+    let (hits, report) = columnar_scan(
+        &store,
+        ns,
+        db,
+        table,
+        &[predicate(seq, ColumnarCompare::Equal, int(1_000_000))],
+        true,
+    )
+    .now()
+    .expect("the scan runs");
+
+    assert!(hits.is_empty());
+    assert_eq!(
+        report.chunks_examined, 1,
+        "the lane statistics denied the sealed chunks unread; the open chunk alone is examined"
+    );
+    assert_eq!(
+        report.chunks_skipped, 1,
+        "the open chunk's own head denies the value"
+    );
+    assert_eq!(report.rows_decoded, 0, "nothing was decoded");
+}
+
+/// Control arm: a lane whose sealed chunks lack range statistics (a NaN
+/// disabled one) carries no lane statistics of its own — absence disables
+/// pruning, it never guesses, so every chunk head is read as before.
+#[test]
+fn lane_without_range_statistics_reads_every_chunk() {
+    let (_backend, store) = store();
+    let ids = float_tree(&store);
+    let rows = i64::try_from(ROWS_PER_CHUNK.saturating_mul(2)).expect("rows fit an i64");
+    insert_readings(&store, ids, rows, 7);
+    let measure = family(&store, ids, "measure");
+    let (ns, db, table) = typed(ids);
+
+    let (hits, report) = columnar_scan(
+        &store,
+        ns,
+        db,
+        table,
+        &[predicate(measure, ColumnarCompare::Equal, float(999_999.0))],
+        true,
+    )
+    .now()
+    .expect("the scan runs");
+
+    assert!(hits.is_empty());
+    assert_eq!(
+        report.chunks_examined, 2,
+        "no lane statistics: the NaN chunk and the open chunk are both examined"
+    );
+    assert_eq!(
+        report.chunks_skipped, report.chunks_examined,
+        "each chunk's own head denies the value"
+    );
 }

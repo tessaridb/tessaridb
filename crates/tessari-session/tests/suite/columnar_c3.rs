@@ -114,6 +114,22 @@ fn ready(store: &Store) -> (Session<'_>, (u32, u32, u32), (u32, u32, u32)) {
     (session, events, mirror)
 }
 
+/// The records a read answered with, and the plan and notes it carried.
+fn read(session: &mut Session<'_>, table: &str, predicate: &str) -> (usize, AccessPath, Vec<Note>) {
+    let outcomes = session
+        .run_now(&format!("SELECT * FROM {table} WHERE {predicate};"))
+        .unwrap();
+    let outcome = outcomes.last().unwrap();
+    (
+        outcome.records().map_or(0, |records| records.len()),
+        outcome
+            .plan()
+            .unwrap_or_else(|| panic!("{outcome:?}"))
+            .access,
+        outcome.notes().to_vec(),
+    )
+}
+
 /// The count a fold answered with, and the plan and notes it carried.
 fn count(session: &mut Session<'_>, table: &str, predicate: &str) -> (i64, AccessPath, Vec<Note>) {
     let outcomes = session
@@ -276,4 +292,102 @@ fn c8_the_write_paths_cost_stated() {
     // only that the projection landed (the commit answered), the printed
     // line is the evidence.
     assert!(column_per.is_finite() && row_per.is_finite());
+}
+
+#[test]
+fn c1_lane_statistics_and_in_lists_over_a_sized_table() {
+    let store = store();
+    let (mut session, _events, _mirror) = ready(&store);
+    let sealed: u64 = ROWS.div_euclid(8192).try_into().expect("rows fit a u64");
+
+    // Out-of-range equality: the lane statistics deny every sealed chunk
+    // without reading a head; the scan consults the open chunk alone.
+    let started = Instant::now();
+    let (zero_rows, zero_plan, zero_notes) = read(&mut session, "events", "seq = 2000000");
+    let lane_ms = started.elapsed().as_millis();
+    assert_eq!(zero_rows, 0, "no row reaches two million");
+    assert_eq!(zero_plan, AccessPath::Columnar);
+    let Note::Columnar {
+        chunks_examined,
+        chunks_skipped,
+        rows_decoded,
+        rows_returned,
+    } = zero_notes
+        .iter()
+        .find(|note| matches!(note, Note::Columnar { .. }))
+        .expect("the columnar note")
+    else {
+        panic!("the note is columnar");
+    };
+    assert_eq!(
+        *chunks_examined, 1,
+        "the lane denied {sealed} sealed chunks unread; the open chunk alone was examined"
+    );
+    assert_eq!(*chunks_skipped, 1, "the open chunk's head denies the value");
+    assert_eq!(*rows_decoded, 0);
+    assert_eq!(*rows_returned, 0);
+
+    // An IN-list of scattered values: one scan pass answers the union, and
+    // the sealed count is what the lane statistics spared on the shape
+    // above. The mirror walks the whole table for every member's filter.
+    let members = [
+        1_000, 50_000, 200_000, 350_000, 500_000, 650_000, 800_000, 1_000_000,
+    ];
+    let list = members
+        .iter()
+        .map(|member| member.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    let started = Instant::now();
+    let (in_count, in_plan, in_notes) = count(&mut session, "events", &format!("seq IN [{list}]"));
+    let in_ms = started.elapsed().as_millis();
+    assert_eq!(in_plan, AccessPath::Columnar);
+    let member_count = u64::try_from(members.len()).expect("eight members fit a u64");
+    let Note::Columnar {
+        chunks_examined,
+        chunks_skipped,
+        rows_decoded,
+        rows_returned,
+    } = in_notes
+        .iter()
+        .find(|note| matches!(note, Note::Columnar { .. }))
+        .expect("the columnar note")
+    else {
+        panic!("the note is columnar");
+    };
+    assert_eq!(
+        *rows_returned, member_count,
+        "every member answers exactly its row"
+    );
+    assert_eq!(
+        in_count,
+        i64::try_from(members.len()).expect("members fit an i64")
+    );
+    let table_rows = u64::try_from(ROWS).expect("the row count is positive");
+    // Eight probes per chunk head make the bloom false-positive on a share
+    // of the chunks no member touches; the bound the mechanism promises is
+    // "decodes a minority of the table", and the printed figure is the
+    // measured one.
+    assert!(
+        *rows_decoded < table_rows.div_euclid(2),
+        "the list decodes a minority of the table, not the table: {rows_decoded}"
+    );
+
+    let started = Instant::now();
+    let (walk_count, walk_plan, _) = count(
+        &mut session,
+        "mirror",
+        &members
+            .iter()
+            .map(|member| format!("seq = {member}"))
+            .collect::<Vec<_>>()
+            .join(" OR "),
+    );
+    let walk_ms = started.elapsed().as_millis();
+    assert_eq!(walk_count, in_count, "the paths disagree on the IN-list");
+    assert_eq!(walk_plan, AccessPath::Scan);
+
+    eprintln!(
+        "C1 figures ({ROWS} rows, {sealed} sealed chunks): lane deny {lane_ms} ms (1 head read, {sealed} denied unread); IN-list {in_ms} ms columnar vs {walk_ms} ms row walk, decoded {rows_decoded}, skipped {chunks_skipped}",
+    );
 }

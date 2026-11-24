@@ -65,18 +65,35 @@ pub enum ColumnarCompare {
     GreaterOrEqual,
 }
 
-/// One family's predicate: the projection of `family`, compared to a
-/// constant the caller evaluated and bound.
+/// One family's predicate: the projection of `family` tested against
+/// constants the caller evaluated and bound.
 #[derive(Clone, Debug)]
 pub struct ColumnarPredicate {
     /// The projected family under test.
     pub family: ColumnFamily,
-    /// The comparison.
-    pub compare: ColumnarCompare,
-    /// The constant, evaluated and bound by the caller. A null constant
-    /// never prunes and never matches here; the row authority above
-    /// decides null semantics for real.
-    pub value: Value,
+    /// The test the surviving rows must pass.
+    pub test: ColumnarTest,
+}
+
+/// The test one predicate applies.
+#[derive(Clone, Debug)]
+pub enum ColumnarTest {
+    /// One comparison against one bound constant.
+    Compare {
+        /// The comparison.
+        compare: ColumnarCompare,
+        /// The constant, evaluated and bound by the caller. A null constant
+        /// never prunes and never matches here; the row authority above
+        /// decides null semantics for real.
+        value: Value,
+    },
+    /// Equality against any of the bound constants (`field IN (…)`). A null
+    /// member never matches and contributes nothing; the caller above the
+    /// storage layer declines lists carrying one.
+    In {
+        /// The constants, evaluated and bound by the caller.
+        values: Vec<Value>,
+    },
 }
 
 /// What the scan did — the the design record counters the answer reports.
@@ -193,7 +210,7 @@ pub async fn columnar_lane(
         Some((_, bytes)) => super::project::lanes_from_bytes(&bytes)?,
         None => return Ok(Vec::new()),
     };
-    let Some(open) = lanes.get(&partition).copied() else {
+    let Some(open) = lanes.get(&partition).map(|lane| lane.open) else {
         return Ok(Vec::new());
     };
     let mut rows = Vec::new();
@@ -242,12 +259,26 @@ async fn scan_family(
         None => return Ok(BTreeSet::new()),
     };
     let mut hits = BTreeSet::new();
-    for (partition, open) in lanes {
+    for (partition, lane) in lanes {
         if pin.is_some_and(|pin| pin != partition) {
             continue;
         }
-        let mut local = 0_u64;
-        while local <= super::chunk::local_of_seq(open) {
+        // The lane head is the cheapest pruning level (the design record,
+        // OLAP ref 02 M1): the pointer's range statistics describe every
+        // sealed chunk of the lane, so a predicate outside them skips the
+        // lane's sealed chunks without reading a single head. Absence
+        // disables. The open chunk is never covered by the statistics —
+        // appends continue into it — so it is consulted every time, denied
+        // lane or not.
+        let open = lane.open;
+        let open_local = super::chunk::local_of_seq(open);
+        let start = if prune && lane_denied(predicate, lane.range.as_ref()) {
+            open_local
+        } else {
+            0
+        };
+        let mut local = start;
+        while local <= open_local {
             let seq = super::chunk::split_seq(partition, local);
             if let Some((_, bytes)) = newest_under(
                 store,
@@ -269,9 +300,20 @@ async fn scan_family(
                     report.rows_decoded = report
                         .rows_decoded
                         .saturating_add(u64::try_from(chunk.values.len()).unwrap_or(u64::MAX));
-                    for (id, value) in chunk.record_ids.iter().zip(chunk.values.iter()) {
-                        if matches(&predicate.compare, &predicate.value, value) {
-                            hits.insert(id.clone());
+                    if prune && chunk.sorted && chunk.null_count == 0 {
+                        // The writer recorded the values non-decreasing, so
+                        // the test narrows to partition points instead of
+                        // walking every row (the sound within-chunk half of
+                        // the sort-key binary search). Nulls interleaved
+                        // would break the vec order, so null-bearing chunks
+                        // keep the linear path; the equivalence suite proves
+                        // both answer the same set.
+                        insert_sorted_hits(&mut hits, &predicate.test, chunk);
+                    } else {
+                        for (id, value) in chunk.record_ids.iter().zip(chunk.values.iter()) {
+                            if matches(&predicate.test, value) {
+                                hits.insert(id.clone());
+                            }
                         }
                     }
                 }
@@ -282,25 +324,128 @@ async fn scan_family(
     Ok(hits)
 }
 
+/// Whether the lane's range statistics prove no sealed row of this lane can
+/// match. Range only (no bloom at this level): a constant outside [min, max]
+/// denies, and an IN-list is denied only when every member is outside. The
+/// open chunk is never covered, so the scan still consults it.
+fn lane_denied(predicate: &ColumnarPredicate, range: Option<&super::project::LaneRange>) -> bool {
+    let Some(range) = range else { return false };
+    let outside = |value: &Value| value < &range.min || value > &range.max;
+    match &predicate.test {
+        ColumnarTest::Compare { compare, value } => {
+            if is_null(value) {
+                return false;
+            }
+            match compare {
+                ColumnarCompare::NotEqual => false,
+                ColumnarCompare::Equal => outside(value),
+                ColumnarCompare::Less => range.min >= *value,
+                ColumnarCompare::LessOrEqual => range.min > *value,
+                ColumnarCompare::Greater => range.max <= *value,
+                ColumnarCompare::GreaterOrEqual => range.max < *value,
+            }
+        }
+        ColumnarTest::In { values } => {
+            !values.is_empty() && values.iter().all(|value| is_null(value) || outside(value))
+        }
+    }
+}
+
+/// Insert the rows of a decoded sorted chunk that pass the test, narrowed by
+/// binary search over the values. The writer's `sorted` flag is the
+/// invariant that makes this exact; the row authority above re-confirms
+/// either way, and the equivalence suite proves the narrowed and linear
+/// paths answer the same set.
+fn insert_sorted_hits(
+    hits: &mut BTreeSet<RecordId>,
+    test: &ColumnarTest,
+    chunk: super::chunk::ColumnChunk,
+) {
+    let values = &chunk.values;
+    let emit = |hits: &mut BTreeSet<RecordId>, rows: std::ops::Range<usize>| {
+        for row in rows {
+            hits.insert(chunk.record_ids[row].clone());
+        }
+    };
+    match test {
+        ColumnarTest::Compare { compare, value } => match compare {
+            ColumnarCompare::Equal => {
+                let lo = values.partition_point(|held| held < value);
+                let hi = values.partition_point(|held| held <= value);
+                emit(hits, lo..hi);
+            }
+            ColumnarCompare::NotEqual => {
+                let lo = values.partition_point(|held| held < value);
+                let hi = values.partition_point(|held| held <= value);
+                emit(hits, 0..lo);
+                emit(hits, hi..values.len());
+            }
+            ColumnarCompare::Less => emit(hits, 0..values.partition_point(|held| held < value)),
+            ColumnarCompare::LessOrEqual => {
+                emit(hits, 0..values.partition_point(|held| held <= value));
+            }
+            ColumnarCompare::Greater => {
+                emit(
+                    hits,
+                    values.partition_point(|held| held <= value)..values.len(),
+                );
+            }
+            ColumnarCompare::GreaterOrEqual => {
+                emit(
+                    hits,
+                    values.partition_point(|held| held < value)..values.len(),
+                );
+            }
+        },
+        ColumnarTest::In { values: constants } => {
+            for constant in constants {
+                if is_null(constant) {
+                    continue;
+                }
+                let lo = values.partition_point(|held| held < constant);
+                let hi = values.partition_point(|held| held <= constant);
+                emit(hits, lo..hi);
+            }
+        }
+    }
+}
+
 /// Whether the head statistics prove no row of this chunk can match.
 fn pruned_by_head(predicate: &ColumnarPredicate, bytes: &[u8]) -> Result<bool> {
     let (_, stats) = decode_head(bytes)?;
-    if is_null(&predicate.value) {
-        return Ok(false);
-    }
-    let value = &predicate.value;
-    match &predicate.compare {
-        ColumnarCompare::NotEqual => Ok(false),
-        ColumnarCompare::Equal => {
-            if let Some(bloom) = &stats.bloom {
-                return Ok(!bloom.might_contain(&encode_payload(value).into_bytes()));
+    match &predicate.test {
+        ColumnarTest::Compare { compare, value } => {
+            if is_null(value) {
+                return Ok(false);
             }
-            Ok(outside(&stats, value))
+            match compare {
+                ColumnarCompare::NotEqual => Ok(false),
+                ColumnarCompare::Equal => {
+                    if let Some(bloom) = &stats.bloom {
+                        return Ok(!bloom.might_contain(&encode_payload(value).into_bytes()));
+                    }
+                    Ok(outside(&stats, value))
+                }
+                ColumnarCompare::Less => Ok(stats.min.as_ref().is_some_and(|min| min >= value)),
+                ColumnarCompare::LessOrEqual => {
+                    Ok(stats.min.as_ref().is_some_and(|min| min > value))
+                }
+                ColumnarCompare::Greater => Ok(stats.max.as_ref().is_some_and(|max| max <= value)),
+                ColumnarCompare::GreaterOrEqual => {
+                    Ok(stats.max.as_ref().is_some_and(|max| max < value))
+                }
+            }
         }
-        ColumnarCompare::Less => Ok(stats.min.as_ref().is_some_and(|min| min >= value)),
-        ColumnarCompare::LessOrEqual => Ok(stats.min.as_ref().is_some_and(|min| min > value)),
-        ColumnarCompare::Greater => Ok(stats.max.as_ref().is_some_and(|max| max <= value)),
-        ColumnarCompare::GreaterOrEqual => Ok(stats.max.as_ref().is_some_and(|max| max < value)),
+        // A list is denied only when every member is: outside the [min, max]
+        // range AND denied by the bloom, each on its own.
+        ColumnarTest::In { values } => Ok(!values.is_empty()
+            && values.iter().all(|value| {
+                is_null(value)
+                    || (outside(&stats, value)
+                        && stats.bloom.as_ref().is_some_and(|bloom| {
+                            !bloom.might_contain(&encode_payload(value).into_bytes())
+                        }))
+            })),
     }
 }
 
@@ -313,21 +458,24 @@ fn outside(stats: &super::chunk::ChunkStats, value: &Value) -> bool {
         .is_some_and(|(min, max)| value < min || value > max)
 }
 
-/// Whether one decoded row satisfies the predicate. A null slot never
+/// Whether one decoded row satisfies the predicate test. A null slot never
 /// satisfies a comparison with a non-null constant (the store's three-valued
 /// logic decides real null semantics at the row authority; the scan only
 /// narrows).
-fn matches(compare: &ColumnarCompare, constant: &Value, row: &Value) -> bool {
+fn matches(test: &ColumnarTest, row: &Value) -> bool {
     if is_null(row) {
         return false;
     }
-    match compare {
-        ColumnarCompare::Equal => row == constant,
-        ColumnarCompare::NotEqual => row != constant,
-        ColumnarCompare::Less => row < constant,
-        ColumnarCompare::LessOrEqual => row <= constant,
-        ColumnarCompare::Greater => row > constant,
-        ColumnarCompare::GreaterOrEqual => row >= constant,
+    match test {
+        ColumnarTest::Compare { compare, value } => match compare {
+            ColumnarCompare::Equal => row == value,
+            ColumnarCompare::NotEqual => row != value,
+            ColumnarCompare::Less => row < value,
+            ColumnarCompare::LessOrEqual => row <= value,
+            ColumnarCompare::Greater => row > value,
+            ColumnarCompare::GreaterOrEqual => row >= value,
+        },
+        ColumnarTest::In { values } => values.iter().any(|value| !is_null(value) && row == value),
     }
 }
 

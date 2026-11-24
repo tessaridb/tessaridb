@@ -477,3 +477,153 @@ fn c2_the_column_layout_earns_its_bytes() {
         "the column layout must beat the row layout on this fixture: {column_bytes} vs {row_bytes}"
     );
 }
+
+// ---- W1 (G099 C1): the lane statistics the pointer value carries ----
+
+use super::project::{
+    LanePointer, LaneRange, SealedStat, lanes_from_bytes, lanes_to_bytes, merge_lane_range,
+};
+
+fn ptr(open: u64, range: Option<(i64, i64)>) -> LanePointer {
+    LanePointer {
+        open,
+        range: range.map(|(min, max)| LaneRange {
+            min: int(min),
+            max: int(max),
+        }),
+        disabled: false,
+    }
+}
+
+/// A lane pointer round-trips through the pointer value's bytes, with and
+/// without its range statistics.
+#[test]
+fn lane_pointer_roundtrips_with_and_without_range() {
+    let mut lanes = std::collections::BTreeMap::new();
+    lanes.insert(0, ptr(3, Some((0, 24_575))));
+    lanes.insert(1, ptr(0, None));
+    let bytes = lanes_to_bytes(&lanes);
+
+    let parsed = lanes_from_bytes(&bytes).expect("the pointer parses");
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[&0].open, 3);
+    let range = parsed[&0].range.as_ref().expect("lane 0 carries its range");
+    assert_eq!(range.min, int(0));
+    assert_eq!(range.max, int(24_575));
+    assert!(
+        parsed[&1].range.is_none(),
+        "lane 1 was written without a range"
+    );
+    assert!(
+        parsed.values().all(|lane| !lane.disabled),
+        "no lane was written disabled"
+    );
+}
+
+/// Pointers written before lane statistics existed — the bare eight-byte
+/// form and the lane-count form — parse with no range: absence disables
+/// pruning, it never guesses.
+#[test]
+fn legacy_pointer_bytes_have_no_range() {
+    // The pre-partitioning form: one raw u64, one lane at partition 0.
+    let mut legacy = Vec::new();
+    legacy.extend_from_slice(&7_u64.to_be_bytes());
+    let parsed = lanes_from_bytes(&legacy).expect("the legacy pointer parses");
+    assert_eq!(parsed.len(), 1);
+    assert_eq!(parsed[&0].open, 7);
+    assert!(parsed[&0].range.is_none());
+    assert!(
+        parsed[&0].disabled,
+        "a pointer from before lane statistics has unknown — disabled — history"
+    );
+
+    // The partitioning form without statistics: [count][(u32, u64)]* exact.
+    let mut v1 = Vec::new();
+    v1.extend_from_slice(&2_u32.to_be_bytes());
+    for (partition, open) in [(0_u32, 5_u64), (3, 9)] {
+        v1.extend_from_slice(&partition.to_be_bytes());
+        v1.extend_from_slice(&open.to_be_bytes());
+    }
+    let parsed = lanes_from_bytes(&v1).expect("the v1 pointer parses");
+    assert_eq!(parsed[&0].open, 5);
+    assert_eq!(parsed[&3].open, 9);
+    assert!(parsed.values().all(|lane| lane.range.is_none()));
+    assert!(
+        parsed.values().all(|lane| lane.disabled),
+        "v1 pointers predate lane statistics: unknown history is disabled"
+    );
+}
+
+/// A pointer value cut short refuses; a statistic read past its bytes would
+/// be a wrong one, and a wrong one deletes rows.
+#[test]
+fn a_truncated_pointer_refuses() {
+    let mut lanes = std::collections::BTreeMap::new();
+    lanes.insert(0, ptr(1, Some((0, 10))));
+    let bytes = lanes_to_bytes(&lanes);
+    for cut in 1..bytes.len() {
+        if cut == 8 {
+            // Exactly eight bytes IS the pre-partitioning legacy form, not a
+            // truncation of this value: it parses as a legacy pointer by the
+            // legacy contract (a v2 value is always longer than eight bytes).
+            continue;
+        }
+        assert!(
+            lanes_from_bytes(&bytes[..cut]).is_err(),
+            "a cut at {cut} must refuse"
+        );
+    }
+}
+
+/// The lane-range merge the writer runs in the commit batch: previous range
+/// widened by the newly sealed chunks' ranges; an all-null chunk contributes
+/// nothing; a chunk whose range a NaN disabled disables the lane's range.
+#[test]
+fn lane_range_merges_and_stays_absent_on_a_nan_chunk() {
+    let clean: Vec<_> = (0..8).map(int).collect();
+    let mut nan_values = clean.clone();
+    nan_values.push(Value::Number(tessari_types::Number::float(f64::NAN)));
+
+    let sealed = |values: &[Value]| {
+        let ids: Vec<RecordId> = (0..values.len())
+            .map(|row| RecordId::Int(row as i64))
+            .collect();
+        let bytes = super::chunk::encode_chunk(&ids, values);
+        let (_, stats) = super::chunk::decode_head(&bytes).expect("the head reads");
+        if stats.range_disabled {
+            SealedStat::Disabled
+        } else {
+            match stats.min.zip(stats.max) {
+                Some((min, max)) => SealedStat::Ranged(min, max),
+                None => SealedStat::Empty,
+            }
+        }
+    };
+
+    let first = sealed(&clean);
+    let second_values: Vec<_> = (100..108).map(int).collect();
+    let second = sealed(&second_values);
+    let nan_chunk = sealed(&nan_values);
+    let all_null = sealed(&[Value::Null, Value::Null]);
+
+    let grown = merge_lane_range(None, &[first.clone(), second.clone(), all_null])
+        .expect("two ranged chunks give the lane a range; the all-null chunk adds nothing");
+    assert_eq!(grown.min, int(0));
+    assert_eq!(grown.max, int(107));
+
+    // A NaN anywhere in the sealed set disables the lane's range.
+    assert!(
+        merge_lane_range(None, &[first.clone(), nan_chunk.clone()]).is_none(),
+        "a NaN-disabled chunk disables the lane's range"
+    );
+    assert!(
+        merge_lane_range(None, &[nan_chunk, second.clone()]).is_none(),
+        "the disable does not depend on the chunk's position"
+    );
+    // And the disable wins over an existing range.
+    let ranged = merge_lane_range(None, &[first, second]).expect("the lane ranges");
+    assert!(
+        merge_lane_range(Some(ranged), &[SealedStat::Disabled]).is_none(),
+        "a NaN chunk arriving after the lane ranged disables it"
+    );
+}
