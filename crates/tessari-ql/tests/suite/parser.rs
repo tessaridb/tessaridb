@@ -2841,3 +2841,59 @@ fn a_segment_repeats_one_step_between_literal_bounds() {
         Err(Error::DepthWithRepeat { .. })
     ));
 }
+
+#[test]
+fn path_to_takes_all_or_k_paths_beside_the_bound() {
+    // ADR-0143's companion: `ALL` answers every path of the minimal cost, `K n`
+    // the n best by the order the single path already uses — cheapest, fewest
+    // steps, smallest id sequence.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 ALL;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { path, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    let path = path.as_ref().expect("a path search");
+    assert!(path.all);
+    assert!(path.k.is_none());
+
+    let StatementKind::Select(select) =
+        one("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 K 3;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { path, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    let path = path.as_ref().expect("a path search");
+    assert!(!path.all);
+    assert_eq!(path.k, Some(3));
+
+    // Weighted keeps its modifier company.
+    let StatementKind::Select(select) =
+        one("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 WEIGHT km K 2;")
+    else {
+        panic!("not a read");
+    };
+    let Source::Traverse { path, .. } = &select.from else {
+        panic!("not a walk");
+    };
+    assert!(path.as_ref().expect("a path search").k.is_some());
+
+    // The two modifiers are one question each, and both together refuse by name.
+    assert!(matches!(
+        parse("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 ALL K 3;"),
+        Err(Error::PathAllWithK { .. })
+    ));
+    assert!(matches!(
+        parse("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 K 3 ALL;"),
+        Err(Error::PathAllWithK { .. })
+    ));
+    assert!(matches!(
+        parse("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 K 0;"),
+        Err(Error::KBelowOne { .. })
+    ));
+    assert!(parse("SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 K $n;").is_err());
+}

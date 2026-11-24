@@ -32,8 +32,11 @@ use crate::session::Session;
 /// what the step costs.
 type Steps = BTreeMap<RecordId, Vec<(RecordId, f64)>>;
 
-/// A path's records, start to end, and the note stating its steps and cost.
-type Answered = (Vec<(RecordId, Value)>, Option<Note>);
+/// A path search's answer: rows, and one note per path stating its steps and
+/// cost. The single-path search answers one row and one note; `ALL` and `K`
+/// answer one row per path, each row the array of the path's records in
+/// order, each with its own note.
+type Answered = (Vec<(RecordId, Value)>, Vec<Note>);
 
 /// What a path search reads its graph through.
 struct Graph<'a> {
@@ -159,7 +162,7 @@ impl Session<'_> {
             })?;
         super::graph::edges_settled(transaction, kind.edges, &hop.edges).await?;
         let Some(target) = hop.target.as_ref() else {
-            return Ok((Vec::new(), None));
+            return Ok((Vec::new(), Vec::new()));
         };
         let (context, table) = self.resolve_table(transaction, target).await?;
         let mut graph = Graph {
@@ -180,7 +183,23 @@ impl Session<'_> {
             || !graph.alive(transaction, &start.id).await?
             || !graph.alive(transaction, &end.id).await?
         {
-            return Ok((Vec::new(), None));
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let visible = self.visible_in(transaction, table).await?;
+        let rows = self.rows_in(transaction, table).await?;
+        if path.all || path.k.is_some() {
+            return self
+                .enumerated_paths(
+                    transaction,
+                    &mut graph,
+                    &start.id,
+                    &end.id,
+                    depth,
+                    path,
+                    &visible,
+                    &rows,
+                )
+                .await;
         }
         let found = if graph.weight.is_some() {
             cheapest(transaction, &mut graph, &start.id, &end.id, depth).await?
@@ -188,10 +207,8 @@ impl Session<'_> {
             fewest(transaction, &mut graph, &start.id, &end.id, depth).await?
         };
         let Some((ids, cost)) = found else {
-            return Ok((Vec::new(), None));
+            return Ok((Vec::new(), Vec::new()));
         };
-        let visible = self.visible_in(transaction, table).await?;
-        let rows = self.rows_in(transaction, table).await?;
         let mut records = Vec::with_capacity(ids.len());
         for id in &ids {
             let address =
@@ -214,8 +231,168 @@ impl Session<'_> {
         } else {
             Number::Integer(i64::try_from(steps).unwrap_or(i64::MAX))
         };
-        Ok((records, Some(Note::Path { steps, cost })))
+        Ok((records, vec![Note::Path { steps, cost }]))
     }
+
+    /// `ALL` and `K n`: the enumerated paths, each as one row holding the
+    /// array of its records in order, one note per path.
+    ///
+    /// The enumeration is the honest baseline — every simple path the written
+    /// `DEPTH` admits, visited in id order — bounded by a ceiling that refuses
+    /// rather than letting a wide search run away. `ALL` keeps the paths of
+    /// the minimal cost; `K n` keeps the n best by the order the single path
+    /// uses. A path through a record the guards do not reach is not answered:
+    /// a chain the caller cannot see is not a chain.
+    async fn enumerated_paths(
+        &self,
+        transaction: &mut Transaction<'_>,
+        graph: &mut Graph<'_>,
+        start: &RecordId,
+        end: &RecordId,
+        depth: u64,
+        path: &PathTo,
+        visible: &crate::redact::Visible,
+        rows: &crate::guard::Rows,
+    ) -> Result<Answered> {
+        let found = enumerate(
+            transaction,
+            graph,
+            start,
+            end,
+            usize::try_from(depth).unwrap_or(usize::MAX),
+        )
+        .await?;
+        if found.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        let mut kept: Vec<(Vec<RecordId>, f64)> = if path.all {
+            let minimum = found
+                .iter()
+                .map(|(_, cost)| *cost)
+                .fold(f64::INFINITY, f64::min);
+            found
+                .into_iter()
+                .filter(|(_, cost)| *cost == minimum)
+                .collect()
+        } else {
+            let mut sorted = found;
+            sorted.sort_by(|left, right| {
+                left.1.total_cmp(&right.1).then_with(|| {
+                    left.0
+                        .len()
+                        .cmp(&right.0.len())
+                        .then_with(|| left.0.cmp(&right.0))
+                })
+            });
+            let k = usize::try_from(path.k.unwrap_or(1)).unwrap_or(usize::MAX);
+            sorted.truncate(k);
+            sorted
+        };
+        kept.sort_by(|left, right| {
+            left.1.total_cmp(&right.1).then_with(|| {
+                left.0
+                    .len()
+                    .cmp(&right.0.len())
+                    .then_with(|| left.0.cmp(&right.0))
+            })
+        });
+        let context = graph.context;
+        let table = graph.table;
+        let weighted = graph.weight.is_some();
+        let mut answered: Vec<(RecordId, Value)> = Vec::with_capacity(kept.len());
+        let mut notes = Vec::with_capacity(kept.len());
+        for (ids, cost) in kept {
+            let mut records = Vec::with_capacity(ids.len());
+            let mut admissible = true;
+            for id in &ids {
+                let address =
+                    RecordAddress::new(context.namespace, context.database, table, id.clone());
+                let Some(payload) = transaction.get(&address).await? else {
+                    admissible = false;
+                    break;
+                };
+                let record = self.record_of(&payload, visible)?;
+                let Some(record) = self
+                    .permitted(transaction, id, record, visible, rows)
+                    .await?
+                else {
+                    admissible = false;
+                    break;
+                };
+                records.push(record);
+            }
+            if !admissible {
+                continue;
+            }
+            let steps = u64::try_from(ids.len().saturating_sub(1)).unwrap_or(u64::MAX);
+            let stated = if weighted {
+                Number::Float(cost)
+            } else {
+                Number::Integer(i64::try_from(steps).unwrap_or(i64::MAX))
+            };
+            let Some(end_id) = ids.last().cloned() else {
+                continue;
+            };
+            notes.push(Note::Path {
+                steps,
+                cost: stated,
+            });
+            answered.push((end_id, Value::Array(records)));
+        }
+        Ok((answered, notes))
+    }
+}
+
+/// The most paths an `ALL`/`K` enumeration examines before it refuses: the
+/// written `DEPTH` bounds the length, this bounds the width, and a search that
+/// hits it is told to narrow rather than left running.
+const ENUMERATION_CEILING: usize = 4096;
+
+/// Every simple path from `start` to `end` within `depth` steps, in the visit
+/// order (neighbours ascending by id at each step), with each path's total
+/// cost.
+async fn enumerate(
+    transaction: &Transaction<'_>,
+    graph: &mut Graph<'_>,
+    start: &RecordId,
+    end: &RecordId,
+    depth: usize,
+) -> Result<Vec<(Vec<RecordId>, f64)>> {
+    // Iterative depth-first, so the search needs no recursive async frame:
+    // each stack entry is one partial path, and neighbours are pushed in
+    // reverse so the visit order is ascending ids at every step. The answer
+    // order does not depend on this — the caller sorts before keeping — but a
+    // fixed visit order keeps the search itself a function of the graph.
+    let mut found: Vec<(Vec<RecordId>, f64)> = Vec::new();
+    let mut stack: Vec<(Vec<RecordId>, f64)> = vec![(vec![start.clone()], 0.0)];
+    while let Some((path, cost)) = stack.pop() {
+        let Some(at) = path.last().cloned() else {
+            continue;
+        };
+        if at == *end {
+            if found.len() >= ENUMERATION_CEILING {
+                return Err(Error::PathSearchTooWide {
+                    limit: ENUMERATION_CEILING as u64,
+                    span: graph.span,
+                });
+            }
+            found.push((path, cost));
+            continue;
+        }
+        if path.len() > depth {
+            continue;
+        }
+        let onward: Vec<(RecordId, f64)> = graph.out_of(transaction, &at).await?.to_vec();
+        for (next, step) in onward.into_iter().rev() {
+            if path.contains(&next) {
+                continue;
+            }
+            let mut extended = path.clone();
+            extended.push(next);
+            stack.push((extended, cost + step));
+        }
+    }
+    Ok(found)
 }
 
 /// The fewest-steps path: breadth-first layers to the end, the nodes on a

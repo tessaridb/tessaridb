@@ -177,6 +177,7 @@ impl Error {
             | Self::NotAnEdgeTable { .. }
             | Self::RepeatOnEdgeTable { .. }
             | Self::PathWithoutWalk { .. }
+            | Self::PathSearchTooWide { .. }
             | Self::EndpointsNotDeclared { .. }
             | Self::TableBelongsToGraph { .. }
             | Self::NotRenamed { .. }

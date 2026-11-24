@@ -133,9 +133,31 @@ impl Parser<'_> {
                 } else {
                     None
                 };
+                // `ALL` or `K n` — every minimal-cost path, or the n best by
+                // the order the single path already uses. Both together are
+                // two answers to one question (ADR-0143's companion).
+                let all = self.eat_word("all");
+                let k = if self.eat_word("k") {
+                    Some(self.k_bound()?)
+                } else {
+                    None
+                };
+                let all = if !all && self.eat_word("all") {
+                    if k.is_some() {
+                        return Err(Error::PathAllWithK { span: path_at });
+                    }
+                    true
+                } else {
+                    all
+                };
+                if all && k.is_some() {
+                    return Err(Error::PathAllWithK { span: path_at });
+                }
                 Some(Box::new(PathTo {
                     to,
                     weight,
+                    all,
+                    k,
                     span: path_at,
                 }))
             }
@@ -188,6 +210,20 @@ impl Parser<'_> {
             return Err(Error::RepeatAboveMax { span });
         }
         Ok(Some(Repeat { min, max, span }))
+    }
+
+    /// The literal path count after `K`: a whole number, one or more.
+    fn k_bound(&mut self) -> Result<u64> {
+        let span = self.span_here();
+        let Some(Token::Number(Number::Integer(count))) = self.peek() else {
+            return Err(self.error_here("`K n` — a whole number of paths, written out"));
+        };
+        let count = u64::try_from(*count).unwrap_or(0);
+        self.advance();
+        if count == 0 {
+            return Err(Error::KBelowOne { span });
+        }
+        Ok(count)
     }
 
     /// One integer bound of a segment. A non-integer refuses as not-a-number;

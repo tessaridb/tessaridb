@@ -8,6 +8,12 @@ pub struct PathTo {
     /// The edge field a step costs, when the path is weighted; each step costs
     /// one otherwise.
     pub weight: Option<Name>,
+    /// `ALL` — every path of the minimal cost, not only the one the tie-break
+    /// would pick.
+    pub all: bool,
+    /// `K n` — the n best paths by the order the single path uses (cheapest,
+    /// fewest steps, smallest id sequence), n written as a literal.
+    pub k: Option<u64>,
     /// Where `PATH` is.
     pub span: Span,
 }

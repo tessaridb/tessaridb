@@ -588,6 +588,20 @@ pub enum Error {
         span: Span,
     },
 
+    /// `K 0` — `K` counts paths, so it starts at 1.
+    #[error("`K` counts paths, so it starts at 1 (at {span})")]
+    KBelowOne {
+        /// Where the modifier is.
+        span: Span,
+    },
+
+    /// `ALL` and `K` together — two answers to one question, refused as that.
+    #[error("`ALL` and `K` are one question each, and a path search takes one (at {span})")]
+    PathAllWithK {
+        /// Where the second modifier is.
+        span: Span,
+    },
+
     /// `PATH TO` with no `DEPTH` (G055 W6).
     ///
     /// A path search with no bound is the one walk whose work the statement
@@ -1112,6 +1126,8 @@ impl Error {
             | Self::DepthNeedsOneHopToATable { span }
             | Self::PathNeedsDepth { span }
             | Self::DepthBelowOne { span }
+            | Self::KBelowOne { span }
+            | Self::PathAllWithK { span }
             | Self::RepeatNeedsTarget { span }
             | Self::RepeatBelowOne { span }
             | Self::RepeatAboveMax { span }

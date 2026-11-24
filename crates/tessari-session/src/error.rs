@@ -1225,6 +1225,19 @@ pub enum Error {
         span: Span,
     },
 
+    /// A path enumeration above the ceiling: `ALL`/`K` enumerate the simple
+    /// paths the written `DEPTH` admits, and a search that wide refuses with
+    /// its bound named rather than running past it.
+    #[error(
+        "this path search enumerates more than {limit} paths — narrow it with a smaller `DEPTH` (at {span})"
+    )]
+    PathSearchTooWide {
+        /// The enumeration ceiling the search passed.
+        limit: u64,
+        /// Where the search was written.
+        span: tessari_ql::Span,
+    },
+
     /// `[*m..n]` over an edge table (ADR-0143): the segment is served by
     /// adjacency, the shape an edge table is not.
     #[error("a segment walks a declared edge kind, and {table} is an edge table (at {span})")]

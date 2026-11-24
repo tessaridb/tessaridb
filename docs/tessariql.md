@@ -2033,6 +2033,26 @@ when it is the end, nothing when no path fits within `DEPTH`. A `path` note says
 how many steps it took and what they cost: the steps again, or with `WEIGHT` the
 sum of that edge field along the way (from `0.22.0-beta`).
 
+**Every path of the minimum, or the best `k`.** `ALL` answers every path whose
+cost equals the minimum the search finds; `K n` answers the `n` best by the same
+rule the one path uses — cheapest, fewest steps, smallest sequence of record
+ids. Both take the written `DEPTH` as their bound and refuse by name below one
+(`K 0`), and together (`ALL K 3` — two answers to one question):
+
+```
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 ALL;
+SELECT * FROM place:1->road->place PATH TO place:9 DEPTH 6 WEIGHT km K 3;
+```
+
+With `ALL` or `K` the answer is **one row per path**, each row the array of the
+path's records in order, origin first, each path carrying its own `path` note —
+the one-path shape stays what it always was. The search enumerates the simple
+paths the written `DEPTH` admits and refuses at 4096 examined paths
+(`PathSearchTooWide`), naming the ceiling rather than running past it; a
+narrower `DEPTH` is the remedy it points at. A path through a record the
+reader's grants do not reach is not answered: a chain the caller cannot see is
+not a chain.
+
 **One path, by a rule.** The cheapest, then the fewest steps, then the one whose
 record ids, read in order, come first — so the same graph always answers the
 same path, whatever order the store reads it in.
