@@ -285,6 +285,17 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TypeOf
         | Function::StateOf
         | Function::StateFinish
+        | Function::UrlScheme
+        | Function::UrlHost
+        | Function::UrlPort
+        | Function::UrlPath
+        | Function::UrlQuery
+        | Function::UrlFragment
+        | Function::UrlDecode
+        | Function::UrlEncode
+        | Function::IpIsV4
+        | Function::IpIsV6
+        | Function::IpInRange
         | Function::TypeBool
         | Function::TypeInt
         | Function::TypeFloat

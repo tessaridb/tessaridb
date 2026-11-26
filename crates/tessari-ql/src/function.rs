@@ -292,6 +292,36 @@ pub enum Function {
     /// `string::edit_distance(a, b)` — the fewest single-character edits
     /// turning one text into the other, characters rather than bytes.
     StringEditDistance,
+    /// `url::scheme(url)` — the scheme of a URL, lowercased; `NONE` when the
+    /// text is not a URL.
+    UrlScheme,
+    /// `url::host(url)` — the host of a URL; `NONE` when the text is not a
+    /// URL or names no host.
+    UrlHost,
+    /// `url::port(url)` — the port a URL names, as an integer; `NONE` when it
+    /// names none.
+    UrlPort,
+    /// `url::path(url)` — the path of a URL, `''` when it names none.
+    UrlPath,
+    /// `url::query(url)` — the query of a URL without its `?`; `NONE` when it
+    /// names none.
+    UrlQuery,
+    /// `url::fragment(url)` — the fragment of a URL without its `#`; `NONE`
+    /// when it names none.
+    UrlFragment,
+    /// `url::decode(text)` — the text with its percent-escapes read; `NONE`
+    /// when an escape is not two hex digits.
+    UrlDecode,
+    /// `url::encode(text)` — the text with every byte outside the unreserved
+    /// set percent-escaped, uppercase hex.
+    UrlEncode,
+    /// `ip::is_v4(text)` — whether the text parses as an IPv4 address.
+    IpIsV4,
+    /// `ip::is_v6(text)` — whether the text parses as an IPv6 address.
+    IpIsV6,
+    /// `ip::in_range(ip, cidr)` — whether the address is inside the range;
+    /// refused when either side does not parse.
+    IpInRange,
     /// `array::compact(items)` — the elements that are present, `NONE`s gone.
     ArrayCompact,
     /// `array::count(items, value)` — how many elements equal the value.

@@ -92,6 +92,7 @@ mod topic;
 mod vault_surface;
 mod vector;
 mod view;
+mod web;
 
 pub use detached::Detached;
 pub use effect::{Effect, admits};

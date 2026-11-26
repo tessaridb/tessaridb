@@ -1,0 +1,107 @@
+# URLs and IP addresses as readings over strings (G102 C7 pack 2).
+#
+# The URL accessors split a text where RFC 3986 splits it and answer NONE for
+# a part the URL does not name — and for a text that is no URL at all, so a
+# read over a column of them never stops at the one row typed wrong. The
+# percent codec escapes exactly the unreserved set's complement, and the
+# range test is the one refusal: a range against an address nobody can parse
+# has no answer, only a mistake.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE web;
+USE NAMESPACE web;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: the scheme, lowercased
+RETURN url::scheme('HTTPS://Example.com:8443/a/b?x=1#top');
+--- expect: value 'https'
+
+--- case: the host, without the user and the port
+RETURN url::host('https://user@example.com:8443/a/b');
+--- expect: value 'example.com'
+
+--- case: a bracketed IPv6 literal keeps its colons
+RETURN url::host('http://[2001:db8::1]:80/x');
+--- expect: value '2001:db8::1'
+
+--- case: the port, as an integer
+RETURN url::port('https://example.com:8443/a');
+--- expect: value 8443
+
+--- case: no port named is NONE, not a default
+RETURN url::port('https://example.com/a');
+--- expect: value NONE
+
+--- case: the path
+RETURN url::path('https://example.com/a/b?x=1');
+--- expect: value '/a/b'
+
+--- case: the query, without its question mark
+RETURN url::query('https://example.com/a?x=1&y=2#top');
+--- expect: value 'x=1&y=2'
+
+--- case: the fragment, without its hash
+RETURN url::fragment('https://example.com/a#top');
+--- expect: value 'top'
+
+--- case: a text that is no URL answers NONE from every accessor
+RETURN url::scheme('not a url');
+--- expect: value NONE
+
+--- case: a port that is not digits makes the whole text no URL
+RETURN url::host('http://example.com:notaport/');
+--- expect: value NONE
+
+--- case: encode escapes exactly what the unreserved set excludes
+RETURN url::encode('a b/ü');
+--- expect: value 'a%20b%2F%C3%BC'
+
+--- case: decode reads the escapes back
+RETURN url::decode('a%20b%2F%C3%BC');
+--- expect: value 'a b/ü'
+
+--- case: a malformed escape decodes to NONE
+RETURN url::decode('100%');
+--- expect: value NONE
+
+--- case: an IPv4 address is one
+RETURN ip::is_v4('10.1.2.3');
+--- expect: value true
+
+--- case: an IPv6 address is not an IPv4 one
+RETURN ip::is_v4('2001:db8::1');
+--- expect: value false
+
+--- case: an IPv6 address is one
+RETURN ip::is_v6('2001:db8::1');
+--- expect: value true
+
+--- case: text that is no address is neither
+RETURN ip::is_v6('ten dot one');
+--- expect: value false
+
+--- case: an address inside its range
+RETURN ip::in_range('10.1.2.3', '10.0.0.0/8');
+--- expect: value true
+
+--- case: an address outside it
+RETURN ip::in_range('11.1.2.3', '10.0.0.0/8');
+--- expect: value false
+
+--- case: an IPv6 range holds its own family
+RETURN ip::in_range('2001:db8::1', '2001:db8::/32');
+--- expect: value true
+
+--- case: one family is never inside the other's range
+RETURN ip::in_range('2001:db8::1', '10.0.0.0/8');
+--- expect: value false
+
+--- case: a range test against text that is no address refuses
+RETURN ip::in_range('ten dot one', '10.0.0.0/8');
+--- expect: error WrongArgument
+
+--- case: a range that is no CIDR refuses
+RETURN ip::in_range('10.0.0.1', 'ten');
+--- expect: error WrongArgument

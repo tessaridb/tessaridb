@@ -104,6 +104,16 @@ impl Function {
             | Self::TypeOf
             | Self::StateOf
             | Self::StateFinish
+            | Self::UrlScheme
+            | Self::UrlHost
+            | Self::UrlPort
+            | Self::UrlPath
+            | Self::UrlQuery
+            | Self::UrlFragment
+            | Self::UrlDecode
+            | Self::UrlEncode
+            | Self::IpIsV4
+            | Self::IpIsV6
             | Self::TypeBool
             | Self::TypeInt
             | Self::TypeFloat
@@ -148,6 +158,7 @@ impl Function {
             | Self::MathHypot
             | Self::StringRepeat
             | Self::StringEditDistance
+            | Self::IpInRange
             | Self::ArrayCount
             | Self::ArrayRange
             | Self::SeriesDecomposeStl
@@ -369,6 +380,17 @@ impl Function {
             | Self::StringEditDistance
             | Self::ArrayCount
             | Self::ArrayRange
+            | Self::UrlScheme
+            | Self::UrlHost
+            | Self::UrlPort
+            | Self::UrlPath
+            | Self::UrlQuery
+            | Self::UrlFragment
+            | Self::UrlDecode
+            | Self::UrlEncode
+            | Self::IpIsV4
+            | Self::IpIsV6
+            | Self::IpInRange
             // Both answer from the value they are given: `state::of` is
             // answered by the grouping machinery from the accumulator, and
             // reaching the evaluator at all is its own refusal.

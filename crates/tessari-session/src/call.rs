@@ -459,6 +459,31 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             let second = text_at(function, arguments, 1, span)?;
             crate::text::edit_distance(function, first, second, span)
         }
+        Function::UrlScheme
+        | Function::UrlHost
+        | Function::UrlPort
+        | Function::UrlPath
+        | Function::UrlQuery
+        | Function::UrlFragment => {
+            crate::web::url_part(function, text_at(function, arguments, 0, span)?, span)
+        }
+        Function::UrlEncode => Ok(crate::web::encode(text_at(function, arguments, 0, span)?)),
+        Function::UrlDecode => Ok(crate::web::decode(text_at(function, arguments, 0, span)?)),
+        Function::IpIsV4 => Ok(Value::Bool(
+            text_at(function, arguments, 0, span)?
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok(),
+        )),
+        Function::IpIsV6 => Ok(Value::Bool(
+            text_at(function, arguments, 0, span)?
+                .parse::<std::net::Ipv6Addr>()
+                .is_ok(),
+        )),
+        Function::IpInRange => crate::web::in_range(
+            text_at(function, arguments, 0, span)?,
+            text_at(function, arguments, 1, span)?,
+            span,
+        ),
         Function::ArrayCompact => {
             let items = array_at(function, arguments, 0, span)?;
             Ok(Value::Array(

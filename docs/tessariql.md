@@ -6750,6 +6750,38 @@ a statement, since a `USE` is a statement of its own.
 | `rand::uuid7()` | a version-7 UUID — time-ordered, minted once per call |
 | `uuid::instant(id)` | the instant a version-7 identifier was minted at; `NONE` for any other version |
 
+### URLs and addresses, read as text
+
+A URL column needs its parts read far more often than it needs a type of its
+own: these are readings over the text, and a text that is no URL answers
+`NONE` from every one of them, so a read over a million rows does not stop at
+the one row somebody typed wrong.
+
+| Written | What it answers |
+|---|---|
+| `url::scheme(url)` | the scheme, lowercased; `NONE` when the text is no URL |
+| `url::host(url)` | the host — a bracketed IPv6 literal without its brackets; `NONE` when none is named |
+| `url::port(url)` | the port as an integer; `NONE` when none is named — never a guessed default |
+| `url::path(url)` | the path, `''` when none is named |
+| `url::query(url)` | the query without its `?`; `NONE` when none is named |
+| `url::fragment(url)` | the fragment without its `#`; `NONE` when none is named |
+| `url::encode(text)` | the text with every byte outside `A–Z a–z 0–9 - _ . ~` percent-escaped, uppercase hex |
+| `url::decode(text)` | the text with its percent-escapes read; `NONE` when an escape is malformed or spells no text |
+| `ip::is_v4(text)` | whether the text parses as an IPv4 address |
+| `ip::is_v6(text)` | whether the text parses as an IPv6 address |
+| `ip::in_range(ip, cidr)` | whether the address is inside the range, by mask; **refused** when either side does not parse, and `false` — not an error — when the families differ |
+
+```
+SELECT url::host(link) AS site, count(*) AS n FROM visits GROUP BY url::host(link);
+SELECT ip::in_range(client, '10.0.0.0/8') AS internal FROM requests;
+```
+
+The one refusal is the range test's: a range test against an address nobody
+can parse has no answer, only a mistake, so `ip::in_range` refuses
+(`WrongArgument`) where the accessors above answer `NONE`. The parser is an
+RFC 3986 subset — `scheme://[user@]host[:port] path ?query #fragment` — and
+the address parsing is the standard library's own, so neither is a dependency.
+
 The case it is for is a field that gives every record an identity of its own:
 
 ```

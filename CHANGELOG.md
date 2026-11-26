@@ -47,7 +47,12 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   unrestricted caller, and the view current at the read's snapshot. The answer carries an
   `answered-by-view` note and `EXPLAIN` names the view; anything the conditions do not cover
   reads the base table as before. Grouped reads over a materialized view, refused until now, run.
-- **1825 conformance cases** define the language and run in the build.
+- **URL and address readings.** `url::scheme` / `host` / `port` / `path` / `query` /
+  `fragment` split a URL where RFC 3986 splits it and answer `NONE` for a part it does not
+  name; `url::encode` / `decode` are the percent codec; `ip::is_v4` / `is_v6` are the
+  predicates and `ip::in_range(ip, cidr)` the one range test, refused on input that does
+  not parse.
+- **1849 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 
