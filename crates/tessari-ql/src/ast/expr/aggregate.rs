@@ -83,6 +83,12 @@ pub enum Aggregate {
     /// weights alone: how many samples there were, counting the old ones for
     /// less.
     DecayedCount,
+    /// `top_k(<expr>, <k>)` — the `k` most common present values with how
+    /// many records held each, most common first and ties in the value
+    /// system's order, as an array of `{ value, count }`. Exact, so it holds
+    /// every distinct value of its group like `count(DISTINCT …)` and refuses
+    /// past the same ceiling.
+    TopK,
     /// `collect(<expr>)` — every present value, in the order the records arrived.
     ///
     /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
@@ -158,6 +164,7 @@ impl Aggregate {
         Self::DecayedMean,
         Self::DecayedMax,
         Self::DecayedCount,
+        Self::TopK,
         Self::Collect,
         Self::ApproxDistinct,
         Self::ApproxQuantile,
@@ -187,6 +194,7 @@ impl Aggregate {
             Self::DecayedMean => "decayed_mean",
             Self::DecayedMax => "decayed_max",
             Self::DecayedCount => "decayed_count",
+            Self::TopK => "top_k",
             Self::Collect => "collect",
             Self::ApproxDistinct => "approx_distinct",
             Self::ApproxQuantile => "approx_quantile",
@@ -226,6 +234,7 @@ impl Aggregate {
             | Self::DecayedMean
             | Self::DecayedMax
             | Self::DecayedCount
+            | Self::TopK
             | Self::Collect
             | Self::CountDistinct => Retention::WholeGroup,
         }
@@ -282,6 +291,7 @@ impl Aggregate {
             | Self::DecayedMax
             | Self::DecayedCount => Some("`,` and the instant each value was observed at"),
             Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
+            Self::TopK => Some("`,` and how many of the most common values to answer"),
             _ => None,
         }
     }

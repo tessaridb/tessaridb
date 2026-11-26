@@ -5731,6 +5731,7 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 | `decayed_mean(<expr>, <instant>, <half_life>)` | the weighted mean — the weighted sum over the sum of the weights |
 | `decayed_max(<expr>, <instant>, <half_life>)` | the largest weighted value |
 | `decayed_count(<expr>, <instant>, <half_life>)` | the sum of the weights alone |
+| `top_k(<expr>, <k>)` | the `k` most common present values with their counts, most common first, as `[{ value, count }]` — exact, refusing past the same 1 000 000-distinct ceiling as `count(DISTINCT …)` |
 
 **The two `approx_` folds are the ones that say so.** They answer in bounded memory however many records they
 read, and every answer that used one carries a note:

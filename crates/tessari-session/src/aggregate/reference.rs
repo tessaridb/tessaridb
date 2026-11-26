@@ -38,6 +38,7 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         | Aggregate::DecayedMean
         | Aggregate::DecayedMax
         | Aggregate::DecayedCount
+        | Aggregate::TopK
         | Aggregate::ApproxDistinct
         | Aggregate::ApproxQuantile
         | Aggregate::CountDistinct => {

@@ -41,6 +41,7 @@ const EVERY: &[Aggregate] = &[
     Aggregate::DecayedMean,
     Aggregate::DecayedMax,
     Aggregate::DecayedCount,
+    Aggregate::TopK,
     Aggregate::Collect,
     Aggregate::ApproxDistinct,
     Aggregate::ApproxQuantile,

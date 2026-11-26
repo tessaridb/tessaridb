@@ -125,6 +125,7 @@ impl Accumulator {
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
+            Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => parts
                 .iter()
                 .map(|part| match part {

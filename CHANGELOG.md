@@ -34,7 +34,9 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   the unit conversions and the two constants; `string::` gains `repeat`, the two paddings and
   `edit_distance`; `array::` gains `compact`, `count` and `range`; `rand::uuid7()` mints a
   time-ordered identifier and `uuid::instant` reads the instant back out of one.
-- **1813 conformance cases** define the language and run in the build.
+- **`top_k(<expr>, <k>)`** — the `k` most common present values with their counts, exact, under
+  the same distinct ceiling as `count(DISTINCT …)`.
+- **1814 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 

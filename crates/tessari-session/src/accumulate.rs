@@ -190,6 +190,16 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// `top_k`'s counts and the `k` it answers at — exact, so bounded by the
+    /// same ceiling `count(DISTINCT …)` holds (ADR-0134 D8).
+    Common {
+        /// How many records held each value.
+        held: std::collections::BTreeMap<Value, u64>,
+        /// The `k`, once a record has offered it.
+        asked: Option<u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `approx_quantile`'s sketch and the rank it answers at (ADR-0122 C3).
     Quantile {
         /// The sketch so far.
@@ -265,6 +275,11 @@ impl Accumulator {
             },
             Aggregate::ApproxDistinct => Self::Distinct {
                 sketch: distinct::Distinct::default(),
+            },
+            Aggregate::TopK => Self::Common {
+                held: std::collections::BTreeMap::new(),
+                asked: None,
+                span,
             },
             Aggregate::ApproxQuantile => Self::Quantile {
                 sketch: quantile::Quantile::default(),
@@ -427,6 +442,27 @@ impl Accumulator {
                     sketch.offer(value);
                 }
             }
+            // Offered `[value, k]`: the k is the fold's second argument, read
+            // like the quantile's rank; a value that is absent is not counted.
+            Self::Common { held, asked, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(wanted)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_k(asked, wanted, *span)?;
+                if present(sample) {
+                    let entry = held.entry(sample.clone()).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    if held.len() > tessari_ql::COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: tessari_ql::COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                }
+            }
             // Offered `[value, rank]`: the rank is the fold's second argument.
             Self::Quantile { sketch, rank, span } => {
                 let Value::Array(pair) = value else {
@@ -553,6 +589,30 @@ impl Accumulator {
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
+            Self::Common { held, asked, span } => {
+                let Some(asked) = *asked else {
+                    return Err(failed("top_k", "a whole number of values to answer", *span));
+                };
+                let mut ranked: Vec<(&Value, u64)> =
+                    held.iter().map(|(value, many)| (value, *many)).collect();
+                ranked.sort_by(|(one_value, one), (other_value, other)| {
+                    other.cmp(one).then_with(|| one_value.cmp(other_value))
+                });
+                let answered: Vec<Value> = ranked
+                    .into_iter()
+                    .take(usize::try_from(asked).unwrap_or(usize::MAX))
+                    .map(|(value, many)| {
+                        let mut held = std::collections::BTreeMap::new();
+                        held.insert(
+                            "count".to_string(),
+                            Value::Number(Number::Integer(i64::try_from(many).unwrap_or(i64::MAX))),
+                        );
+                        held.insert("value".to_string(), value.clone());
+                        Value::Object(held)
+                    })
+                    .collect();
+                Ok(Value::Array(answered))
+            }
         }
     }
 
@@ -582,6 +642,7 @@ impl Accumulator {
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
+            Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
         }
     }
@@ -592,6 +653,32 @@ impl Accumulator {
 /// Once a float has arrived the float total answers, whatever follows, so the
 /// exact one is dropped rather than carried: converting each float to a decimal
 /// was most of what a `sum` over floats cost (ADR-0114, measured).
+/// The `k` a `top_k` answers at, read like the quantile's rank: a whole
+/// number, and the same one on every record — a `k` that differs between
+/// records is a question with two answers, refused rather than picked from.
+fn settle_k(held: &mut Option<u64>, asked: &Value, span: Span) -> Result<()> {
+    let Value::Number(number) = asked else {
+        return Err(failed("top_k", "a count that is not a number", span));
+    };
+    let Some(wanted) = number.as_exact_integer().filter(|wanted| *wanted >= 0) else {
+        return Err(failed("top_k", "a whole count of none or more", span));
+    };
+    let wanted =
+        u64::try_from(wanted).map_err(|_| failed("top_k", "a count past what fits", span))?;
+    match held {
+        Some(kept) if *kept != wanted => Err(failed(
+            "top_k",
+            "a count that differs between records",
+            span,
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *held = Some(wanted);
+            Ok(())
+        }
+    }
+}
+
 fn exact_unless_float(exact: &mut Running<Decimal>, number: &Number, saw_float: bool) {
     if saw_float {
         *exact = Err("a total a float answers instead");

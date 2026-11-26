@@ -118,3 +118,14 @@ RETURN uuid::instant(rand::uuid7()) != NONE;
 --- case: another version names none
 RETURN uuid::instant(rand::uuid());
 --- expect: value NONE
+
+--- case: the most common values with their counts
+DEFINE TABLE visits SCHEMALESS;
+CREATE visits = { page: 'a' };
+CREATE visits = { page: 'b' };
+CREATE visits = { page: 'a' };
+CREATE visits = { page: 'a' };
+CREATE visits = { page: 'b' };
+CREATE visits = { page: 'c' };
+RETURN (SELECT top_k(page, 2) AS held FROM visits)[0].held;
+--- expect: value [{ count: 3, value: 'a' }, { count: 2, value: 'b' }]

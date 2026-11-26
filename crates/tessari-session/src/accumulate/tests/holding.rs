@@ -486,3 +486,46 @@ fn reduced_third(fold: Aggregate, part: &[Value], third: i64) -> Accumulator {
     }
     accumulator
 }
+
+#[test]
+fn top_k_answers_the_most_common_values_with_their_counts() {
+    let offered = [
+        sample(integer(2), 1),
+        sample(integer(1), 2),
+        sample(integer(2), 3),
+        sample(integer(3), 4),
+        sample(integer(2), 5),
+        sample(integer(1), 6),
+    ];
+    // k = 2: value 2 held three times, value 1 twice; the tie-free order.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::TopK, span());
+    for value in &offered {
+        let Value::Array(pair) = value else {
+            panic!("a sample")
+        };
+        let Some(held) = pair.first() else {
+            panic!("a value")
+        };
+        accumulator
+            .offer(&Value::Array(vec![held.clone(), integer(2)]))
+            .unwrap();
+    }
+    let answered = accumulator.finish().unwrap();
+    let point = |value: Value, count: i64| {
+        let mut held = std::collections::BTreeMap::new();
+        held.insert("count".to_string(), integer(count));
+        held.insert("value".to_string(), value);
+        Value::Object(held)
+    };
+    assert_eq!(
+        answered,
+        Value::Array(vec![point(integer(2), 3), point(integer(1), 2)])
+    );
+    // A k that differs between records is refused, not picked from.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::TopK, span());
+    accumulator
+        .offer(&Value::Array(vec![integer(1), integer(2)]))
+        .unwrap();
+    let refused = accumulator.offer(&Value::Array(vec![integer(1), integer(3)]));
+    assert!(refused.is_err());
+}
