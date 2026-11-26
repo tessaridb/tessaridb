@@ -232,6 +232,10 @@ fn one_of_every_kind() -> Vec<Value> {
         Value::Set(BTreeSet::new()),
         Value::Geometry(Geometry::MultiPoint(Vec::new())),
         Value::Regex("a".to_owned()),
+        Value::FoldState(Box::new(tessari_types::FoldState {
+            fold: "sum".to_owned(),
+            state: Value::Number(Number::Integer(1)),
+        })),
     ];
     for sample in &samples {
         match sample {
@@ -251,7 +255,8 @@ fn one_of_every_kind() -> Vec<Value> {
             | Value::Range(_)
             | Value::Set(_)
             | Value::Geometry(_)
-            | Value::Regex(_) => {}
+            | Value::Regex(_)
+            | Value::FoldState(_) => {}
         }
     }
     samples
@@ -329,6 +334,7 @@ const PINNED: &[(u32, u64)] = &[
     (16, 0x8eea_97c3_9546_3794),
     (17, 0x4b39_79b2_b5ce_bd7f),
     (18, 0x3434_76de_4bd9_39fb),
+    (19, 0x806d_38a9_caab_7f24),
 ];
 
 /// FNV-1a over one line per unit — stable across builds and platforms, which

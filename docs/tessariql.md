@@ -5878,6 +5878,50 @@ rather than being broken by it: `array::len` counts one record's array and
 Only `count(` is a fold — a bare `count` is a route into the record, so a field
 named `count` stays readable.
 
+### A fold's state, kept and merged: `state::of`, `state::merge`, `state::finish`
+
+A fold's **state** is what its accumulator holds before the fold finishes —
+and it is a value (from `0.55.0`). A grouping projection can answer it instead
+of the finish, a `fold_state` field stores it, `state::merge` folds states of
+one fold into one state, and `state::finish` answers the fold's own answer out
+of a state:
+
+```tessariql
+DEFINE TABLE daily_totals SCHEMAFULL;
+DEFINE FIELD day ON daily_totals TYPE datetime;
+DEFINE FIELD part ON daily_totals TYPE fold_state;
+INSERT INTO daily_totals (day, part)
+    SELECT time::start_of_day(at) AS day, state::of(sum(amount)) AS part
+    FROM payments GROUP BY time::start_of_day(at);
+```
+
+The `INSERT … SELECT` stores each day's partial sum as a state rather than
+finishing it. Later — or on another node — the states merge and finish once:
+
+```tessariql
+SELECT day, state::finish(state::merge(part)) AS total
+    FROM daily_totals GROUP BY day;
+```
+
+**A state names its fold.** The value carries the fold's spelling beside what
+the accumulator holds, so merging a `count`'s state into a `sum`'s refuses
+(`StateFoldMismatch`) rather than mis-adding, and finishing a value that is
+not a state refuses (`StateExpected`). `state::of` stands only over a bare
+fold in a grouping projection — anywhere else it refuses (`StateOfWhat`).
+
+**The oracle is the direct fold.** A state finished is the fold over the same
+records, and halves merged are the whole — the same part-merge property the
+cluster's gathered folds rest on (ADR-0114), now writable by hand: a rollup
+table you declare yourself, a partial aggregate shipped between processes, a
+two-phase aggregation in three statements.
+
+**Which folds have a state.** Every fold whose merge is the same as offering
+the values one after another: `count`, `sum`, `mean`, `min`, `max`,
+`variance`, `stddev`, and the sketch folds. `state::merge` holds one
+accumulator however many states it is offered. A state that cannot travel
+exactly — an exact total already out of range with no float to decide the
+answer — refuses (`StateCannotTravel`) rather than answering inexactly.
+
 ### A value from the records around one: `OVER`
 
 A window function answers, for each record, something about the records beside

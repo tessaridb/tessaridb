@@ -209,6 +209,15 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// `state::merge`'s one accumulator: the states offered all name one fold,
+    /// and this is that fold's accumulator, merged into (G102 S11).
+    Merging {
+        /// The fold the first state named, and the accumulator merging its
+        /// states — `None` until one arrives.
+        held: Option<(String, Box<Accumulator>)>,
+        /// Where to point a refusal.
+        span: Span,
+    },
 }
 
 impl Accumulator {
@@ -286,6 +295,7 @@ impl Accumulator {
                 rank: None,
                 span,
             },
+            Aggregate::StateMerge => Self::Merging { held: None, span },
             Aggregate::Increase
             | Aggregate::Rate
             | Aggregate::Delta
@@ -481,6 +491,56 @@ impl Accumulator {
                     sketch.offer(held);
                 }
             }
+            // A state of one fold, merged into that fold's accumulator. The
+            // first state names the fold; a state of any other refuses rather
+            // than mis-adds, which is the whole reason the name travels.
+            Self::Merging { held, span } => {
+                if !present(value) {
+                    return Ok(());
+                }
+                let Value::FoldState(state) = value else {
+                    return Err(crate::error::Error::StateExpected {
+                        kind: value.type_name(),
+                        span: *span,
+                    });
+                };
+                match held {
+                    Some((fold, accumulator)) => {
+                        if *fold != state.fold {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                        if !accumulator.merge(&state.state)? {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                    }
+                    slot @ None => {
+                        let Some(fold) = tessari_ql::Aggregate::parse(&state.fold) else {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: state.fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        };
+                        let mut accumulator = Box::new(Accumulator::for_aggregate(fold, *span));
+                        if !accumulator.merge(&state.state)? {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: state.fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                        *slot = Some((state.fold.clone(), accumulator));
+                    }
+                }
+            }
         }
         Ok(())
     }
@@ -613,6 +673,27 @@ impl Accumulator {
                     .collect();
                 Ok(Value::Array(answered))
             }
+            // The merged state, named by its fold — finished by
+            // `state::finish`, or stored and merged again. A merge nothing was
+            // offered answers `NONE`, the absence every fold answers over
+            // nothing but `count` and `sum`.
+            Self::Merging { held, span } => match held {
+                None => Ok(Value::None),
+                Some((fold, accumulator)) => {
+                    let state =
+                        accumulator
+                            .state()
+                            .ok_or(crate::error::Error::StateCannotTravel {
+                                fold: tessari_ql::Aggregate::parse(fold)
+                                    .map_or("fold", tessari_ql::Aggregate::spelling),
+                                span: *span,
+                            })?;
+                    Ok(Value::FoldState(Box::new(tessari_types::FoldState {
+                        fold: fold.clone(),
+                        state,
+                    })))
+                }
+            },
         }
     }
 
@@ -644,6 +725,9 @@ impl Accumulator {
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
+            // One accumulator however many states merged into it — constant
+            // by the inner fold's own retention.
+            Self::Merging { .. } => 0,
         }
     }
 }

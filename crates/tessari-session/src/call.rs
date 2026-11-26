@@ -557,6 +557,46 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             };
             Ok(Value::from(value.type_name()))
         }
+        // The fold's own answer out of a stored state: the accumulator of the
+        // fold the state names, merged with it, finished. A value that is not
+        // a state, a fold this build does not know, and a state that does not
+        // fit its fold each refuse by name rather than answering a number
+        // that is nearly right.
+        Function::StateFinish => {
+            let Some(value) = arguments.first() else {
+                return Err(crate::error::Error::StateExpected {
+                    kind: "nothing",
+                    span,
+                });
+            };
+            let Value::FoldState(state) = value else {
+                return Err(crate::error::Error::StateExpected {
+                    kind: value.type_name(),
+                    span,
+                });
+            };
+            let Some(fold) = tessari_ql::Aggregate::parse(&state.fold) else {
+                return Err(crate::error::Error::StateFoldMismatch {
+                    merging: state.fold.clone(),
+                    held: state.fold.clone(),
+                    span,
+                });
+            };
+            let mut accumulator = crate::accumulate::Accumulator::for_aggregate(fold, span);
+            if !accumulator.merge(&state.state)? {
+                return Err(crate::error::Error::StateFoldMismatch {
+                    merging: state.fold.clone(),
+                    held: state.fold.clone(),
+                    span,
+                });
+            }
+            accumulator.finish()
+        }
+        // Answered by the grouping machinery from the accumulator; reaching
+        // this arm means the call stood somewhere with no accumulator to
+        // answer it — outside a grouping projection, or over something that
+        // is not a bare fold.
+        Function::StateOf => Err(crate::error::Error::StateOfWhat { span }),
         // A cast either produces the kind it names or refuses; `crate::cast`
         // holds the reading for each, and the reason it refuses rather than
         // answering `none`.

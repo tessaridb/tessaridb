@@ -59,6 +59,7 @@ const TAG_RANGE: u8 = 0x0e;
 const TAG_SET: u8 = 0x0f;
 const TAG_GEOMETRY: u8 = 0x10;
 const TAG_REGEX: u8 = 0x11;
+const TAG_FOLD_STATE: u8 = 0x12;
 
 /// Every index value tag and the type it names, for the format surface.
 pub(crate) const SURFACE: &[(u8, &str)] = &[
@@ -79,6 +80,7 @@ pub(crate) const SURFACE: &[(u8, &str)] = &[
     (TAG_SET, "set"),
     (TAG_GEOMETRY, "geometry"),
     (TAG_REGEX, "regex"),
+    (TAG_FOLD_STATE, "fold_state"),
 ];
 
 // Where a number sits before its magnitude is consulted. Ordered as bytes, so
@@ -237,6 +239,12 @@ pub(crate) fn put(writer: &mut KeyWriter, value: &Value) {
         Value::Regex(pattern) => {
             writer.put_u8(TAG_REGEX).put_variable(pattern.as_bytes());
         }
+        Value::FoldState(held) => {
+            writer
+                .put_u8(TAG_FOLD_STATE)
+                .put_variable(held.fold.as_bytes());
+            put(writer, &held.state);
+        }
     }
 }
 
@@ -289,6 +297,10 @@ pub(crate) fn skip(reader: &mut KeyReader<'_>) -> Result<()> {
         }
         TAG_GEOMETRY => skip_geometry(reader),
         TAG_REGEX => reader.take_variable().map(|_| ()),
+        TAG_FOLD_STATE => {
+            reader.take_variable()?;
+            skip(reader)
+        }
         other => Err(crate::error::Error::UnknownIndexTag {
             kind: reader.kind(),
             tag: other,

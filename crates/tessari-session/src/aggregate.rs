@@ -24,7 +24,7 @@ use crate::evaluate::Scope;
 use crate::session::Session;
 #[cfg(test)]
 pub(crate) use reference::fold;
-use walk::{children, folds_in, substituted};
+use walk::{children, folds_in, stated_in, substituted};
 
 /// Whether a projection folds many records into one.
 pub(crate) fn folds(wanted: &[Projected]) -> bool {
@@ -340,9 +340,17 @@ impl Session<'_> {
             let mut fields = BTreeMap::new();
             for (position, value) in wanted.iter().enumerate() {
                 let held = occurrences.get(position).map_or(&[][..], Vec::as_slice);
+                // Which of this projection's folds answer with their state
+                // rather than their finish — `state::of`'s marks, in the walk
+                // order the occurrences were collected in.
+                let mut stated = Vec::with_capacity(held.len());
+                stated_in(&value.value, false, &mut stated);
                 let mut computed = Vec::with_capacity(held.len());
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { .. } = &fold.kind else {
+                    let ExprKind::Fold {
+                        fold: named, span, ..
+                    } = &fold.kind
+                    else {
                         continue;
                     };
                     let Some(accumulator) =
@@ -350,7 +358,24 @@ impl Session<'_> {
                     else {
                         continue;
                     };
-                    computed.push(accumulator.finish()?);
+                    computed.push(if stated.get(which).copied().unwrap_or(false) {
+                        // The state, named by its fold so a merge elsewhere
+                        // refuses a stranger; a fold whose state cannot travel
+                        // exactly refuses rather than answering inexactly.
+                        let state =
+                            accumulator
+                                .state()
+                                .ok_or(crate::error::Error::StateCannotTravel {
+                                    fold: named.spelling(),
+                                    span: *span,
+                                })?;
+                        Value::FoldState(Box::new(tessari_types::FoldState {
+                            fold: named.spelling().to_owned(),
+                            state,
+                        }))
+                    } else {
+                        accumulator.finish()?
+                    });
                 }
                 let answer = if computed.is_empty() {
                     // No fold in this projection, so it is a group key — and a

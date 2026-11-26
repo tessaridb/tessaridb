@@ -27,6 +27,36 @@ impl Parser<'_> {
     /// `HAVING`.
     pub(crate) fn fold(&mut self) -> Result<Option<Expr>> {
         let start = self.span_here();
+        // `state::merge(` is a fold spelled like a function: the one fold
+        // whose values are states of other folds (G102 S11). Recognised by
+        // its three tokens, so a field called `state` stays readable
+        // everywhere a field can stand — `fold`'s own rule, one token wider.
+        // `MERGE` is a reserved word, so the name half matches the keyword
+        // or the identifier — a name's position admits both, `call`'s rule.
+        if self.peek_word("state")
+            && self.follows_with(1, &Token::Punct(Punct::ColonColon))
+            && (self.follows_with_word(2, "merge")
+                || self.follows_with(2, &Token::Keyword(crate::token::Keyword::Merge)))
+            && self.follows_with(3, &Token::Punct(Punct::ParenOpen))
+        {
+            self.advance();
+            self.advance();
+            self.advance();
+            self.advance();
+            let over = Some(Box::new(self.condition()?));
+            let end = self.expect_punct(Punct::ParenClose, "`)` after what is merged")?;
+            let span = start.to(end);
+            return Ok(Some(Expr {
+                kind: ExprKind::Fold {
+                    fold: Aggregate::StateMerge,
+                    over,
+                    at: None,
+                    ahead: None,
+                    span,
+                },
+                span,
+            }));
+        }
         let Some(Token::Ident(word)) = self.peek() else {
             return Ok(None);
         };

@@ -255,7 +255,13 @@ fn the_specification_calls_no_function_the_engine_does_not_have() {
             .get(name.len()..)
             .is_some_and(|rest| rest.starts_with('('));
         let spelling = format!("{group}::{name}");
-        if called && Function::ALL.iter().all(|f| f.spelling() != spelling) {
+        // A namespaced call is one of two things: a function, or the one fold
+        // spelled like one — `state::merge` — which the document may show
+        // being called exactly as it may show a function.
+        if called
+            && Function::ALL.iter().all(|f| f.spelling() != spelling)
+            && tessari_ql::Aggregate::parse(&spelling).is_none()
+        {
             invented.insert(spelling);
         }
     }

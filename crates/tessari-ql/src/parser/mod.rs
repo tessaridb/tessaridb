@@ -256,6 +256,18 @@ impl Parser<'_> {
             .is_some_and(|spanned| &spanned.token == token)
     }
 
+    /// Whether the token `offset` places ahead is this word, matched the way
+    /// [`Self::peek_word`] matches one — for a shape recognised several tokens
+    /// wide before anything is consumed.
+    fn follows_with_word(&self, offset: usize, word: &str) -> bool {
+        matches!(
+            self.tokens
+                .get(self.position.saturating_add(offset))
+                .map(|spanned| &spanned.token),
+            Some(Token::Ident(found)) if found.eq_ignore_ascii_case(word)
+        )
+    }
+
     /// Consume a **contextual** word: one that shapes a clause without being
     /// reserved.
     ///

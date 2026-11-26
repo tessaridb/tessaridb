@@ -77,6 +77,8 @@ pub enum FieldKind {
     Geometry,
     /// A pattern, held rather than executed.
     Regex,
+    /// A fold's state, mergeable with states of the same fold (G102 S11).
+    FoldState,
     /// One of a fixed set of strings, and nothing else.
     ///
     /// The one kind that is not a type of the value system but a **subset** of
@@ -153,6 +155,7 @@ const ALL: &[FieldKind] = &[
     FieldKind::Set,
     FieldKind::Geometry,
     FieldKind::Regex,
+    FieldKind::FoldState,
 ];
 
 impl FieldKind {
@@ -202,6 +205,7 @@ impl FieldKind {
             Self::Set => "set",
             Self::Geometry => "geometry",
             Self::Regex => "regex",
+            Self::FoldState => "fold_state",
             // Unreachable: `name` answers these itself. Named rather than
             // wildcarded so a third parameterised kind fails to compile here
             // instead of silently spelling itself as its own placeholder.
@@ -309,6 +313,7 @@ impl FieldKind {
             Self::Set => matches!(value, Value::Set(_)),
             Self::Geometry => matches!(value, Value::Geometry(_)),
             Self::Regex => matches!(value, Value::Regex(_)),
+            Self::FoldState => matches!(value, Value::FoldState(_)),
             // A subset of `string`, so it refuses on two counts: a value that is
             // not text at all, and text that is not one of the named members.
             Self::Literal(members) => {

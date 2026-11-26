@@ -36,7 +36,18 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   time-ordered identifier and `uuid::instant` reads the instant back out of one.
 - **`top_k(<expr>, <k>)`** — the `k` most common present values with their counts, exact, under
   the same distinct ceiling as `count(DISTINCT …)`.
-- **1814 conformance cases** define the language and run in the build.
+- **Fold states.** `state::of(<fold>)` answers a group's state instead of its finish, a
+  `fold_state` field stores it, `state::merge` folds states of one fold into one state and
+  `state::finish` answers the fold's own answer out of a state — a state names its fold, so a
+  merge of another fold's state refuses rather than mis-adds. Store format 19; `TYPE fold_state`
+  on an older store is refused until `ALTER STORE FINALIZE FORMAT`.
+- **Grouped reads answered from kept views.** A grouped read over a table a grouped materialized
+  view covers is folded from the view's stored rows when the rewrite is provably sound — subset
+  grouping, the four distributive folds, the view's condition implied conjunct for conjunct, an
+  unrestricted caller, and the view current at the read's snapshot. The answer carries an
+  `answered-by-view` note and `EXPLAIN` names the view; anything the conditions do not cover
+  reads the base table as before. Grouped reads over a materialized view, refused until now, run.
+- **1825 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 

@@ -283,6 +283,8 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::CryptoSha512
         | Function::TimeBucket
         | Function::TypeOf
+        | Function::StateOf
+        | Function::StateFinish
         | Function::TypeBool
         | Function::TypeInt
         | Function::TypeFloat

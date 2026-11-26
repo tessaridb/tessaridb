@@ -85,6 +85,8 @@ impl Function {
         DurationFromSecs => "duration::from_secs",
         RandUuid => "rand::uuid",
         TypeOf => "type::of",
+        StateOf => "state::of",
+        StateFinish => "state::finish",
         TypeBool => "type::bool",
         TypeInt => "type::int",
         TypeFloat => "type::float",

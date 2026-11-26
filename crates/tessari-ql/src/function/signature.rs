@@ -102,6 +102,8 @@ impl Function {
             | Self::TimeFromUnix
             | Self::DurationFromSecs
             | Self::TypeOf
+            | Self::StateOf
+            | Self::StateFinish
             | Self::TypeBool
             | Self::TypeInt
             | Self::TypeFloat
@@ -366,7 +368,12 @@ impl Function {
             | Self::StringPadRight
             | Self::StringEditDistance
             | Self::ArrayCount
-            | Self::ArrayRange => Purity::Pure,
+            | Self::ArrayRange
+            // Both answer from the value they are given: `state::of` is
+            // answered by the grouping machinery from the accumulator, and
+            // reaching the evaluator at all is its own refusal.
+            | Self::StateOf
+            | Self::StateFinish => Purity::Pure,
         }
     }
 }

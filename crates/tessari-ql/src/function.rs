@@ -198,6 +198,12 @@ pub enum Function {
     RandUuid,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
+    /// `state::of(<fold>)` — the group's STATE instead of the fold's finish
+    /// (G102 S11). Legal only over a bare fold in a grouping projection; the
+    /// grouping machinery answers it, and any other position refuses.
+    StateOf,
+    /// `state::finish(state)` — the fold's own answer out of a stored state.
+    StateFinish,
     /// `type::bool(value)` — the value as a boolean, or a refusal.
     TypeBool,
     /// `type::int(value)` — the value as an integer, or a refusal.

@@ -46,7 +46,19 @@ const EVERY: &[Aggregate] = &[
     Aggregate::ApproxDistinct,
     Aggregate::ApproxQuantile,
     Aggregate::CountDistinct,
+    Aggregate::StateMerge,
 ];
+
+/// One state a merge can be offered — a real `sum`'s, taken from a real
+/// accumulator so the fixture cannot drift from the shape the merge reads.
+fn a_sum_state() -> Value {
+    let mut sum = Accumulator::for_aggregate(Aggregate::Sum, span());
+    sum.offer(&integer(1)).unwrap();
+    Value::FoldState(Box::new(tessari_types::FoldState {
+        fold: "sum".to_owned(),
+        state: sum.state().unwrap(),
+    }))
+}
 
 /// A number as a value, spelled once.
 fn integer(held: i64) -> Value {

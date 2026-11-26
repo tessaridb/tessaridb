@@ -437,6 +437,16 @@ impl Session<'_> {
                     ),
                     None => None,
                 };
+                // A fold state's value tag is one a build below format 19
+                // refuses as unknown (G102 S11), for the reason the
+                // containment gate states.
+                if matches!(kind, tessari_types::FieldKind::FoldState) {
+                    self.refuse_a_format_the_store_does_not_hold(
+                        "a fold_state field",
+                        tessari_encoding::FormatVersion::FOLD_STATES,
+                    )
+                    .await?;
+                }
                 let added = self
                     .add_field(
                         transaction,

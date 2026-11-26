@@ -856,6 +856,51 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+    /// `state::merge` was offered a state of a fold other than the one its
+    /// group is merging, or a state this build cannot read (G102 S11).
+    ///
+    /// Refused rather than mis-added: a `count`'s state is an integer and a
+    /// `sum`'s is an array, and merging one into the other would answer a
+    /// number that is neither.
+    #[error(
+        "a state of `{held}` cannot merge into a `{merging}` (at {span}) — only states of one fold merge"
+    )]
+    StateFoldMismatch {
+        /// The fold the merge is of.
+        merging: String,
+        /// The fold the offered state belongs to.
+        held: String,
+        /// Where the merge stands.
+        span: Span,
+    },
+    /// `state::finish` was given a value that is not a fold state.
+    #[error("state::finish answers a fold state and was given {kind} (at {span})")]
+    StateExpected {
+        /// What it was given, by type name.
+        kind: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+    /// `state::of` stood anywhere but over a bare fold in a grouping
+    /// projection — the one position whose accumulator it can answer.
+    #[error(
+        "state::of answers the state of a fold, written `state::of(<fold>)` in a grouping read (at {span})"
+    )]
+    StateOfWhat {
+        /// Where it was written.
+        span: Span,
+    },
+    /// A fold's state could not be taken exactly — its exact total had
+    /// already failed with no float to decide the answer (ADR-0114).
+    #[error(
+        "the {fold} of this group cannot be stated exactly (at {span}) — its exact total is outside the representable range"
+    )]
+    StateCannotTravel {
+        /// The fold whose state was asked for.
+        fold: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
     /// A materialized view's read depends on something its source table's
     /// changes do not cover (ADR-0109 D4).
     ///

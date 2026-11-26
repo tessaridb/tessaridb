@@ -148,6 +148,10 @@ impl Error {
             | Self::VersionInsideTransaction { .. }
             | Self::UnclosedTransaction { .. }
             | Self::ViewIsNotATable { .. }
+            | Self::StateFoldMismatch { .. }
+            | Self::StateExpected { .. }
+            | Self::StateOfWhat { .. }
+            | Self::StateCannotTravel { .. }
             | Self::MaterializedShape { .. }
             | Self::MaterializedFromHidden { .. }
             | Self::ViewsTooDeep { .. }

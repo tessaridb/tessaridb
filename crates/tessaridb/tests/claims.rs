@@ -135,7 +135,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 34] = [
+const CROSS_CUTTING: [&str; 35] = [
     // A fused order combines the orders of several engines — full-text, vector,
     // geographic — by rank, and is the work of none of them: filing it under one
     // would make that engine look like the owner of the other two's answers.
@@ -187,6 +187,10 @@ const CROSS_CUTTING: [&str; 34] = [
     "cursor",
     "conditionals",
     "consumers",
+    // A fold's state travels beside the folds themselves: stated in one read,
+    // stored in any table, merged and finished in another — the work of no one
+    // engine, like the folds it states.
+    "fold_states",
     // A fold reduces records to an answer and does not care where the records
     // came from: `median(price)` reads the same over a scan, an index read and a
     // walk. What the two collecting folds *do* belong to is the memory ceiling,

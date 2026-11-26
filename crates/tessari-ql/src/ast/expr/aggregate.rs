@@ -114,6 +114,14 @@ pub enum Aggregate {
     /// [`COUNT_DISTINCT_MOST`] distinct values is refused rather than grown
     /// without bound; `approx_distinct` is the fold whose space does not grow.
     CountDistinct,
+    /// `state::merge(<expr>)` — the states of one fold, merged into one state
+    /// (G102 S11).
+    ///
+    /// The one fold whose values are themselves fold states: each must be a
+    /// `fold_state` of the same fold, and the answer is a `fold_state` again —
+    /// finishing it is `state::finish`'s job. A state of another fold is
+    /// refused rather than mis-added.
+    StateMerge,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -169,6 +177,7 @@ impl Aggregate {
         Self::ApproxDistinct,
         Self::ApproxQuantile,
         Self::CountDistinct,
+        Self::StateMerge,
     ];
 
     /// How the fold is written.
@@ -201,6 +210,9 @@ impl Aggregate {
             // Written `count(DISTINCT x)`; this spelling names it in messages and
             // cannot be read as a word, so `count` stays the plain count.
             Self::CountDistinct => "count distinct",
+            // Namespaced like a function; the parser recognises the three
+            // tokens rather than one word.
+            Self::StateMerge => "state::merge",
         }
     }
 
@@ -222,6 +234,7 @@ impl Aggregate {
             | Self::Stddev
             | Self::ApproxDistinct
             | Self::ApproxQuantile => Retention::Constant,
+            Self::StateMerge => Retention::Constant,
             Self::Median
             | Self::Increase
             | Self::Rate

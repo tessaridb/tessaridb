@@ -177,6 +177,26 @@ pub enum Value {
     /// rather than an implied one. Saying so is the difference between a type
     /// that is honest about its scope and a type that looks like a feature.
     Regex(String),
+    /// A fold's state: what an accumulator holds, named by the fold that
+    /// reached it, so it can be stored, shipped and merged elsewhere and
+    /// finished there (G102 S11).
+    ///
+    /// The fold's spelling travels with the state because a state alone is
+    /// just a value — a `count`'s state is an integer and a `sum`'s is an
+    /// array — and merging one fold's state into another's must refuse rather
+    /// than mis-add. Boxed for `Range`'s reason: a state holds values.
+    FoldState(Box<FoldState>),
+}
+
+/// A fold's state and the fold that reached it.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct FoldState {
+    /// The fold's spelling, as `Aggregate::spelling` writes it — carried as
+    /// text because this crate sits below the language and cannot name its
+    /// enum; the session resolves it back and refuses one it does not know.
+    pub fold: String,
+    /// What the accumulator holds, in the part-merge encoding (ADR-0114).
+    pub state: Value,
 }
 
 /// Where each type sits when values of different types are compared.
@@ -207,6 +227,7 @@ enum Rank {
     // type, so moving one reorders every index holding a mixed column.
     Geometry,
     Regex,
+    FoldState,
 }
 
 impl Value {
@@ -230,6 +251,7 @@ impl Value {
             Self::Set(_) => Rank::Set,
             Self::Geometry(_) => Rank::Geometry,
             Self::Regex(_) => Rank::Regex,
+            Self::FoldState(_) => Rank::FoldState,
         }
     }
 
@@ -254,6 +276,7 @@ impl Value {
             Self::Set(_) => "set",
             Self::Geometry(_) => "geometry",
             Self::Regex(_) => "regex",
+            Self::FoldState(_) => "fold_state",
         }
     }
 
@@ -299,6 +322,10 @@ impl Ord for Value {
             // does nothing — silently, which is why the arms are not optional.
             (Self::Geometry(left), Self::Geometry(right)) => left.cmp(right),
             (Self::Regex(left), Self::Regex(right)) => left.cmp(right),
+            (Self::FoldState(left), Self::FoldState(right)) => left
+                .fold
+                .cmp(&right.fold)
+                .then_with(|| left.state.cmp(&right.state)),
             // Equal ranks and no pair above means both sides are one of the two
             // types that carry no payload, and those have one value each.
             _ => core::cmp::Ordering::Equal,
@@ -366,6 +393,7 @@ impl fmt::Display for Value {
             // The pattern is shown, and quoted so it is legible as data rather
             // than mistaken for something this store is about to run.
             Self::Regex(pattern) => write!(f, "regex:{pattern:?}"),
+            Self::FoldState(held) => write!(f, "<{} state>", held.fold),
         }
     }
 }

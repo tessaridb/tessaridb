@@ -121,7 +121,8 @@ impl Accumulator {
             | Self::Spread { .. }
             | Self::Extreme { .. }
             | Self::Distinct { .. }
-            | Self::Quantile { .. } => 0,
+            | Self::Quantile { .. }
+            | Self::Merging { .. } => 0,
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
