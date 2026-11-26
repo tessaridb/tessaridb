@@ -1,0 +1,120 @@
+# The breadth pack: further math, text, array and identifier readings.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE breadth;
+USE NAMESPACE breadth;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: the base-two logarithm
+RETURN math::log2(8);
+--- expect: value 3
+
+--- case: the base-ten logarithm, and none at zero
+RETURN math::log10(1000);
+--- expect: value 3
+
+--- case: none where the logarithm has no domain
+RETURN math::log10(0);
+--- expect: value NONE
+
+--- case: two to the power
+RETURN math::exp2(10);
+--- expect: value 1024
+
+--- case: the cube root, negative for a negative
+RETURN math::cbrt(-27);
+--- expect: value -3
+
+--- case: the sine of zero
+RETURN math::sin(0);
+--- expect: value 0
+
+--- case: the cosine of zero
+RETURN math::cos(0);
+--- expect: value 1
+
+--- case: the tangent of zero
+RETURN math::tan(0);
+--- expect: value 0
+
+--- case: the arcsine of one
+RETURN math::asin(1);
+--- expect: ok
+
+--- case: none outside the arcsine's domain
+RETURN math::asin(2);
+--- expect: value NONE
+
+--- case: the arccosine of one
+RETURN math::acos(1);
+--- expect: value 0
+
+--- case: the arctangent of zero
+RETURN math::atan(0);
+--- expect: value 0
+
+--- case: the angle of a point in the first quadrant
+RETURN math::atan2(1, 1);
+--- expect: ok
+
+--- case: the hypotenuse of three and four
+RETURN math::hypot(3, 4);
+--- expect: value 5
+
+--- case: radians as degrees
+RETURN math::degrees(math::pi());
+--- expect: value 180
+
+--- case: degrees as radians
+RETURN math::radians(180);
+--- expect: ok
+
+--- case: e as a float
+RETURN math::e() > 2.7;
+--- expect: value true
+
+--- case: a repetition
+RETURN string::repeat('ab', 3);
+--- expect: value 'ababab'
+
+--- case: a padding on the left
+RETURN string::pad_left('7', 3, '0');
+--- expect: value '007'
+
+--- case: a padding on the right
+RETURN string::pad_right('7', 3, '.');
+--- expect: value '7..'
+
+--- case: a fill that is not one character is refused
+RETURN string::pad_left('7', 3, 'ab');
+--- expect: error CallFailed
+
+--- case: the distance between two words
+RETURN string::edit_distance('kitten', 'sitting');
+--- expect: value 3
+
+--- case: the compacting drops the absences
+RETURN array::compact([1, NONE, 2]);
+--- expect: value [1, 2]
+
+--- case: how many elements equal a value
+RETURN array::count([1, 1, 2], 1);
+--- expect: value 2
+
+--- case: the integers a range holds, its end not included
+RETURN array::range(2, 6);
+--- expect: value [2, 3, 4, 5]
+
+--- case: an empty range is an empty array
+RETURN array::range(5, 5);
+--- expect: value []
+
+--- case: a version-seven identifier names its instant
+RETURN uuid::instant(rand::uuid7()) != NONE;
+--- expect: value true
+
+--- case: another version names none
+RETURN uuid::instant(rand::uuid());
+--- expect: value NONE

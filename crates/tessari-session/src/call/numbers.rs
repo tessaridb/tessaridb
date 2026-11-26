@@ -184,3 +184,68 @@ pub(crate) fn square_root(function: Function, arguments: &[Value], span: Span) -
     }
     Ok(Value::Number(Number::float(held.sqrt())))
 }
+
+/// The one-argument float readings — logarithms, roots, the trigonometry and
+/// the two unit conversions — each `NONE` where its domain ends, the rule
+/// `math::ln` set, and each a float whatever it was given, the rule
+/// `math::sqrt` set.
+pub(crate) fn float_reading(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let number = number_at(function, arguments, 0, span)?;
+    let Some(held) = number.as_float() else {
+        return Err(Error::CallFailed {
+            function,
+            reason: "that number is outside the range a float holds",
+            span,
+        });
+    };
+    let answer = match function {
+        Function::MathLog2 if held > 0.0 => held.log2(),
+        Function::MathLog10 if held > 0.0 => held.log10(),
+        Function::MathLog2 | Function::MathLog10 => return Ok(Value::None),
+        Function::MathExp2 => held.exp2(),
+        Function::MathCbrt => held.cbrt(),
+        Function::MathSin => held.sin(),
+        Function::MathCos => held.cos(),
+        Function::MathTan => held.tan(),
+        Function::MathAsin if (-1.0..=1.0).contains(&held) => held.asin(),
+        Function::MathAcos if (-1.0..=1.0).contains(&held) => held.acos(),
+        Function::MathAsin | Function::MathAcos => return Ok(Value::None),
+        Function::MathAtan => held.atan(),
+        Function::MathDegrees => held.to_degrees(),
+        Function::MathRadians => held.to_radians(),
+        _ => {
+            return Err(Error::CallFailed {
+                function,
+                reason: "that call takes two numbers or none",
+                span,
+            });
+        }
+    };
+    if answer.is_finite() {
+        Ok(Value::Number(Number::float(answer)))
+    } else {
+        Ok(Value::None)
+    }
+}
+
+/// The two-argument float readings: `math::atan2` and `math::hypot`.
+pub(crate) fn float_pair(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let first = number_at(function, arguments, 0, span)?;
+    let second = number_at(function, arguments, 1, span)?;
+    let (Some(first), Some(second)) = (first.as_float(), second.as_float()) else {
+        return Err(Error::CallFailed {
+            function,
+            reason: "that number is outside the range a float holds",
+            span,
+        });
+    };
+    let answer = match function {
+        Function::MathAtan2 => first.atan2(second),
+        _ => first.hypot(second),
+    };
+    if answer.is_finite() {
+        Ok(Value::Number(Number::float(answer)))
+    } else {
+        Ok(Value::None)
+    }
+}

@@ -41,6 +41,9 @@ impl Function {
         match self {
             Self::TimeNow
             | Self::RandUuid
+            | Self::RandUuid7
+            | Self::MathPi
+            | Self::MathE
             | Self::SearchRanks
             | Self::SearchTable
             | Self::SearchSnippet
@@ -79,6 +82,20 @@ impl Function {
             | Self::TimeStartOfMonth
             | Self::TimeStartOfQuarter
             | Self::TimeStartOfYear
+            | Self::MathLog2
+            | Self::MathLog10
+            | Self::MathExp2
+            | Self::MathCbrt
+            | Self::MathSin
+            | Self::MathCos
+            | Self::MathTan
+            | Self::MathAsin
+            | Self::MathAcos
+            | Self::MathAtan
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::UuidInstant
+            | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
             | Self::TimeUnix
@@ -125,6 +142,12 @@ impl Function {
             | Self::SearchScore
             | Self::SearchExplain
             | Self::TimeBucket
+            | Self::MathAtan2
+            | Self::MathHypot
+            | Self::StringRepeat
+            | Self::StringEditDistance
+            | Self::ArrayCount
+            | Self::ArrayRange
             | Self::SeriesDecomposeStl
             | Self::GeoIntersects
             | Self::GeoDisjoint
@@ -159,6 +182,8 @@ impl Function {
             Self::ArraySlice
             | Self::StringSlice
             | Self::StringLines
+            | Self::StringPadLeft
+            | Self::StringPadRight
             | Self::StringReplace
             | Self::ScoresRange
             | Self::ScoresBetween => 3,
@@ -192,7 +217,7 @@ impl Function {
             // The one function the fold may not touch. Reading no record makes
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.
-            Self::RandUuid => Purity::PerCall,
+            Self::RandUuid | Self::RandUuid7 => Purity::PerCall,
             // A record's ranks are the fusion's, not a function of anything the
             // call is given: folded above the records it would answer one row's
             // ranks for every row.
@@ -244,6 +269,20 @@ impl Function {
             | Self::TimeStartOfMonth
             | Self::TimeStartOfQuarter
             | Self::TimeStartOfYear
+            | Self::MathLog2
+            | Self::MathLog10
+            | Self::MathExp2
+            | Self::MathCbrt
+            | Self::MathSin
+            | Self::MathCos
+            | Self::MathTan
+            | Self::MathAsin
+            | Self::MathAcos
+            | Self::MathAtan
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::UuidInstant
+            | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
             | Self::SeriesDecomposeStl
@@ -317,7 +356,17 @@ impl Function {
             | Self::ScoresBetween
             | Self::ScoresUnion
             | Self::ScoresIntersect
-            | Self::CryptoSha512 => Purity::Pure,
+            | Self::CryptoSha512
+            | Self::MathAtan2
+            | Self::MathHypot
+            | Self::MathPi
+            | Self::MathE
+            | Self::StringRepeat
+            | Self::StringPadLeft
+            | Self::StringPadRight
+            | Self::StringEditDistance
+            | Self::ArrayCount
+            | Self::ArrayRange => Purity::Pure,
         }
     }
 }

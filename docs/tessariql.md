@@ -6493,6 +6493,9 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::flatten(items)` | one level of nesting removed |
 | `array::join(items, sep)` | the elements as one text |
 | `array::slice(items, start, count)` | a run of elements |
+| `array::compact(items)` | the elements that are present, `NONE`s gone |
+| `array::count(items, value)` | how many elements equal the value |
+| `array::range(start, end)` | the integers from `start` up to `end`, `end` not included |
 | `series::outliers_tukey(values)` | the indices outside the Tukey fences, 1.5 interquartile ranges past either quartile |
 | `series::period_detect(values)` | the dominant period in samples, read off the strongest Fourier component |
 | `series::decompose_stl(values, period)` | `{ trend, seasonal, residual }` — classical seasonal decomposition |
@@ -6501,7 +6504,17 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `string::slice(text, start, count)` | a run of characters |
 | `string::lines(text, start, count)` | a run of lines |
 | `string::replace(text, from, to)` | every occurrence replaced |
+| `string::repeat(text, n)` | the text `n` times |
+| `string::pad_left(text, n, fill)` · `string::pad_right(text, n, fill)` | brought to `n` characters with a one-character fill |
+| `string::edit_distance(a, b)` | the fewest single-character edits between them, characters not bytes |
 | `math::sqrt(n)` · `math::pow(base, exp)` | a root and a power |
+| `math::log2(n)` · `math::log10(n)` | the base-2 and base-10 logarithms, `NONE` at zero or below |
+| `math::exp2(n)` · `math::cbrt(n)` | two to the power; the cube root, negative for a negative |
+| `math::sin(n)` · `math::cos(n)` · `math::tan(n)` | the angle in radians |
+| `math::asin(n)` · `math::acos(n)` · `math::atan(n)` | the inverse readings, `NONE` outside −1 to 1 for the first two |
+| `math::atan2(y, x)` · `math::hypot(a, b)` | the angle in its quadrant; the hypotenuse without the overflow |
+| `math::degrees(r)` · `math::radians(d)` | between the two angle units |
+| `math::pi()` · `math::e()` | the two constants, as floats |
 
 **Of two candidate behaviours, the one the other can be written from wins.**
 That single rule settles most of the questions above, and it is why several
@@ -6689,6 +6702,8 @@ a statement, since a `USE` is a statement of its own.
 | Written | What it answers |
 |---|---|
 | `rand::uuid()` | a version-4 UUID that has never been answered before |
+| `rand::uuid7()` | a version-7 UUID — time-ordered, minted once per call |
+| `uuid::instant(id)` | the instant a version-7 identifier was minted at; `NONE` for any other version |
 
 The case it is for is a field that gives every record an identity of its own:
 

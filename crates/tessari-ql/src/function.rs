@@ -242,6 +242,63 @@ pub enum Function {
     SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
+    /// `math::log2(number)` — the base-2 logarithm, `NONE` at zero or below.
+    MathLog2,
+    /// `math::log10(number)` — the base-10 logarithm, `NONE` at zero or below.
+    MathLog10,
+    /// `math::exp2(number)` — two to the power.
+    MathExp2,
+    /// `math::cbrt(number)` — the cube root, negative for a negative.
+    MathCbrt,
+    /// `math::sin(number)`, `math::cos(number)`, `math::tan(number)` — the
+    /// angle in radians.
+    MathSin,
+    /// See [`Function::MathSin`].
+    MathCos,
+    /// See [`Function::MathSin`].
+    MathTan,
+    /// `math::asin(number)`, `math::acos(number)` — `NONE` outside −1 to 1.
+    MathAsin,
+    /// See [`Function::MathAsin`].
+    MathAcos,
+    /// `math::atan(number)` — the angle whose tangent this is.
+    MathAtan,
+    /// `math::atan2(y, x)` — the angle of the point, in the right quadrant.
+    MathAtan2,
+    /// `math::hypot(a, b)` — the hypotenuse, without the overflow a square
+    /// and a root would risk.
+    MathHypot,
+    /// `math::degrees(radians)` — radians as degrees.
+    MathDegrees,
+    /// `math::radians(degrees)` — degrees as radians.
+    MathRadians,
+    /// `math::pi()` — π as a float.
+    MathPi,
+    /// `math::e()` — e as a float.
+    MathE,
+    /// `string::repeat(text, n)` — the text `n` times.
+    StringRepeat,
+    /// `string::pad_left(text, n, fill)` — the text brought to `n` characters
+    /// with `fill` on the left; a fill that is not one character is refused.
+    StringPadLeft,
+    /// `string::pad_right(text, n, fill)` — the same on the right.
+    StringPadRight,
+    /// `string::edit_distance(a, b)` — the fewest single-character edits
+    /// turning one text into the other, characters rather than bytes.
+    StringEditDistance,
+    /// `array::compact(items)` — the elements that are present, `NONE`s gone.
+    ArrayCompact,
+    /// `array::count(items, value)` — how many elements equal the value.
+    ArrayCount,
+    /// `array::range(start, end)` — the integers from `start` up to `end`,
+    /// `end` not included; an empty range is `[]`.
+    ArrayRange,
+    /// `rand::uuid7()` — a fresh version-7 identifier: time-ordered, once
+    /// per call.
+    RandUuid7,
+    /// `uuid::instant(id)` — the instant a version-7 identifier was minted
+    /// at, to the millisecond; `NONE` for any other version.
+    UuidInstant,
     /// `series::outliers_tukey(values)` — the indices whose numbers fall
     /// outside the Tukey fences, 1.5 interquartile ranges past either
     /// quartile.

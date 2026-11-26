@@ -421,6 +421,100 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.
+        Function::MathLog2
+        | Function::MathLog10
+        | Function::MathExp2
+        | Function::MathCbrt
+        | Function::MathSin
+        | Function::MathCos
+        | Function::MathTan
+        | Function::MathAsin
+        | Function::MathAcos
+        | Function::MathAtan
+        | Function::MathDegrees
+        | Function::MathRadians => numbers::float_reading(function, arguments, span),
+        Function::MathAtan2 | Function::MathHypot => numbers::float_pair(function, arguments, span),
+        Function::MathPi => Ok(Value::Number(Number::float(std::f64::consts::PI))),
+        Function::MathE => Ok(Value::Number(Number::float(std::f64::consts::E))),
+        Function::StringRepeat => {
+            let text = text_at(function, arguments, 0, span)?;
+            let count = whole(function, arguments, 1, span)?;
+            crate::text::repeat(function, text, count, span)
+        }
+        Function::StringPadLeft | Function::StringPadRight => {
+            let text = text_at(function, arguments, 0, span)?;
+            let width = whole(function, arguments, 1, span)?;
+            let fill = text_at(function, arguments, 2, span)?;
+            crate::text::pad(
+                function,
+                text,
+                width,
+                fill,
+                span,
+                function == Function::StringPadLeft,
+            )
+        }
+        Function::StringEditDistance => {
+            let first = text_at(function, arguments, 0, span)?;
+            let second = text_at(function, arguments, 1, span)?;
+            crate::text::edit_distance(function, first, second, span)
+        }
+        Function::ArrayCompact => {
+            let items = array_at(function, arguments, 0, span)?;
+            Ok(Value::Array(
+                items
+                    .iter()
+                    .filter(|held| held.is_present())
+                    .cloned()
+                    .collect(),
+            ))
+        }
+        Function::ArrayCount => {
+            let items = array_at(function, arguments, 0, span)?;
+            let wanted = arguments.get(1).unwrap_or(&Value::None);
+            let counted = items.iter().filter(|held| **held == *wanted).count();
+            Ok(Value::Number(Number::Integer(
+                i64::try_from(counted).unwrap_or(i64::MAX),
+            )))
+        }
+        Function::ArrayRange => {
+            let start = whole(function, arguments, 0, span)?;
+            let end = whole(function, arguments, 1, span)?;
+            if end <= start {
+                return Ok(Value::Array(Vec::new()));
+            }
+            let count = usize::try_from(i128::from(end).saturating_sub(i128::from(start)))
+                .unwrap_or(usize::MAX);
+            if count > 1_000_000 {
+                return Err(crate::error::Error::CallFailed {
+                    function,
+                    reason: "a range of more than 1000000 integers is a table, not a value",
+                    span,
+                });
+            }
+            Ok(Value::Array(
+                (start..end)
+                    .map(|held| Value::Number(Number::Integer(held)))
+                    .collect(),
+            ))
+        }
+        Function::RandUuid7 => crate::generate::uuid_v7(span).map(Value::Uuid),
+        Function::UuidInstant => {
+            let Some(Value::Uuid(bytes)) = arguments.first() else {
+                return Ok(Value::None);
+            };
+            if bytes[6] >> 4 != 7 {
+                return Ok(Value::None);
+            }
+            let millis = u64::from_be_bytes([
+                0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+            ]);
+            let seconds = i64::try_from(millis / 1_000).unwrap_or(i64::MAX);
+            let nanos = u32::try_from(millis % 1_000)
+                .unwrap_or(0)
+                .saturating_mul(1_000_000);
+            Ok(tessari_types::Datetime::new(seconds, nanos).map_or(Value::None, Value::Datetime))
+        }
         Function::SeriesOutliersTukey => series::outliers_tukey(function, arguments, span),
         Function::SeriesPeriodDetect => series::period_detect(function, arguments, span),
         Function::SeriesDecomposeStl => series::decompose_stl(function, arguments, span),

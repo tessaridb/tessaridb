@@ -30,7 +30,11 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   keeps at most `n` samples by the largest-triangle rule, the ends always
   kept; `decayed_sum` / `decayed_mean` / `decayed_max` / `decayed_count` weigh
   each sample by `0.5` to the power of its age in half-lives.
-- **1784 conformance cases** define the language and run in the build.
+- **Breadth readings.** `math::` gains the logarithms, the trigonometry, `atan2`, `hypot`,
+  the unit conversions and the two constants; `string::` gains `repeat`, the two paddings and
+  `edit_distance`; `array::` gains `compact`, `count` and `range`; `rand::uuid7()` mints a
+  time-ordered identifier and `uuid::instant` reads the instant back out of one.
+- **1813 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 

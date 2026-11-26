@@ -250,6 +250,31 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::SeriesOutliersTukey
         | Function::SeriesPeriodDetect
         | Function::SeriesDecomposeStl
+        | Function::MathLog2
+        | Function::MathLog10
+        | Function::MathExp2
+        | Function::MathCbrt
+        | Function::MathSin
+        | Function::MathCos
+        | Function::MathTan
+        | Function::MathAsin
+        | Function::MathAcos
+        | Function::MathAtan
+        | Function::MathAtan2
+        | Function::MathHypot
+        | Function::MathDegrees
+        | Function::MathRadians
+        | Function::MathPi
+        | Function::MathE
+        | Function::StringRepeat
+        | Function::StringPadLeft
+        | Function::StringPadRight
+        | Function::StringEditDistance
+        | Function::ArrayCompact
+        | Function::ArrayCount
+        | Function::ArrayRange
+        | Function::RandUuid7
+        | Function::UuidInstant
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::DurationFromSecs

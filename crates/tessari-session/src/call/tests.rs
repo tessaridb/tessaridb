@@ -441,3 +441,175 @@ fn number_as_float(value: &Value) -> Option<f64> {
         _ => None,
     }
 }
+
+#[test]
+fn the_new_math_readings_answer_their_domains() {
+    same(
+        call(Function::MathLog2, &[integer_value(8)], at()).expect("a log"),
+        Value::Number(Number::float(3.0)),
+    );
+    assert_eq!(
+        call(Function::MathLog10, &[integer_value(0)], at()).expect("an answer"),
+        Value::None
+    );
+    same(
+        call(Function::MathCbrt, &[integer_value(-27)], at()).expect("a root"),
+        Value::Number(Number::float(-3.0)),
+    );
+    same(
+        call(
+            Function::MathAtan2,
+            &[integer_value(1), integer_value(1)],
+            at(),
+        )
+        .expect("an angle"),
+        Value::Number(Number::float(std::f64::consts::FRAC_PI_4)),
+    );
+    same(
+        call(
+            Function::MathHypot,
+            &[integer_value(3), integer_value(4)],
+            at(),
+        )
+        .expect("a side"),
+        Value::Number(Number::float(5.0)),
+    );
+    assert_eq!(
+        call(Function::MathAsin, &[integer_value(2)], at()).expect("an answer"),
+        Value::None
+    );
+    same(
+        call(Function::MathPi, &[], at()).expect("pi"),
+        Value::Number(Number::float(std::f64::consts::PI)),
+    );
+    let degrees = call(
+        Function::MathDegrees,
+        &[Value::Number(Number::float(std::f64::consts::PI))],
+        at(),
+    )
+    .expect("degrees");
+    same(degrees, Value::Number(Number::float(180.0)));
+}
+
+#[test]
+fn the_new_text_readings_repeat_pad_and_measure() {
+    same(
+        call(
+            Function::StringRepeat,
+            &[text("ab"), integer_value(3)],
+            at(),
+        )
+        .expect("a repetition"),
+        text("ababab"),
+    );
+    assert!(
+        call(
+            Function::StringRepeat,
+            &[text("x"), integer_value(-1)],
+            at()
+        )
+        .is_err()
+    );
+    same(
+        call(
+            Function::StringPadLeft,
+            &[text("7"), integer_value(3), text("0")],
+            at(),
+        )
+        .expect("a padding"),
+        text("007"),
+    );
+    same(
+        call(
+            Function::StringPadRight,
+            &[text("7"), integer_value(3), text(".")],
+            at(),
+        )
+        .expect("a padding"),
+        text("7.."),
+    );
+    assert!(
+        call(
+            Function::StringPadLeft,
+            &[text("7"), integer_value(3), text("ab")],
+            at()
+        )
+        .is_err()
+    );
+    same(
+        call(
+            Function::StringEditDistance,
+            &[text("kitten"), text("sitting")],
+            at(),
+        )
+        .expect("a distance"),
+        integer_value(3),
+    );
+    // Characters, not bytes: one edit apart, not two.
+    same(
+        call(
+            Function::StringEditDistance,
+            &[text("héllo"), text("hello")],
+            at(),
+        )
+        .expect("a distance"),
+        integer_value(1),
+    );
+}
+
+#[test]
+fn the_new_array_readings_compact_count_and_range() {
+    let mixed = Value::Array(vec![
+        integer_value(1),
+        Value::None,
+        integer_value(1),
+        integer_value(2),
+    ]);
+    same(
+        call(Function::ArrayCompact, std::slice::from_ref(&mixed), at()).expect("a compacting"),
+        Value::Array(vec![integer_value(1), integer_value(1), integer_value(2)]),
+    );
+    same(
+        call(Function::ArrayCount, &[mixed, integer_value(1)], at()).expect("a count"),
+        integer_value(2),
+    );
+    same(
+        call(
+            Function::ArrayRange,
+            &[integer_value(2), integer_value(6)],
+            at(),
+        )
+        .expect("a range"),
+        Value::Array(vec![
+            integer_value(2),
+            integer_value(3),
+            integer_value(4),
+            integer_value(5),
+        ]),
+    );
+    same(
+        call(
+            Function::ArrayRange,
+            &[integer_value(5), integer_value(5)],
+            at(),
+        )
+        .expect("a range"),
+        Value::Array(vec![]),
+    );
+}
+
+#[test]
+fn a_version_seven_identifier_names_its_instant_and_another_version_names_none() {
+    let minted = call(Function::RandUuid7, &[], at()).expect("an identifier");
+    let Value::Uuid(bytes) = minted else {
+        panic!("a uuid")
+    };
+    assert_eq!(bytes[6] >> 4, 7);
+    let answered = call(Function::UuidInstant, &[Value::Uuid(bytes)], at()).expect("an instant");
+    assert!(matches!(answered, Value::Datetime(_)), "{answered:?}");
+    let four = call(Function::RandUuid, &[], at()).expect("an identifier");
+    assert_eq!(
+        call(Function::UuidInstant, &[four], at()).expect("an answer"),
+        Value::None
+    );
+}
