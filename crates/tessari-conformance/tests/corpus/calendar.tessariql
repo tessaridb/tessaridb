@@ -133,3 +133,47 @@ RETURN duration::from_secs(1.5) = 1500ms;
 --- case: a result past what an instant holds is refused, not wrapped
 RETURN (datetime '2026-10-08T00:00:00Z' + duration::from_secs(5000000000000000000)) + duration::from_secs(5000000000000000000);
 --- expect: error ArithmeticFailed
+
+--- case: the ISO day of the week — 2026-11-26 is a Thursday
+RETURN time::day_of_week(datetime '2026-11-26T00:00:00Z');
+--- expect: value 4
+
+--- case: the day of the year, leap years included in the count
+RETURN time::day_of_year(datetime '2026-11-26T00:00:00Z');
+--- expect: value 330
+
+--- case: the ISO week, whose year is the one holding its Thursday
+RETURN time::week(datetime '2026-11-26T00:00:00Z');
+--- expect: value 48
+
+--- case: a Monday in late December already belongs to the next year's week one
+RETURN time::week(datetime '2019-12-30T00:00:00Z');
+--- expect: value 1
+
+--- case: a Friday at New Year can still be the old year's week fifty-three
+RETURN time::week(datetime '2021-01-01T00:00:00Z');
+--- expect: value 53
+
+--- case: the quarter
+RETURN time::quarter(datetime '2026-11-26T00:00:00Z');
+--- expect: value 4
+
+--- case: the start of the day is its midnight
+RETURN time::start_of_day(datetime '2026-11-26T14:37:09Z');
+--- expect: value datetime '2026-11-26T00:00:00Z'
+
+--- case: the start of the week is its Monday
+RETURN time::start_of_week(datetime '2026-11-26T14:37:09Z');
+--- expect: value datetime '2026-11-23T00:00:00Z'
+
+--- case: the start of the month
+RETURN time::start_of_month(datetime '2026-11-26T14:37:09Z');
+--- expect: value datetime '2026-11-01T00:00:00Z'
+
+--- case: the start of the quarter
+RETURN time::start_of_quarter(datetime '2026-11-26T14:37:09Z');
+--- expect: value datetime '2026-10-01T00:00:00Z'
+
+--- case: the start of the year
+RETURN time::start_of_year(datetime '2026-11-26T14:37:09Z');
+--- expect: value datetime '2026-01-01T00:00:00Z'

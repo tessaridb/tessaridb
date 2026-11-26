@@ -124,6 +124,8 @@ pub const SEARCH_BLOOM_MINIMUM_TERMS: usize = 1024;
 /// past where a dictionary should ride one filter rather than re-derive.
 pub const SEARCH_BLOOM_MAX_BYTES: usize = 1024 * 1024;
 
+/// How many terms a `MATCHES PREFIX` expands to before the expansion is
+/// capped and the read says so.
 pub const SEARCH_PREFIX_EXPANSION_CAP: usize = 64;
 
 /// How many dictionary terms a scored prefix reads before it ranks them by

@@ -5676,7 +5676,10 @@ SELECT increase(n, at) AS up, delta(n, at) AS change, rate(n, at) AS per_second
 ```
 
 Three aggregates fold a counter by the instant each value was observed at, so
-the samples are ordered by that instant rather than by storage. `increase` adds
+the samples are ordered by that instant rather than by storage. Seven more take
+the same pair of arguments — `resets`, `deriv`, `predict_linear` (with a horizon
+in seconds), `downsample` (with a point count) and the four `decayed_` folds
+(with a half-life in seconds) — and are in the fold table below. `increase` adds
 the rises and counts a fall as a reset — the counter restarted and counted the
 new value; `delta` is last minus first; `rate` is the increase per second between
 the first and last sample, and a single sample has none. Over `10, 15, 3, 8, 20`
@@ -5711,6 +5714,14 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 | `collect(<expr>)` | every present value, as an array, in the order the records arrived; over nothing, `[]` |
 | `approx_distinct(<expr>)` | an **estimate** of how many distinct present values; exact up to 1 024 of them; over nothing, `0` |
 | `approx_quantile(<expr>, q)` | an **estimate** of the value at rank `q` (0 to 1) within 1 % of the true one; over no numbers, `NONE` |
+| `resets(<expr>, <instant>)` | how many times the samples fall between one and the next, ordered by the instant — the counter resets the window saw; a window of one sample saw none |
+| `deriv(<expr>, <instant>)` | the least-squares slope per second, as a float; fewer than two samples, or all at one instant, name no slope and answer `NONE` |
+| `predict_linear(<expr>, <instant>, <seconds>)` | the value the samples' least-squares line reaches `seconds` past the last sample, as a float |
+| `downsample(<expr>, <instant>, <points>)` | at most `points` samples by the largest-triangle rule, first and last always kept, as an array of `{ at, value }` in time order |
+| `decayed_sum(<expr>, <instant>, <half_life>)` | the sum where each sample weighs `0.5` to the power of its age in half-lives, measured back from the newest sample |
+| `decayed_mean(<expr>, <instant>, <half_life>)` | the weighted mean — the weighted sum over the sum of the weights |
+| `decayed_max(<expr>, <instant>, <half_life>)` | the largest weighted value |
+| `decayed_count(<expr>, <instant>, <half_life>)` | the sum of the weights alone |
 
 **The two `approx_` folds are the ones that say so.** They answer in bounded memory however many records they
 read, and every answer that used one carries a note:
@@ -6473,6 +6484,9 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::flatten(items)` | one level of nesting removed |
 | `array::join(items, sep)` | the elements as one text |
 | `array::slice(items, start, count)` | a run of elements |
+| `series::outliers_tukey(values)` | the indices outside the Tukey fences, 1.5 interquartile ranges past either quartile |
+| `series::period_detect(values)` | the dominant period in samples, read off the strongest Fourier component |
+| `series::decompose_stl(values, period)` | `{ trend, seasonal, residual }` — classical seasonal decomposition |
 | `string::concat(a, b, …)` | the strings joined in order — two or more |
 | `string::split(text, sep)` | the parts between occurrences |
 | `string::slice(text, start, count)` | a run of characters |
@@ -6585,6 +6599,15 @@ SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(
 | `time::hour(at)` | 0 through 23 |
 | `time::minute(at)` | 0 through 59 |
 | `time::second(at)` | the second **of the minute**, 0 through 59 |
+| `time::day_of_week(at)` | the ISO-8601 day of the week, Monday 1 through Sunday 7 |
+| `time::day_of_year(at)` | the day of the year, 1 through 366 |
+| `time::week(at)` | the ISO-8601 week number, 1 through 53 — a week belongs to the year holding its Thursday |
+| `time::quarter(at)` | the quarter of the year, 1 through 4 |
+| `time::start_of_day(at)` | midnight of the instant's own day |
+| `time::start_of_week(at)` | midnight of the week's Monday |
+| `time::start_of_month(at)` | midnight of the month's first day |
+| `time::start_of_quarter(at)` | midnight of the quarter's first day |
+| `time::start_of_year(at)` | midnight of the year's first day |
 | `time::unix(at)` | whole seconds since the epoch |
 | `time::from_unix(n)` | the instant a second count names |
 | `duration::from_secs(n)` | the span `n` seconds names, whole or fractional, to the nanosecond |
@@ -11793,7 +11816,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.54.0", "build": "0.54.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.55.0", "build": "0.55.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

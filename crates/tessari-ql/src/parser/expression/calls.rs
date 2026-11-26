@@ -69,6 +69,12 @@ impl Parser<'_> {
         } else {
             None
         };
+        let ahead = if fold.takes_ahead() {
+            self.expect_punct(Punct::Comma, "`,` and the horizon in seconds")?;
+            Some(Box::new(self.condition()?))
+        } else {
+            None
+        };
         let end = self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
         if over.is_none() && fold != Aggregate::Count {
             return Err(Error::StarIsOnlyForCount {
@@ -82,6 +88,7 @@ impl Parser<'_> {
                 fold,
                 over,
                 at,
+                ahead,
                 span,
             },
             span,

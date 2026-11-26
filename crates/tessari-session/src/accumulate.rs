@@ -83,7 +83,7 @@ use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
-pub(crate) use arithmetic::{Moments, add_exact, add_float, failed, middle, summable};
+pub(crate) use arithmetic::{Moments, add_exact, add_float, count, failed, middle, summable};
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
 
@@ -158,13 +158,17 @@ pub(crate) enum Accumulator {
     /// The counter folds: every sample and the instant it was observed at,
     /// ordered by the instant when the group finishes (ADR-0088 §5).
     Counter {
-        /// Which of the three.
+        /// Which of the six.
         fold: Aggregate,
         /// The samples, in record order.
         held: Vec<(tessari_types::Datetime, Number)>,
         /// The parts merged so far in key order, each a leader's summary or
         /// its samples, with this node's own samples between them (ADR-0121 D3).
         parts: Vec<counter::Part>,
+        /// The horizon `predict_linear` projects to, in seconds past the last
+        /// sample — the last one offered, since the expression is one value
+        /// wherever it reads no record. `None` for every other fold.
+        ahead: Option<f64>,
         /// Where to point a failure.
         span: Span,
     },
@@ -267,10 +271,21 @@ impl Accumulator {
                 rank: None,
                 span,
             },
-            Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => Self::Counter {
+            Aggregate::Increase
+            | Aggregate::Rate
+            | Aggregate::Delta
+            | Aggregate::Resets
+            | Aggregate::Deriv
+            | Aggregate::PredictLinear
+            | Aggregate::Downsample
+            | Aggregate::DecayedSum
+            | Aggregate::DecayedMean
+            | Aggregate::DecayedMax
+            | Aggregate::DecayedCount => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
                 parts: Vec::new(),
+                ahead: None,
                 span,
             },
         }
@@ -360,7 +375,11 @@ impl Accumulator {
             // Offered `[value, instant]`: a sample without a number is not a
             // sample, and one without an instant has no place in the order.
             Self::Counter {
-                fold, held, span, ..
+                fold,
+                held,
+                ahead,
+                span,
+                ..
             } => {
                 let Value::Array(pair) = value else {
                     return Ok(());
@@ -378,6 +397,13 @@ impl Accumulator {
                         *span,
                     ));
                 };
+                // `predict_linear` carries its horizon as the third element;
+                // the last one offered is the one the answer uses.
+                if let Some(Value::Number(horizon)) = pair.get(2)
+                    && let Some(seconds) = crate::aggregate::approximate(horizon)
+                {
+                    *ahead = Some(seconds);
+                }
                 held.push((*at, number.clone()));
             }
             // The one fold that keeps a value of any kind, because it is not
@@ -520,8 +546,9 @@ impl Accumulator {
                 fold,
                 held,
                 parts,
+                ahead,
                 span,
-            } => counter::finish(*fold, held, parts, *span),
+            } => counter::finish(*fold, held, parts, *ahead, *span),
             Self::Distinct { sketch } => Ok(sketch.answer()),
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))

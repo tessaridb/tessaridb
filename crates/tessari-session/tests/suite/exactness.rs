@@ -339,7 +339,7 @@ fn corpus() -> (std::sync::Arc<MemoryBackend>, Store) {
 }
 
 fn bloom_address(held: &Store) -> tessari_encoding::IndexAddress {
-    use tessari_encoding::{IndexAddress, StoreKey as _};
+    use tessari_encoding::IndexAddress;
     let mut reading = held.begin().now().unwrap();
     let catalog = tessari_storage::Catalog::new(&mut reading);
     let table = catalog

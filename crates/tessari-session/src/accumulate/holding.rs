@@ -46,11 +46,35 @@ impl Accumulator {
                 Some(Value::Array(sent))
             }
             Self::Every { held } => Some(Value::Array(held.clone())),
-            Self::Counter { held, parts, .. } if parts.is_empty() => {
+            Self::Counter {
+                fold, held, parts, ..
+            } if parts.is_empty() && !super::counter::reads_samples_only(*fold) => {
                 let Some(summary) = Summary::of(held) else {
                     return Some(Value::Array(vec![Value::from(SUMMARY)]));
                 };
                 summary_state(&summary)
+            }
+            // A summary holds no points, so a downsampling leader's state is
+            // its samples with the horizon beside them — the gatherer may hold
+            // no sample of the group itself and still has to know `n`.
+            Self::Counter {
+                fold,
+                held,
+                parts,
+                ahead,
+                ..
+            } if parts.is_empty() && super::counter::reads_samples_only(*fold) => {
+                let sent: Vec<Value> = held
+                    .iter()
+                    .map(|(at, value)| {
+                        Value::Array(vec![Value::Number(value.clone()), Value::Datetime(*at)])
+                    })
+                    .collect();
+                Some(Value::Array(vec![
+                    Value::from(SAMPLES),
+                    ahead.map_or(Value::None, |n| Value::Number(Number::float(n))),
+                    Value::Array(sent),
+                ]))
             }
             _ => None,
         }
@@ -78,7 +102,9 @@ impl Accumulator {
     /// the read must ask the leaders for their samples.
     pub(crate) fn needs_samples(&self) -> bool {
         match self {
-            Self::Counter { held, parts, .. } => super::counter::needs_samples(held, parts),
+            Self::Counter {
+                fold, held, parts, ..
+            } => super::counter::needs_samples(*fold, held, parts),
             _ => false,
         }
     }
@@ -127,18 +153,32 @@ impl Accumulator {
                 }
                 _ => false,
             }),
-            Self::Counter { held, parts, .. } => Some(match part_of(state) {
-                Some(part) => {
-                    // This node's samples so far precede the part in key order.
+            Self::Counter {
+                held, parts, ahead, ..
+            } => Some(match downsample_part(state) {
+                Some((horizon, samples)) => {
+                    if ahead.is_none() {
+                        *ahead = horizon;
+                    }
                     if !held.is_empty() {
                         parts.push(Part::Samples(std::mem::take(held)));
                     }
-                    if let Some(part) = part {
-                        parts.push(part);
-                    }
+                    parts.push(Part::Samples(samples));
                     true
                 }
-                None => false,
+                None => match part_of(state) {
+                    Some(part) => {
+                        // This node's samples so far precede the part in key order.
+                        if !held.is_empty() {
+                            parts.push(Part::Samples(std::mem::take(held)));
+                        }
+                        if let Some(part) = part {
+                            parts.push(part);
+                        }
+                        true
+                    }
+                    None => false,
+                },
             }),
             _ => None,
         }
@@ -167,6 +207,11 @@ fn summary_state(summary: &Summary) -> Option<Value> {
         summary.float.state()?,
         Value::Bool(summary.saw_float),
         Value::Bool(summary.all_integer),
+        Value::Number(Number::Integer(i64::try_from(summary.resets).ok()?)),
+        Value::Number(Number::float(summary.regression.sum_x)),
+        Value::Number(Number::float(summary.regression.sum_xx)),
+        Value::Number(Number::float(summary.regression.sum_y)),
+        Value::Number(Number::float(summary.regression.sum_xy)),
     ]))
 }
 
@@ -204,6 +249,26 @@ fn sample_of(sent: &Value) -> Option<Sample> {
     Some((*at, value.clone()))
 }
 
+/// A downsampling leader's state — the horizon (or `None` where it never
+/// saw one) and its samples; `None` for any other shape.
+fn downsample_part(state: &Value) -> Option<(Option<f64>, Vec<Sample>)> {
+    let Value::Array(sent) = state else {
+        return None;
+    };
+    let [Value::String(tag), horizon, Value::Array(samples)] = sent.as_slice() else {
+        return None;
+    };
+    if tag != SAMPLES {
+        return None;
+    }
+    let parsed: Option<Vec<Sample>> = samples.iter().map(sample_of).collect();
+    let horizon = match horizon {
+        Value::Number(number) => crate::aggregate::approximate(number),
+        _ => None,
+    };
+    Some((horizon, parsed?))
+}
+
 /// A counter part — `Some(None)` for a shard that held no sample of the
 /// group, `None` for a state of another shape.
 fn part_of(state: &Value) -> Option<Option<Part>> {
@@ -225,6 +290,11 @@ fn part_of(state: &Value) -> Option<Option<Part>> {
             float,
             Value::Bool(saw_float),
             Value::Bool(all_integer),
+            Value::Number(Number::Integer(resets)),
+            Value::Number(sum_x),
+            Value::Number(sum_xx),
+            Value::Number(sum_y),
+            Value::Number(sum_xy),
         ] if tag == SUMMARY => {
             let exact = match exact {
                 Value::Number(Number::Decimal(total)) => Ok(*total),
@@ -242,6 +312,13 @@ fn part_of(state: &Value) -> Option<Option<Part>> {
                 float: ExactSum::from_state(float)?,
                 saw_float: *saw_float,
                 all_integer: *all_integer,
+                resets: u64::try_from(*resets).ok()?,
+                regression: super::counter::Regression {
+                    sum_x: crate::aggregate::approximate(sum_x)?,
+                    sum_xx: crate::aggregate::approximate(sum_xx)?,
+                    sum_y: crate::aggregate::approximate(sum_y)?,
+                    sum_xy: crate::aggregate::approximate(sum_xy)?,
+                },
             })))
         }
         _ => None,

@@ -122,12 +122,17 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
     {
         let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
         for held in 0..OFFERED {
-            // A counter fold is offered each value with its instant.
+            // A counter fold is offered each value with its instant, and a
+            // fold taking a horizon with that as the third element.
             let offered = if aggregate.takes_an_instant() {
-                Value::Array(vec![
+                let mut pair = vec![
                     integer(held),
                     Value::Datetime(tessari_types::Datetime::from_seconds(held)),
-                ])
+                ];
+                if aggregate.takes_ahead() {
+                    pair.push(integer(10));
+                }
+                Value::Array(pair)
             } else {
                 integer(held)
             };

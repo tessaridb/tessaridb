@@ -80,6 +80,44 @@ pub(crate) fn reading(
     Ok(Value::Number(Number::Integer(take(instant.civil()))))
 }
 
+/// A whole-number reading of the instant itself rather than of its civil
+/// breakdown — the day-of-week family, whose arithmetic wants the day count
+/// the breakdown has already spent.
+pub(crate) fn instant_reading(
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+    take: impl Fn(Datetime) -> Option<i64>,
+) -> Result<Value> {
+    let instant = datetime_at(function, arguments, 0, span)?;
+    take(*instant)
+        .map(|held| Value::Number(Number::Integer(held)))
+        .ok_or(Error::CallFailed {
+            function,
+            reason: "that reading is past what the calendar arithmetic holds",
+            span,
+        })
+}
+
+/// The start of the calendar unit an instant falls in. `None` from the
+/// reading is a start the type cannot hold, refused rather than clamped for
+/// `from_unix`'s reason: a clamped instant is a moment nobody wrote.
+pub(crate) fn start_of(
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+    take: impl Fn(Datetime) -> Option<Datetime>,
+) -> Result<Value> {
+    let instant = datetime_at(function, arguments, 0, span)?;
+    take(*instant)
+        .map(Value::Datetime)
+        .ok_or(Error::CallFailed {
+            function,
+            reason: "that start is past what an instant holds",
+            span,
+        })
+}
+
 /// The instant a second count names.
 ///
 /// A fraction is refused rather than truncated, on the rule the casts follow:

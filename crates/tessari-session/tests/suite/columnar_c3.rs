@@ -344,7 +344,7 @@ fn c1_lane_statistics_and_in_lists_over_a_sized_table() {
     assert_eq!(in_plan, AccessPath::Columnar);
     let member_count = u64::try_from(members.len()).expect("eight members fit a u64");
     let Note::Columnar {
-        chunks_examined,
+        chunks_examined: _,
         chunks_skipped,
         rows_decoded,
         rows_returned,

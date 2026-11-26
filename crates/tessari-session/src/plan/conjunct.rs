@@ -238,6 +238,18 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TimeHour
         | Function::TimeMinute
         | Function::TimeSecond
+        | Function::TimeDayOfWeek
+        | Function::TimeDayOfYear
+        | Function::TimeWeek
+        | Function::TimeQuarter
+        | Function::TimeStartOfDay
+        | Function::TimeStartOfWeek
+        | Function::TimeStartOfMonth
+        | Function::TimeStartOfQuarter
+        | Function::TimeStartOfYear
+        | Function::SeriesOutliersTukey
+        | Function::SeriesPeriodDetect
+        | Function::SeriesDecomposeStl
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::DurationFromSecs

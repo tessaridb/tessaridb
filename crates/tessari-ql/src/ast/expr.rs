@@ -182,6 +182,10 @@ pub enum ExprKind {
         /// `approx_quantile(v, q)` is asked at (ADR-0122 C3). `None` for every
         /// other fold.
         at: Option<Box<Expr>>,
+        /// The horizon, in seconds past the last sample, that
+        /// `predict_linear(v, at, ahead)` projects to. `None` for every other
+        /// fold.
+        ahead: Option<Box<Expr>>,
         /// Where it was written.
         span: Span,
     },

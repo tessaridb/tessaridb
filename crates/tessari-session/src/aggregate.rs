@@ -230,7 +230,14 @@ impl Session<'_> {
                 for (which, fold) in held.iter().enumerate() {
                     let index = walked;
                     walked = walked.saturating_add(1);
-                    let ExprKind::Fold { over, at, span, .. } = &fold.kind else {
+                    let ExprKind::Fold {
+                        over,
+                        at,
+                        ahead,
+                        span,
+                        ..
+                    } = &fold.kind
+                    else {
                         continue;
                     };
                     // A sketch fold over a rollup's sketch column merges the
@@ -273,13 +280,24 @@ impl Session<'_> {
                         }
                     };
                     // A counter fold is offered the value with the instant it
-                    // was observed at, so it can order its samples itself.
+                    // was observed at, so it can order its samples itself; a
+                    // fold taking a horizon is offered that as the third
+                    // element.
                     let value = match at {
-                        Some(at) => Value::Array(vec![
-                            value,
-                            self.evaluate_in(transaction, at, Scope::of(&record))
-                                .await?,
-                        ]),
+                        Some(at) => {
+                            let mut pair = vec![
+                                value,
+                                self.evaluate_in(transaction, at, Scope::of(&record))
+                                    .await?,
+                            ];
+                            if let Some(ahead) = ahead {
+                                pair.push(
+                                    self.evaluate_in(transaction, ahead, Scope::of(&record))
+                                        .await?,
+                                );
+                            }
+                            Value::Array(pair)
+                        }
                         None => value,
                     };
                     if let Some(accumulator) = entry

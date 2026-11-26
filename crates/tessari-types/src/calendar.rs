@@ -81,6 +81,132 @@ impl Datetime {
     }
 }
 
+impl Datetime {
+    /// The day count this instant falls on, floored toward the past so an
+    /// instant before the epoch belongs to the day that contains it.
+    fn epoch_days(self) -> i64 {
+        self.seconds().div_euclid(SECONDS_PER_DAY)
+    }
+
+    /// The ISO-8601 day of the week, Monday 1 through Sunday 7; `None` only
+    /// where the day count leaves no room for the arithmetic.
+    #[must_use]
+    pub fn day_of_week(self) -> Option<i64> {
+        iso_day(self.epoch_days())
+    }
+
+    /// The day of the year, 1 through 366.
+    #[must_use]
+    pub fn day_of_year(self) -> Option<i64> {
+        let civil = self.civil();
+        let mut counted: i64 = 0;
+        for month in 1..civil.month {
+            counted = counted.checked_add(days_in_month(civil.year, month)?)?;
+        }
+        counted.checked_add(civil.day)
+    }
+
+    /// The ISO-8601 week number, 1 through 53. A week belongs to the year
+    /// holding its Thursday, so the first days of January can read 52 or 53
+    /// and the last days of December can read 1.
+    #[must_use]
+    pub fn iso_week(self) -> Option<i64> {
+        let week = self
+            .day_of_year()?
+            .checked_sub(self.day_of_week()?)?
+            .checked_add(10)?
+            .div_euclid(7);
+        let year = self.civil().year;
+        if week < 1 {
+            weeks_in_iso_year(year.checked_sub(1)?)
+        } else if week > weeks_in_iso_year(year)? {
+            Some(1)
+        } else {
+            Some(week)
+        }
+    }
+
+    /// The quarter of the year, 1 through 4.
+    #[must_use]
+    pub fn quarter(self) -> Option<i64> {
+        self.civil()
+            .month
+            .checked_sub(1)
+            .map(|month| month.div_euclid(3))
+            .and_then(|quarter| quarter.checked_add(1))
+    }
+
+    /// Midnight of this instant's own day, UTC; `None` only at the type's
+    /// extreme.
+    #[must_use]
+    pub fn start_of_day(self) -> Option<Datetime> {
+        Some(Datetime::from_seconds(
+            self.epoch_days().checked_mul(SECONDS_PER_DAY)?,
+        ))
+    }
+
+    /// Midnight of the ISO week's Monday.
+    #[must_use]
+    pub fn start_of_week(self) -> Option<Datetime> {
+        let back = self.day_of_week()?.checked_sub(1)?;
+        let monday = self.epoch_days().checked_sub(back)?;
+        Some(Datetime::from_seconds(monday.checked_mul(SECONDS_PER_DAY)?))
+    }
+
+    /// Midnight of the month's first day; `None` only where the era
+    /// arithmetic holds no such day.
+    #[must_use]
+    pub fn start_of_month(self) -> Option<Datetime> {
+        let civil = self.civil();
+        midnight_of(civil.year, civil.month, 1)
+    }
+
+    /// Midnight of the quarter's first day.
+    #[must_use]
+    pub fn start_of_quarter(self) -> Option<Datetime> {
+        let civil = self.civil();
+        let first = self
+            .quarter()?
+            .checked_sub(1)?
+            .checked_mul(3)?
+            .checked_add(1)?;
+        midnight_of(civil.year, first, 1)
+    }
+
+    /// Midnight of the year's first day.
+    #[must_use]
+    pub fn start_of_year(self) -> Option<Datetime> {
+        midnight_of(self.civil().year, 1, 1)
+    }
+}
+
+/// The ISO day of an epoch-day count: Monday 1 through Sunday 7. The epoch
+/// itself, day 0, was a Thursday.
+fn iso_day(days: i64) -> Option<i64> {
+    days.checked_add(3)
+        .map(|shifted| shifted.rem_euclid(7))
+        .and_then(|day| day.checked_add(1))
+}
+
+/// How many ISO weeks a year holds: 53 when its first day is a Thursday or,
+/// in a leap year, a Wednesday.
+fn weeks_in_iso_year(year: i64) -> Option<i64> {
+    let first = iso_day(days_from_civil(year, 1, 1)?)?;
+    let leap = days_in_month(year, 2) == Some(29);
+    Some(if first == 4 || (leap && first == 3) {
+        53
+    } else {
+        52
+    })
+}
+
+/// The midnight of a civil date, or `None` where the count leaves what an
+/// instant holds.
+fn midnight_of(year: i64, month: i64, day: i64) -> Option<Datetime> {
+    let days = days_from_civil(year, month, day)?;
+    Datetime::new(days.checked_mul(SECONDS_PER_DAY)?, 0)
+}
+
 /// Days between the Unix epoch and a civil date, by Howard Hinnant's algorithm.
 ///
 /// The era arithmetic is what makes the leap-year rule fall out instead of

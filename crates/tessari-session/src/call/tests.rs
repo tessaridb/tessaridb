@@ -197,3 +197,247 @@ fn a_reading_of_an_absent_instant_is_an_absence_and_narrows_the_read() {
         Value::None
     );
 }
+
+/// The epoch second count of a civil midnight, stated as a constant so the
+/// expectation owes nothing to the code under test.
+fn midnight(seconds: i64) -> Value {
+    Value::Datetime(tessari_types::Datetime::from_seconds(seconds))
+}
+
+#[test]
+fn the_epoch_is_a_thursday_and_the_first_day_of_its_year() {
+    // 1970-01-01: ISO day-of-week 4, day 1 of the year, ISO week 1, quarter 1.
+    let epoch = midnight(0);
+    same(
+        call(Function::TimeDayOfWeek, std::slice::from_ref(&epoch), at()).expect("a day of week"),
+        Value::Number(Number::Integer(4)),
+    );
+    same(
+        call(Function::TimeDayOfYear, std::slice::from_ref(&epoch), at()).expect("a day of year"),
+        Value::Number(Number::Integer(1)),
+    );
+    same(
+        call(Function::TimeWeek, std::slice::from_ref(&epoch), at()).expect("a week"),
+        Value::Number(Number::Integer(1)),
+    );
+    same(
+        call(Function::TimeQuarter, &[epoch], at()).expect("a quarter"),
+        Value::Number(Number::Integer(1)),
+    );
+}
+
+#[test]
+fn a_leap_day_reads_as_its_own_day_of_the_year() {
+    // 2000-02-29 was a Tuesday and is day 60 of a leap year.
+    let leap = midnight(951_782_400);
+    same(
+        call(Function::TimeDayOfWeek, std::slice::from_ref(&leap), at()).expect("a day of week"),
+        Value::Number(Number::Integer(2)),
+    );
+    same(
+        call(Function::TimeDayOfYear, std::slice::from_ref(&leap), at()).expect("a day of year"),
+        Value::Number(Number::Integer(60)),
+    );
+    same(
+        call(Function::TimeQuarter, &[leap], at()).expect("a quarter"),
+        Value::Number(Number::Integer(1)),
+    );
+}
+
+#[test]
+fn an_iso_week_belongs_to_the_year_holding_its_thursday() {
+    // 2019-12-30 is a Monday of ISO week 1 of 2020; 2021-01-01 is a Friday of
+    // ISO week 53 of 2020 — the two boundary shapes the naive week-of-year
+    // gets wrong.
+    same(
+        call(Function::TimeWeek, &[midnight(1_577_664_000)], at()).expect("a week"),
+        Value::Number(Number::Integer(1)),
+    );
+    same(
+        call(Function::TimeWeek, &[midnight(1_609_459_200)], at()).expect("a week"),
+        Value::Number(Number::Integer(53)),
+    );
+}
+
+#[test]
+fn an_ordinary_day_reads_its_iso_week() {
+    // 2026-11-26 is a Thursday, day 330 of 2026, in ISO week 48.
+    same(
+        call(Function::TimeWeek, &[midnight(1_795_651_200)], at()).expect("a week"),
+        Value::Number(Number::Integer(48)),
+    );
+    same(
+        call(Function::TimeDayOfYear, &[midnight(1_795_651_200)], at()).expect("a day of year"),
+        Value::Number(Number::Integer(330)),
+    );
+}
+
+#[test]
+fn the_start_of_a_week_is_its_monday() {
+    // 2026-11-26 is a Thursday; its week's Monday is 2026-11-23.
+    same(
+        call(Function::TimeStartOfWeek, &[midnight(1_795_651_200)], at()).expect("a start"),
+        midnight(1_795_392_000),
+    );
+}
+
+#[test]
+fn the_starts_of_month_quarter_and_year_are_midnights_of_their_first_day() {
+    let day = midnight(1_795_651_200);
+    same(
+        call(Function::TimeStartOfMonth, std::slice::from_ref(&day), at()).expect("a start"),
+        midnight(1_793_491_200),
+    );
+    same(
+        call(
+            Function::TimeStartOfQuarter,
+            std::slice::from_ref(&day),
+            at(),
+        )
+        .expect("a start"),
+        midnight(1_790_812_800),
+    );
+    same(
+        call(Function::TimeStartOfYear, &[day], at()).expect("a start"),
+        midnight(1_767_225_600),
+    );
+}
+
+#[test]
+fn a_start_keeps_no_sub_second_remainder_and_reads_an_absence_as_an_absence() {
+    // A start is a whole second by construction; the remainder is dropped the
+    // way `time::bucket`'s is, and an absent instant narrows the read.
+    let with_nanos = Value::Datetime(
+        tessari_types::Datetime::new(1_795_651_200, 999_999_999).expect("a normalised pair"),
+    );
+    same(
+        call(Function::TimeStartOfDay, &[with_nanos], at()).expect("a start"),
+        midnight(1_795_651_200),
+    );
+    assert_eq!(
+        call(Function::TimeStartOfMonth, &[Value::None], at()).expect("an answer"),
+        Value::None
+    );
+}
+
+#[test]
+fn tukey_names_the_indices_outside_the_fences() {
+    // Quartiles of 1..=8 sit at 2.75 and 6.25; the fences are -2.5 and 11.5,
+    // so only the 40 falls outside.
+    let values = Value::Array(vec![
+        integer_value(1),
+        integer_value(2),
+        integer_value(3),
+        integer_value(4),
+        integer_value(5),
+        integer_value(6),
+        integer_value(7),
+        integer_value(8),
+        integer_value(40),
+    ]);
+    same(
+        call(Function::SeriesOutliersTukey, &[values], at()).expect("indices"),
+        Value::Array(vec![Value::Number(Number::Integer(8))]),
+    );
+    // Nothing outside the fences is an empty array, not an absence.
+    let calm = Value::Array(vec![integer_value(1), integer_value(2), integer_value(3)]);
+    same(
+        call(Function::SeriesOutliersTukey, &[calm], at()).expect("indices"),
+        Value::Array(vec![]),
+    );
+}
+
+#[test]
+fn the_period_is_where_the_series_repeats() {
+    // A sawtooth of period 4 over 24 samples.
+    let mut wave = Vec::new();
+    for step in 0..24 {
+        wave.push(integer_value([0, 1, 2, 3][step % 4]));
+    }
+    let answered =
+        call(Function::SeriesPeriodDetect, &[Value::Array(wave)], at()).expect("a period");
+    let Value::Number(held) = answered else {
+        panic!("a number")
+    };
+    let Some(period) = crate::aggregate::approximate(&held) else {
+        panic!("a float")
+    };
+    assert!((period - 4.0).abs() < 0.5, "read {period}");
+    // Too short to say is an absence.
+    assert_eq!(
+        call(
+            Function::SeriesPeriodDetect,
+            &[Value::Array(vec![integer_value(1), integer_value(2)])],
+            at(),
+        )
+        .expect("an answer"),
+        Value::None
+    );
+}
+
+#[test]
+fn the_decomposition_adds_back_up_to_the_series() {
+    // trend + seasonal + residual is the series, wherever all three are
+    // defined — the property the parts exist to have.
+    let mut wave = Vec::new();
+    for step in 0..24_i64 {
+        wave.push(integer_value(
+            step / 4 + [0, 2, 5, 2][usize::try_from(step % 4).expect("0..4")],
+        ));
+    }
+    let answered = call(
+        Function::SeriesDecomposeStl,
+        &[
+            Value::Array(wave.clone()),
+            Value::Number(Number::Integer(4)),
+        ],
+        at(),
+    )
+    .expect("a decomposition");
+    let Value::Object(parts) = answered else {
+        panic!("an object")
+    };
+    let (Some(Value::Array(trend)), Some(Value::Array(seasonal)), Some(Value::Array(residual))) = (
+        parts.get("trend"),
+        parts.get("seasonal"),
+        parts.get("residual"),
+    ) else {
+        panic!("three parts")
+    };
+    assert_eq!(trend.len(), wave.len());
+    for (place, original) in wave.iter().enumerate() {
+        let (Some(t), Some(s), Some(r)) = (
+            trend.get(place).and_then(number_as_float),
+            seasonal.get(place).and_then(number_as_float),
+            residual.get(place).and_then(number_as_float),
+        ) else {
+            continue; // the trend's undefined edges hold none
+        };
+        let Value::Number(original) = original else {
+            panic!("a number")
+        };
+        let whole = crate::aggregate::approximate(original).expect("a float");
+        assert!(
+            (t + s + r - whole).abs() < 1e-9,
+            "at {place}: {t} + {s} + {r} != {whole}"
+        );
+    }
+    // A period under two is refused by name.
+    let refused = call(
+        Function::SeriesDecomposeStl,
+        &[Value::Array(wave), Value::Number(Number::Integer(1))],
+        at(),
+    );
+    assert!(refused.is_err());
+}
+
+fn integer_value(held: i64) -> Value {
+    Value::Number(Number::Integer(held))
+}
+
+fn number_as_float(value: &Value) -> Option<f64> {
+    match value {
+        Value::Number(held) => crate::aggregate::approximate(held),
+        _ => None,
+    }
+}

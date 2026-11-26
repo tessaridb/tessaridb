@@ -16,6 +16,22 @@ catalog, not the history: `VERSION` reads and change-feed positions from before 
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
+## 0.55.0 — 2026-11-26 (in progress)
+
+- **Calendar readings.** `time::day_of_week`, `time::day_of_year`, `time::week`
+  (ISO-8601, a week belonging to the year holding its Thursday), `time::quarter`,
+  and `time::start_of_day` / `start_of_week` / `start_of_month` /
+  `start_of_quarter` / `start_of_year`.
+- **Series readings.** `series::outliers_tukey` (the indices outside the Tukey
+  fences), `series::period_detect` (the dominant period in samples) and
+  `series::decompose_stl` (`{ trend, seasonal, residual }`) over a numeric array.
+- **Eight new folds.** `resets`, `deriv` and `predict_linear` join the counter
+  family, ordered by the instant each sample was observed at; `downsample`
+  keeps at most `n` samples by the largest-triangle rule, the ends always
+  kept; `decayed_sum` / `decayed_mean` / `decayed_max` / `decayed_count` weigh
+  each sample by `0.5` to the power of its age in half-lives.
+- **1784 conformance cases** define the language and run in the build.
+
 ## 0.54.0 — 2026-11-25
 
 Columnar pruning, a search-term fingerprint filter, and a statement compile

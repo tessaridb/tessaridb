@@ -165,6 +165,28 @@ pub enum Function {
     /// `time::second(instant)` — the second **of the minute**, 0 through 59.
     /// Not the seconds since the epoch, which is [`Function::TimeUnix`].
     TimeSecond,
+    /// `time::day_of_week(instant)` — the ISO-8601 day of the week, Monday 1
+    /// through Sunday 7.
+    TimeDayOfWeek,
+    /// `time::day_of_year(instant)` — the day of the year, 1 through 366.
+    TimeDayOfYear,
+    /// `time::week(instant)` — the ISO-8601 week number, 1 through 53. A week
+    /// belongs to the year holding its Thursday, so the first days of January
+    /// can read 52 or 53 and the last of December can read 1.
+    TimeWeek,
+    /// `time::quarter(instant)` — the quarter of the year, 1 through 4.
+    TimeQuarter,
+    /// `time::start_of_day(instant)` — midnight of the instant's own day.
+    TimeStartOfDay,
+    /// `time::start_of_week(instant)` — midnight of the week's Monday,
+    /// ISO-8601 like [`Function::TimeDayOfWeek`].
+    TimeStartOfWeek,
+    /// `time::start_of_month(instant)` — midnight of the month's first day.
+    TimeStartOfMonth,
+    /// `time::start_of_quarter(instant)` — midnight of the quarter's first day.
+    TimeStartOfQuarter,
+    /// `time::start_of_year(instant)` — midnight of the year's first day.
+    TimeStartOfYear,
     /// `time::unix(instant)` — whole seconds since the epoch.
     TimeUnix,
     /// `time::from_unix(seconds)` — the instant a second count names.
@@ -220,6 +242,19 @@ pub enum Function {
     SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
+    /// `series::outliers_tukey(values)` — the indices whose numbers fall
+    /// outside the Tukey fences, 1.5 interquartile ranges past either
+    /// quartile.
+    SeriesOutliersTukey,
+    /// `series::period_detect(values)` — the dominant period of the series in
+    /// samples, read off the strongest non-DC Fourier component; `NONE` for
+    /// fewer than four samples.
+    SeriesPeriodDetect,
+    /// `series::decompose_stl(values, period)` — classical seasonal
+    /// decomposition: `{ trend, seasonal, residual }`, each an array the
+    /// length of the series with `NONE` where a part is undefined (the
+    /// trend's edges).
+    SeriesDecomposeStl,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
     /// boundaries included.
     GeoIntersects,

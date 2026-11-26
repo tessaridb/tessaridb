@@ -70,6 +70,17 @@ impl Function {
             | Self::TimeHour
             | Self::TimeMinute
             | Self::TimeSecond
+            | Self::TimeDayOfWeek
+            | Self::TimeDayOfYear
+            | Self::TimeWeek
+            | Self::TimeQuarter
+            | Self::TimeStartOfDay
+            | Self::TimeStartOfWeek
+            | Self::TimeStartOfMonth
+            | Self::TimeStartOfQuarter
+            | Self::TimeStartOfYear
+            | Self::SeriesOutliersTukey
+            | Self::SeriesPeriodDetect
             | Self::TimeUnix
             | Self::TimeFromUnix
             | Self::DurationFromSecs
@@ -114,6 +125,7 @@ impl Function {
             | Self::SearchScore
             | Self::SearchExplain
             | Self::TimeBucket
+            | Self::SeriesDecomposeStl
             | Self::GeoIntersects
             | Self::GeoDisjoint
             | Self::GeoCovers
@@ -223,6 +235,18 @@ impl Function {
             | Self::TimeHour
             | Self::TimeMinute
             | Self::TimeSecond
+            | Self::TimeDayOfWeek
+            | Self::TimeDayOfYear
+            | Self::TimeWeek
+            | Self::TimeQuarter
+            | Self::TimeStartOfDay
+            | Self::TimeStartOfWeek
+            | Self::TimeStartOfMonth
+            | Self::TimeStartOfQuarter
+            | Self::TimeStartOfYear
+            | Self::SeriesOutliersTukey
+            | Self::SeriesPeriodDetect
+            | Self::SeriesDecomposeStl
             | Self::TimeUnix
             | Self::TimeFromUnix
             | Self::DurationFromSecs

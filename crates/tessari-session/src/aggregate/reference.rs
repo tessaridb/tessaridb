@@ -30,6 +30,14 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Increase
         | Aggregate::Rate
         | Aggregate::Delta
+        | Aggregate::Resets
+        | Aggregate::Deriv
+        | Aggregate::PredictLinear
+        | Aggregate::Downsample
+        | Aggregate::DecayedSum
+        | Aggregate::DecayedMean
+        | Aggregate::DecayedMax
+        | Aggregate::DecayedCount
         | Aggregate::ApproxDistinct
         | Aggregate::ApproxQuantile
         | Aggregate::CountDistinct => {

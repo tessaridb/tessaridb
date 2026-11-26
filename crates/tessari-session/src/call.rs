@@ -20,7 +20,10 @@ pub(crate) use arguments::{
     array_at, bytes_at, datetime_at, duration_at, number_at, object_at, text_at, whole, wrong_type,
 };
 pub(crate) use numbers::{count, folded, power, reshape, truncated};
-pub(crate) use time::{bucket, from_secs, from_unix, instant, instant_of, reading};
+mod series;
+pub(crate) use time::{
+    bucket, from_secs, from_unix, instant, instant_of, instant_reading, reading, start_of,
+};
 
 /// Evaluate a call, with its arguments already values.
 ///
@@ -333,6 +336,54 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::TimeHour => reading(function, arguments, span, |civil| civil.hour),
         Function::TimeMinute => reading(function, arguments, span, |civil| civil.minute),
         Function::TimeSecond => reading(function, arguments, span, |civil| civil.second),
+        Function::TimeDayOfWeek => instant_reading(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::day_of_week,
+        ),
+        Function::TimeDayOfYear => instant_reading(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::day_of_year,
+        ),
+        Function::TimeWeek => {
+            instant_reading(function, arguments, span, tessari_types::Datetime::iso_week)
+        }
+        Function::TimeQuarter => {
+            instant_reading(function, arguments, span, tessari_types::Datetime::quarter)
+        }
+        Function::TimeStartOfDay => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_day,
+        ),
+        Function::TimeStartOfWeek => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_week,
+        ),
+        Function::TimeStartOfMonth => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_month,
+        ),
+        Function::TimeStartOfQuarter => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_quarter,
+        ),
+        Function::TimeStartOfYear => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_year,
+        ),
         // Whole seconds, and the sub-second remainder is **not** in the answer.
         // That is a loss taken deliberately, for the reason `type::float` takes
         // the nearest float for a decimal: strictness is affordable only where
@@ -370,6 +421,9 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.
+        Function::SeriesOutliersTukey => series::outliers_tukey(function, arguments, span),
+        Function::SeriesPeriodDetect => series::period_detect(function, arguments, span),
+        Function::SeriesDecomposeStl => series::decompose_stl(function, arguments, span),
         Function::TimeBucket => {
             let instant = datetime_at(function, arguments, 0, span)?;
             let width = duration_at(function, arguments, 1, span)?;
