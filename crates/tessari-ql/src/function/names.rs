@@ -199,6 +199,10 @@ impl Function {
         ScoresIntersect => "scores::intersect",
         SessionContext => "session::context",
         AiGenerate => "ai::generate",
+        AiSummarize => "ai::summarize",
+        AiClassify => "ai::classify",
+        AiExtract => "ai::extract",
+        AiTranslate => "ai::translate",
     }
 
     /// Whether this function has an answer for an argument that holds nothing.

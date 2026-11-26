@@ -421,7 +421,11 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // A provider call needs the session's catalog, vault and budget, none
         // of which is a value — answered in the evaluator, where the session
         // is, and never reaches here.
-        Function::AiGenerate => Ok(Value::None),
+        Function::AiGenerate
+        | Function::AiSummarize
+        | Function::AiClassify
+        | Function::AiExtract
+        | Function::AiTranslate => Ok(Value::None),
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.

@@ -11600,6 +11600,35 @@ budget counts each call, and the provider need not answer twice alike, so
 folding it above the records would silently answer every row with one row's
 reply.
 
+**Four derived calls are the same call with the instruction written for
+you**, and they share everything above — the provider, the budget, the
+timeout, the sealed key:
+
+| Written | What it answers |
+|---|---|
+| `ai::summarize(text)` | a few sentences over the text |
+| `ai::classify(text, labels)` | the one label of `labels` the reply names — in the label's declared spelling — or `NONE` when it names none of them, never a label the call did not offer |
+| `ai::extract(text, field)` | the named field's value out of the text |
+| `ai::translate(text, language)` | the text translated into the named language |
+
+```
+SELECT ai::classify(body, ['billing', 'technical', 'other']) AS team FROM tickets;
+```
+
+An argument that is absent or of a kind the call has no meaning for answers
+`NONE` rather than refusing — a row without the text is a row the call
+skips, and a read over a million rows does not stop at the one row somebody
+typed wrong. For `ai::classify` that includes a labels argument that is not
+an array of strings, or an empty one: there is nothing to classify into.
+
+**`EXPLAIN` says what a read will spend before it spends it.** A plan whose
+projection holds provider calls carries `ai-calls: n` — the number of calls
+one record's projection makes, counted from the statement's own call sites.
+It is a multiplier, not a total: combined with the bound the plan already
+carries (`LIMIT 10` and `ai-calls: 1` is at most ten calls), it is the one
+number the planner can state exactly, where a row count would be an
+estimate wearing an exact number's clothes.
+
 What bounds the call is declared, and each bound refuses rather than
 degrades:
 

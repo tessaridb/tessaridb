@@ -595,6 +595,19 @@ pub enum Function {
     /// provider's key is read from its vault at call time and never stored
     /// or answered (G102 C8).
     AiGenerate,
+    /// `ai::summarize(text)` — a bounded summarising prompt over the same
+    /// provider call, answered with the reply text.
+    AiSummarize,
+    /// `ai::classify(text, labels)` — a classifying prompt over the same
+    /// provider call; the reply is validated against the declared labels and
+    /// answers the one it names, or `NONE` when it names none of them.
+    AiClassify,
+    /// `ai::extract(text, field)` — an extracting prompt over the same
+    /// provider call: one named field's value out of the text.
+    AiExtract,
+    /// `ai::translate(text, language)` — a translating prompt over the same
+    /// provider call, answered with the reply text.
+    AiTranslate,
 }
 
 impl fmt::Display for Function {

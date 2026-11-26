@@ -27,7 +27,7 @@
 
 use std::time::Duration;
 
-use tessari_ql::Span;
+use tessari_ql::{Function, Span};
 use tessari_storage::{AiProviderDefinition, Catalog, RecordAddress, Transaction};
 use tessari_types::Value;
 use zeroize::Zeroizing;
@@ -40,7 +40,12 @@ use crate::session::Session;
 const ANSWER_MOST: usize = 1 << 20;
 
 impl Session<'_> {
-    /// `ai::generate(prompt)` — one provider call, answered with the text.
+    /// The `ai::` family — one provider call, shaped per function.
+    ///
+    /// `ai::generate` sends its prompt as written; the derived four wrap
+    /// their arguments in the instruction their name promises, and
+    /// `ai::classify` validates the reply against the labels the call
+    /// declared, answering `NONE` for a reply that names none of them.
     ///
     /// # Errors
     ///
@@ -48,9 +53,10 @@ impl Session<'_> {
     /// and the call cannot choose), [`Error::AiKeyNotSealed`] when the key
     /// cannot be read, [`Error::AiBudgetSpent`], [`Error::AiTimedOut`],
     /// [`Error::AiProviderRefused`], [`Error::AiAnswerTooLarge`].
-    pub(crate) async fn ai_generate(
+    pub(crate) async fn ai(
         &self,
         transaction: &mut Transaction<'_>,
+        function: Function,
         arguments: &[tessari_ql::Expr],
         scope: crate::evaluate::Scope<'_>,
         span: Span,
@@ -59,9 +65,24 @@ impl Session<'_> {
         for argument in arguments {
             values.push(self.evaluate_in(transaction, argument, scope).await?);
         }
-        let Some(Value::String(prompt)) = values.first() else {
+        let Some(prompt) = prompt_of(function, &values) else {
             return Ok(Value::None);
         };
+        let answer = self.ai_call(transaction, &prompt, span).await?;
+        Ok(match function {
+            Function::AiClassify => classified(&answer, &values),
+            _ => Value::String(answer),
+        })
+    }
+
+    /// One provider call — the provider the namespace declares, its budget,
+    /// its key and the transport: everything the family shares.
+    async fn ai_call(
+        &self,
+        transaction: &mut Transaction<'_>,
+        prompt: &str,
+        span: Span,
+    ) -> Result<String> {
         let context = self.context(transaction, None, span).await?;
         let providers = Catalog::new(transaction)
             .ai_providers(context.namespace)
@@ -92,15 +113,14 @@ impl Session<'_> {
             });
         }
         let key = self.ai_key(transaction, &provider, span).await?;
-        let answer = transport::post(
+        transport::post(
             &provider,
             &key,
             prompt,
             Duration::from_secs(provider.timeout_seconds),
             self.ai_roots.as_deref(),
         )
-        .await?;
-        Ok(Value::String(answer))
+        .await
     }
 
     /// The provider's key, opened from its vault at call time.
@@ -163,6 +183,79 @@ impl Session<'_> {
         }
         opened.ok_or_else(|| sealed("holds no text secret to send"))
     }
+}
+
+/// The prompt a function's arguments spell, or `None` when an argument is
+/// absent or of a kind the call has no meaning for — absence narrows, so a
+/// row without the text is a row the call skips, not a call that fails.
+fn prompt_of(function: Function, values: &[Value]) -> Option<String> {
+    let text = |at: usize| match values.get(at) {
+        Some(Value::String(held)) => Some(held.as_str()),
+        _ => None,
+    };
+    match function {
+        Function::AiGenerate => text(0).map(str::to_owned),
+        Function::AiSummarize => {
+            text(0).map(|held| format!("Summarize this text in a few sentences:\n\n{held}"))
+        }
+        Function::AiClassify => {
+            let held = text(0)?;
+            let Some(Value::Array(declared)) = values.get(1) else {
+                return None;
+            };
+            let labels: Option<Vec<&str>> = declared
+                .iter()
+                .map(|label| match label {
+                    Value::String(held) => Some(held.as_str()),
+                    _ => None,
+                })
+                .collect();
+            let labels = labels?;
+            if labels.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "Classify the text into exactly one of these labels: {}. \
+                 Answer with the label alone.\n\n{held}",
+                labels.join(", "),
+            ))
+        }
+        Function::AiExtract => {
+            let held = text(0)?;
+            let field = text(1)?;
+            Some(format!(
+                "Extract the value of \"{field}\" from the text. \
+                 Answer with the value alone.\n\n{held}"
+            ))
+        }
+        Function::AiTranslate => {
+            let held = text(0)?;
+            let language = text(1)?;
+            Some(format!(
+                "Translate the following text into {language}. \
+                 Answer with the translation alone.\n\n{held}"
+            ))
+        }
+        _ => None,
+    }
+}
+
+/// The label a classify reply names, when it names one of the declared ones
+/// — answered in the DECLARED spelling, so a reply's stray whitespace cannot
+/// mint a label the statement did not write, and a reply naming none of them
+/// is `NONE` rather than a label the call never offered.
+fn classified(answer: &str, values: &[Value]) -> Value {
+    let Some(Value::Array(declared)) = values.get(1) else {
+        return Value::None;
+    };
+    let reply = answer.trim();
+    declared
+        .iter()
+        .find_map(|label| match label {
+            Value::String(held) if held.as_str() == reply => Some(Value::String(held.clone())),
+            _ => None,
+        })
+        .unwrap_or(Value::None)
 }
 
 /// The outbound half: one HTTPS POST, the answer's text out of it.

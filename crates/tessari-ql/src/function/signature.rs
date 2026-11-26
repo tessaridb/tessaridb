@@ -50,6 +50,7 @@ impl Function {
             | Self::SessionContext => 0,
             Self::StringLen
             | Self::AiGenerate
+            | Self::AiSummarize
             | Self::StringLower
             | Self::StringUpper
             | Self::StringTrim
@@ -192,6 +193,9 @@ impl Function {
             | Self::ScoresScore
             | Self::ScoresRank
             | Self::ScoresUnion
+            | Self::AiClassify
+            | Self::AiExtract
+            | Self::AiTranslate
             | Self::ScoresIntersect => 2,
             Self::ArraySlice
             | Self::StringSlice
@@ -236,7 +240,11 @@ impl Function {
             // provider need not answer twice alike, and a prompt built from
             // the record differs per row. Folded above the records, one row's
             // reply would silently answer for every row.
-            Self::AiGenerate => Purity::PerCall,
+            Self::AiGenerate
+            | Self::AiSummarize
+            | Self::AiClassify
+            | Self::AiExtract
+            | Self::AiTranslate => Purity::PerCall,
             // A record's ranks are the fusion's, not a function of anything the
             // call is given: folded above the records it would answer one row's
             // ranks for every row.

@@ -144,3 +144,19 @@ DROP AI PROVIDER anthropic;
 --- case: a generate call with no provider declared refuses
 RETURN ai::generate('hello');
 --- expect: error AiNoProvider
+
+--- case: a summarize call with no provider declared refuses
+RETURN ai::summarize('a long text');
+--- expect: error AiNoProvider
+
+--- case: a classify call with no provider declared refuses
+RETURN ai::classify('a text', ['one', 'two']);
+--- expect: error AiNoProvider
+
+--- case: an extract call with no provider declared refuses
+RETURN ai::extract('a text', 'field');
+--- expect: error AiNoProvider
+
+--- case: a translate call with no provider declared refuses
+RETURN ai::translate('a text', 'French');
+--- expect: error AiNoProvider

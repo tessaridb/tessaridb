@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod reference;
-mod walk;
+pub(crate) mod walk;
 
 use std::collections::BTreeMap;
 

@@ -106,9 +106,16 @@ struct Stub {
 /// The server runs on a thread of its own because `run_now` drives the
 /// session's runtime on the calling thread, and a server sharing it could
 /// never be polled while the call that reaches it is in flight. It answers
-/// `connections` calls and holds the sealed key to the one header that may
-/// carry it: a request without it fails the test inside the server.
-fn stub(status: &'static str, body: &'static str, connections: usize) -> Stub {
+/// `connections` calls, holds the sealed key to the one header that may
+/// carry it, and holds every request to `expects` — a needle the request
+/// body must carry, which is how a test pins the prompt a call built. A
+/// request missing either fails the test inside the server.
+fn stub(
+    status: &'static str,
+    body: &'static str,
+    expects: &'static str,
+    connections: usize,
+) -> Stub {
     let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
     ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
     let ca_key = rcgen::KeyPair::generate().unwrap();
@@ -146,6 +153,10 @@ fn stub(status: &'static str, body: &'static str, connections: usize) -> Stub {
                 assert!(
                     request.contains("authorization: Bearer sk-stub-key"),
                     "the sealed key did not reach the provider: {request}"
+                );
+                assert!(
+                    request.contains(expects),
+                    "the request did not carry `{expects}`: {request}"
                 );
                 let answer = format!(
                     "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
@@ -216,6 +227,7 @@ fn a_generate_call_asks_the_provider_and_answers_its_text() {
     let stub = stub(
         "200 OK",
         "{\"choices\":[{\"message\":{\"content\":\"stub says hello\"}}]}",
+        "say hello",
         1,
     );
     let mut session = declared(&store, &stub, "1000");
@@ -229,6 +241,7 @@ fn a_call_beyond_the_budget_refuses_without_reaching_the_provider() {
     let stub = stub(
         "200 OK",
         "{\"choices\":[{\"message\":{\"content\":\"one\"}}]}",
+        "first",
         1,
     );
     let mut session = declared(&store, &stub, "1");
@@ -247,7 +260,7 @@ fn a_call_beyond_the_budget_refuses_without_reaching_the_provider() {
 #[test]
 fn a_provider_refusal_answers_with_the_class_and_never_the_body() {
     let store = store();
-    let stub = stub("500 Internal Server Error", "an error page", 1);
+    let stub = stub("500 Internal Server Error", "an error page", "hello", 1);
     let mut session = declared(&store, &stub, "1000");
     let refused = session
         .run_now("RETURN ai::generate('hello');")
@@ -277,5 +290,123 @@ fn a_call_with_no_provider_declared_refuses_by_name() {
             .to_string()
             .contains("no AI provider answers this call"),
         "the refusal did not name the missing provider: {refused}"
+    );
+}
+
+// ── C8-C: the derived four, each a prompt shape over the same call ──────────
+
+#[test]
+fn a_summarize_call_carries_its_instruction_and_answers_the_reply() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"a short summary\"}}]}",
+        "Summarize this text in a few sentences",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(&mut session, "RETURN ai::summarize('a very long text');");
+    assert_eq!(answer, Value::String("a short summary".to_owned()));
+}
+
+#[test]
+fn an_extract_call_names_the_field_and_answers_the_reply() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"bob@example.test\"}}]}",
+        // The prompt's quotes ride JSON-escaped in the request body.
+        "Extract the value of \\\"email\\\" from the text",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(
+        &mut session,
+        "RETURN ai::extract('reach bob at bob@example.test', 'email');",
+    );
+    assert_eq!(answer, Value::String("bob@example.test".to_owned()));
+}
+
+#[test]
+fn a_translate_call_names_the_language_and_answers_the_reply() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"bonjour\"}}]}",
+        "Translate the following text into French",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(&mut session, "RETURN ai::translate('hello', 'French');");
+    assert_eq!(answer, Value::String("bonjour".to_owned()));
+}
+
+#[test]
+fn a_classify_reply_naming_a_label_answers_that_label() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"billing\\n\"}}]}",
+        "exactly one of these labels: billing, technical",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(
+        &mut session,
+        "RETURN ai::classify('I was charged twice', ['billing', 'technical']);",
+    );
+    // The reply carried a newline; the label answers in its declared spelling.
+    assert_eq!(answer, Value::String("billing".to_owned()));
+}
+
+#[test]
+fn a_classify_reply_naming_no_label_answers_none() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"something else\"}}]}",
+        "billing",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(
+        &mut session,
+        "RETURN ai::classify('I was charged twice', ['billing', 'technical']);",
+    );
+    // A reply naming none of the declared labels is NONE, never a label the
+    // call did not offer.
+    assert_eq!(answer, Value::None);
+}
+
+// ── C8-C: the plan says what a read will spend ──────────────────────────────
+
+#[test]
+fn explain_counts_the_provider_calls_a_projection_makes() {
+    let store = store();
+    let mut session = declared(&store, &stub("200 OK", "{}", "never reached", 0), "1000");
+    session
+        .run_now("DEFINE COLLECTION tickets; CREATE tickets:1 = { body: 'a' };")
+        .unwrap();
+    let plan = value(
+        &mut session,
+        "EXPLAIN SELECT ai::classify(body, ['a', 'b']) AS label, \
+         ai::summarize(body) AS short FROM tickets;",
+    );
+    let Value::Object(fields) = plan else {
+        panic!("EXPLAIN answers with an object");
+    };
+    assert_eq!(
+        fields.get("ai-calls"),
+        Some(&Value::Number(tessari_types::Number::Integer(2))),
+        "the plan did not count the two provider calls: {fields:?}"
+    );
+    // A read whose projection holds no provider call carries no such word.
+    let plain = value(&mut session, "EXPLAIN SELECT body FROM tickets;");
+    let Value::Object(fields) = plain else {
+        panic!("EXPLAIN answers with an object");
+    };
+    assert!(
+        !fields.contains_key("ai-calls"),
+        "a plain read claimed provider calls: {fields:?}"
     );
 }

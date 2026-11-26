@@ -401,8 +401,15 @@ impl Session<'_> {
         }
         // A provider call needs the catalog, the vault and the budget,
         // none of which is a value — answered here where the session is.
-        if *function == Function::AiGenerate {
-            return self.ai_generate(transaction, arguments, scope, *span).await;
+        if let Function::AiGenerate
+        | Function::AiSummarize
+        | Function::AiClassify
+        | Function::AiExtract
+        | Function::AiTranslate = function
+        {
+            return self
+                .ai(transaction, *function, arguments, scope, *span)
+                .await;
         }
         // One clock per statement (DB-21): the reading `step` took as
         // the statement began, not a fresh one per call.

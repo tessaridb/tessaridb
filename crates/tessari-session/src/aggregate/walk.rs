@@ -4,7 +4,7 @@ use tessari_ql::{Expr, ExprKind, Function};
 use tessari_types::Value;
 
 /// The expressions one expression is built out of.
-pub(super) fn children(expr: &Expr) -> Vec<&Expr> {
+pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
