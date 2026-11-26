@@ -121,11 +121,25 @@ fn selection_picks_run_length_on_a_constant_string_column() {
 }
 
 #[test]
-fn selection_picks_delta_on_a_monotone_sequence() {
+fn selection_picks_second_order_on_a_monotone_sequence() {
+    // A perfectly monotone run is a perfectly linear one, whose second
+    // differences are all zero — so the second-order candidate, which costs
+    // no bits per value there, outranks the plain delta the run used to
+    // choose before it existed. The property the test holds is unchanged:
+    // the cascade picks the smallest exact encoding for monotone data.
     let values: Vec<Value> = (0..256)
         .map(|row| Value::Number(Number::Integer(i64::from(row) * 2)))
         .collect();
-    assert_eq!(choose(&values).0, Encoding::Delta);
+    assert_eq!(choose(&values).0, Encoding::DoubleDelta);
+    // Deltas that vary irregularly defeat the second order and keep the
+    // plain one winning: alternating steps of 2 and 998 have large turns.
+    let mut noisy = Vec::new();
+    let mut at = 0_i64;
+    for row in 0..256 {
+        at += if row % 2 == 0 { 2 } else { 998 };
+        noisy.push(Value::Number(Number::Integer(at)));
+    }
+    assert_eq!(choose(&noisy).0, Encoding::Delta);
 }
 
 #[test]
@@ -187,4 +201,130 @@ fn trailing_bytes_are_refused() {
     let mut cursor = Cursor::new(&bytes);
     assert!(decode(Encoding::Plain.tag(), &mut cursor, values.len()).is_ok());
     assert!(cursor.finish().is_err());
+}
+
+#[test]
+fn double_delta_roundtrips_cadence_and_jitter() {
+    // A ten-second cadence with jitter: the second differences are tiny and
+    // signed, which is exactly the shape the encoding exists for.
+    let mut at = 1_700_000_000_i64;
+    let mut run = vec![at];
+    for step in 0..200_i64 {
+        at += 10 + (step % 7).saturating_sub(3);
+        run.push(at);
+    }
+    roundtrip(Encoding::DoubleDelta, &ints(&run));
+}
+
+#[test]
+fn double_delta_roundtrips_edges_and_short_runs() {
+    roundtrip(
+        Encoding::DoubleDelta,
+        &ints(&[i64::MIN, i64::MIN + 5, i64::MIN, i64::MIN + 9]),
+    );
+    roundtrip(Encoding::DoubleDelta, &ints(&[42]));
+    roundtrip(Encoding::DoubleDelta, &ints(&[42, -42]));
+    roundtrip(Encoding::DoubleDelta, &ints(&[-5, -5, -5, -5]));
+    // A span whose first difference leaves the i64 range does not apply —
+    // the cascade falls back rather than truncates.
+    assert!(encode(Encoding::DoubleDelta, &ints(&[i64::MIN, 0])).is_none());
+}
+
+#[test]
+fn gorilla_roundtrips_float_bits_exactly() {
+    // Slowly-moving measures, where the XOR windows are narrow.
+    let mut held = 21.5_f64;
+    let mut run = Vec::new();
+    for step in 0..200_u32 {
+        held += f64::from(step % 5) * 0.01;
+        run.push(held);
+    }
+    roundtrip(Encoding::Gorilla, &floats(&run));
+    // Bit patterns that are not numbers at all still round-trip: the encoding
+    // moves bits, it never interprets them.
+    let odd = vec![
+        f64::NAN,
+        -0.0,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        0.0,
+        f64::MIN_POSITIVE,
+    ];
+    roundtrip(Encoding::Gorilla, &floats(&odd));
+    roundtrip(Encoding::Gorilla, &floats(&[3.5]));
+}
+
+#[test]
+fn the_cascade_picks_second_order_for_a_cadence_and_xor_for_a_drift() {
+    // A clean cadence: delta-of-delta is all zero, one bit per value.
+    let cadence: Vec<i64> = (0..300).map(|step| 1_700_000_000 + step * 60).collect();
+    let (encoding, _) = choose(&ints(&cadence));
+    assert_eq!(
+        encoding,
+        Encoding::DoubleDelta,
+        "cadence chose {encoding:?}"
+    );
+}
+
+#[test]
+fn structured_floats_beat_plain_and_roundtrip_through_the_choice() {
+    // Which of the float candidates wins a given shape is the measured
+    // cascade's call — a band over the bits, an XOR window and a scaled
+    // decimal each take a different fixture. What must hold for every
+    // structured float run is that the choice beats the floor and that the
+    // chosen section decodes to the same values.
+    let mut rest = Vec::new();
+    for level in 0..60 {
+        let held = 21.5 + f64::from(level) * 0.01;
+        for _ in 0..5 {
+            rest.push(held);
+        }
+    }
+    let mut prices = Vec::new();
+    for step in 0..300 {
+        prices.push(99.99 + f64::from(step % 40) * 0.01);
+    }
+    let mut drift = Vec::new();
+    let mut held = std::f64::consts::PI;
+    for _ in 0..300 {
+        held += 0.000_001;
+        drift.push(held);
+    }
+    for fixture in [rest, prices, drift] {
+        let values = floats(&fixture);
+        let (encoding, bytes) = choose(&values);
+        assert_ne!(encoding, Encoding::Plain, "structured floats fell to plain");
+        let mut cursor = Cursor::new(&bytes);
+        let decoded = decode(encoding.tag(), &mut cursor, values.len()).expect("decodes");
+        cursor
+            .finish()
+            .expect("the section ends where its bytes do");
+        assert_eq!(decoded, values, "{encoding:?} chosen but not exact");
+    }
+}
+
+#[test]
+fn scaled_decimal_roundtrips_prices_and_refuses_the_rest() {
+    // Two-decimal prices: every value an exact multiple of a hundredth.
+    let mut prices = Vec::new();
+    for step in 0..200 {
+        prices.push(10.0 + f64::from(step) * 0.25);
+    }
+    roundtrip(Encoding::ScaledDecimal, &floats(&prices));
+    roundtrip(Encoding::ScaledDecimal, &floats(&[0.0, -0.0, 1.5, -2.25]));
+    roundtrip(Encoding::ScaledDecimal, &floats(&[1e9, -1e9, 0.001]));
+    // A value no power of ten scales exactly does not apply.
+    assert!(encode(Encoding::ScaledDecimal, &floats(&[0.1 + 0.2])).is_none());
+    assert!(encode(Encoding::ScaledDecimal, &floats(&[f64::NAN])).is_none());
+}
+
+#[test]
+fn the_cascade_picks_scaled_decimal_for_prices() {
+    let mut prices = Vec::new();
+    for step in 0..300 {
+        prices.push(99.99 + f64::from(step % 40) * 0.01);
+    }
+    let (_, bytes) = choose(&floats(&prices));
+    let plain = encode(Encoding::Plain, &floats(&prices)).expect("plain applies");
+    assert!(bytes.len() < plain.len(), "the choice must beat the floor");
 }
