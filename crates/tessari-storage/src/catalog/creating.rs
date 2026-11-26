@@ -271,6 +271,22 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             }
         }
 
+        // A sort key rides only a columnar table, for the partitioning rule's
+        // reason: the clause lays the projection out, and a row-store table
+        // has no projection to lay out (ADR-0135).
+        if let Some(sort) = &shape.sort {
+            if shape.storage_kind != Some(crate::catalog::StorageKind::Column) {
+                return Err(Error::StorageKindOnKind {
+                    table: name.to_owned(),
+                });
+            }
+            if sort.is_empty() {
+                return Err(Error::PartitionKeyEmpty {
+                    table: name.to_owned(),
+                });
+            }
+        }
+
         // The store names a partitioned record as the field's value and a UUID
         // v7 after it (ADR-0096), so a counter has nowhere to go.
         if shape.partition.is_some() && shape.identity != tessari_types::IdentityKind::Uuid {
@@ -309,6 +325,7 @@ impl<'a, 'txn> Catalog<'a, 'txn> {
             referenced_by: Vec::new(),
             storage_kind: shape.storage_kind,
             partitions: shape.partitions,
+            sort: shape.sort,
         };
         self.write(system::TABLES, id.get(), &definition.to_value());
         self.claim_name(&qualified, id.get());

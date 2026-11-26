@@ -175,6 +175,7 @@ impl Session<'_> {
                 expire,
                 store,
                 partitions,
+                sort,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -217,6 +218,20 @@ impl Session<'_> {
                         span: name.span,
                     });
                 }
+                // The sort key answers to the same rule as the partition key:
+                // a schemafull declaration naming no such column is refused
+                // before anything is created (ADR-0135).
+                if let Some(key) = sort
+                    && *schemafull
+                    && !columns.is_empty()
+                    && !columns.iter().any(|column| column.name.text == *key)
+                {
+                    return Err(Error::PartitionKeyUndeclared {
+                        table: name.text.clone(),
+                        field: key.clone(),
+                        span: name.span,
+                    });
+                }
                 let existed = expire.is_some() && self.names_a_table(transaction, name).await;
                 let storage_kind = store.map(|kind| match kind {
                     tessari_ql::StoreKind::Row => tessari_storage::StorageKind::Row,
@@ -245,6 +260,7 @@ impl Session<'_> {
                                     }
                                 })
                             }),
+                            sort: sort.clone(),
                         },
                         *if_not_exists,
                         span,
@@ -1639,6 +1655,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1679,6 +1696,7 @@ impl Session<'_> {
                             spread: false,
                             storage_kind: None,
                             partitions: None,
+                            sort: None,
                         },
                         *if_not_exists,
                         span,
@@ -1789,6 +1807,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1841,6 +1860,7 @@ impl Session<'_> {
                                 }
                             })
                         }),
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1924,6 +1944,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,

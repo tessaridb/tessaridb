@@ -241,6 +241,7 @@ impl Session<'_> {
                     spread: false,
                     storage_kind: None,
                     partitions: None,
+                    sort: None,
                 },
                 if_not_exists,
                 span,

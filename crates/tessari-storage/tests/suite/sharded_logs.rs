@@ -59,6 +59,7 @@ impl Split {
             spread: false,
             storage_kind: None,
             partitions: None,
+            sort: None,
         };
         let orders = catalog
             .create_table(

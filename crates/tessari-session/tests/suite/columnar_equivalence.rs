@@ -211,7 +211,7 @@ fn folds_group_by_and_filters_answer_equal_to_the_mirror() {
         &mut session,
         "events",
         "mirror",
-        "SELECT count(*) AS n FROM {t} WHERE seq >= 100 AND seq < 200;",
+        "SELECT count(*) AS n FROM {t} WHERE seq >= 9000 AND seq < 9100;",
     );
     assert_eq!(events, mirror, "the range fold diverged");
     assert_eq!(access, AccessPath::Columnar, "the range took the row path");
@@ -303,5 +303,165 @@ fn mutations_across_lanes_keep_the_answers_one() {
     assert_eq!(
         events, mirror,
         "after the writes, the ordered read diverged"
+    );
+}
+
+/// A `SORT BY` twin beside the mirror (ADR-0135): the same rows arrive in
+/// shuffled commit order, the projection lays them out by `seq`, and every
+/// read shape answers what the row mirror answers — the standing oracle,
+/// asked of the sorted layout.
+#[test]
+fn a_sorted_columnar_table_answers_exactly_what_the_mirror_does() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE prod; USE NAMESPACE prod;\n\
+                  DEFINE DATABASE analytics; USE DATABASE analytics;",
+        )
+        .unwrap();
+    // The clause rides only a columnar table, and a schemafull declaration
+    // must declare the key — both refused before anything is created.
+    assert!(
+        session
+            .run_now("DEFINE TABLE rowish (seq int) STORE ROW SORT BY seq;")
+            .is_err(),
+        "SORT BY beside STORE ROW was accepted"
+    );
+    assert!(
+        session
+            .run_now("DEFINE TABLE keyless (seq int) STORE COLUMN SORT BY missing;")
+            .is_err(),
+        "an undeclared sort key was accepted"
+    );
+    session
+        .run_now(
+            "DEFINE TABLE sorted (seq int, kind string, amount int, note string) \
+             STORE COLUMN SORT BY seq;",
+        )
+        .unwrap();
+    session
+        .run_now(
+            "DEFINE TABLE unsorted (seq int, kind string, amount int, note string) \
+             STORE COLUMN;",
+        )
+        .unwrap();
+    session
+        .run_now("DEFINE TABLE mirror (seq int, kind string, amount int, note string) SCHEMAFULL;")
+        .unwrap();
+    // Shuffled on purpose, and enough rows that chunks SEAL (the boundary is
+    // 8 192 rows): a projection that ignored the clause would fill its
+    // chunks in this order, and no sealed chunk could hold a tight range.
+    const ROWS: i64 = 18_000;
+    // The record's identity is its ARRIVAL position and `seq` is shuffled
+    // against it — a commit's mutations reach the projection in identity
+    // order (the write set is a BTreeMap), so a shuffle of the puts alone
+    // would arrive sorted anyway. The clause is what re-orders the layout.
+    // Rows land by direct puts, the fixture's own loader: thirty-six
+    // thousand CREATE statements would measure the CLI's scanner, not the
+    // projection (Q-404).
+    let ids = {
+        let mut transaction = store.begin().now().unwrap();
+        let catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.namespace_id("prod").now().unwrap().unwrap();
+        let database = catalog
+            .database_id(namespace, "analytics")
+            .now()
+            .unwrap()
+            .unwrap();
+        let sorted = catalog
+            .table_id(namespace, database, "sorted")
+            .now()
+            .unwrap()
+            .unwrap();
+        let unsorted = catalog
+            .table_id(namespace, database, "unsorted")
+            .now()
+            .unwrap()
+            .unwrap();
+        let mirror = catalog
+            .table_id(namespace, database, "mirror")
+            .now()
+            .unwrap()
+            .unwrap();
+        transaction.rollback();
+        (namespace, database, sorted, unsorted, mirror)
+    };
+    let mut transaction = store.begin().now().unwrap();
+    for position in 0..ROWS {
+        let row = position.wrapping_mul(7919) % ROWS;
+        let payload = encode_payload(&Value::Object(BTreeMap::from([
+            ("seq".to_owned(), Value::Number(Number::Integer(row))),
+            (
+                "kind".to_owned(),
+                Value::String(format!("kind-{}", row.rem_euclid(4))),
+            ),
+            (
+                "amount".to_owned(),
+                Value::Number(Number::Integer(row.rem_euclid(97))),
+            ),
+            ("note".to_owned(), Value::from("alpha")),
+        ])))
+        .into_bytes();
+        for table in [ids.2, ids.3, ids.4] {
+            transaction.put(
+                RecordAddress::new(
+                    NamespaceId::new(ids.0.get()),
+                    DatabaseId::new(ids.1.get()),
+                    TableId::new(table.get()),
+                    RecordId::Int(position),
+                ),
+                payload.clone(),
+            );
+        }
+    }
+    transaction.commit().now().unwrap();
+    for read in [
+        "SELECT seq FROM {t} WHERE seq > 17850 ORDER BY seq LIMIT 5;",
+        "SELECT kind, sum(amount) AS f FROM {t} GROUP BY kind;",
+        "SELECT count(*) AS n FROM {t} WHERE seq >= 9000 AND seq < 9100;",
+        "SELECT seq, amount FROM {t} ORDER BY seq DESC LIMIT 7;",
+    ] {
+        let (sorted, mirror, _) = both(&mut session, "sorted", "mirror", read);
+        assert_eq!(sorted, mirror, "the sorted layout diverged on `{read}`");
+    }
+    // The clause took effect: a bounded range read over the sorted table
+    // prunes chunks the mirror's layout cannot — the head statistics hold
+    // tight ranges because the rows arrived in order.
+    // The clause earns its keep: the same mid-range read decodes fewer rows
+    // on the sorted layout than on the unsorted one, because its chunks hold
+    // tight ranges — the head statistics skip what the shuffled layout must
+    // decode. (The lane's own range cannot cut a mid-range read, so the
+    // difference is the per-chunk statistics, which is the clause's work.)
+    let figures = |session: &mut Session<'_>, table: &str| {
+        let outcomes = session
+            .run_now(&format!(
+                "SELECT seq FROM {table} WHERE seq >= 9000 AND seq < 9100;"
+            ))
+            .unwrap();
+        let last = outcomes.last().unwrap();
+        let rows = last.records().unwrap().len();
+        let note = last
+            .notes()
+            .iter()
+            .find_map(|note| match note {
+                tessari_session::Note::Columnar {
+                    chunks_examined,
+                    chunks_skipped,
+                    rows_decoded,
+                    ..
+                } => Some((*chunks_examined, *chunks_skipped, *rows_decoded)),
+                _ => None,
+            })
+            .expect("no columnar note on a range read");
+        (rows, note)
+    };
+    let (sorted_rows, sorted_note) = figures(&mut session, "sorted");
+    let (unsorted_rows, unsorted_note) = figures(&mut session, "unsorted");
+    assert_eq!(sorted_rows, unsorted_rows, "the layouts disagree");
+    assert!(
+        sorted_note.2 < unsorted_note.2,
+        "the sorted layout decoded no fewer rows: sorted {sorted_note:?} vs \
+         unsorted {unsorted_note:?}"
     );
 }

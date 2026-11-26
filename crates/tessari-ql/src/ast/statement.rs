@@ -175,6 +175,10 @@ pub enum StatementKind {
         /// Only valid beside `STORE COLUMN`; the catalog refuses the other
         /// combinations by name.
         partitions: Option<(u64, String)>,
+        /// `SORT BY seq` — the field a columnar projection lays its chunks
+        /// out in order of (ADR-0135). One field, immutable after define as
+        /// the storage kind is; only valid beside `STORE COLUMN`.
+        sort: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },

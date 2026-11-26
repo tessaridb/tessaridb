@@ -188,6 +188,11 @@ pub struct TableDefinition {
     /// one; `None` is the single-lane layout SG2 built. Immutable after
     /// define, as the storage kind is (the design record).
     pub partitions: Option<HashPartitioning>,
+    /// The field the projection lays its chunks out in order of, when the
+    /// definition named one — `SORT BY` (ADR-0135). Immutable after define,
+    /// as the storage kind is; `None` is the commit-order layout every
+    /// columnar table had before the clause existed.
+    pub sort: Option<String>,
 }
 
 impl TableDefinition {
@@ -357,6 +362,9 @@ pub struct TableShape {
     /// The storage kind the definition named, when it named one; `None` is
     /// the row store, which is every table the word could not have reached.
     pub storage_kind: Option<StorageKind>,
+    /// The field the projection lays its chunks out in order of, when the
+    /// definition named one — `SORT BY` (ADR-0135); `None` is commit order.
+    pub sort: Option<String>,
     /// The hash partitioning the definition named, when it named one; `None`
     /// is the single-lane projection.
     pub partitions: Option<HashPartitioning>,

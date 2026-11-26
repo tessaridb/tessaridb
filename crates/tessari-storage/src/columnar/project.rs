@@ -49,6 +49,14 @@ use crate::store::Store;
 use super::chunk::{local_of_seq, split_seq};
 use super::writer::{ChunkWriter, remove_row};
 
+/// One mutation with its before/after decoded — what the projection loop
+/// consumes, and what the `SORT BY` pass orders.
+type Prepared<'a> = (
+    &'a tessari_encoding::Mutation,
+    Option<BTreeMap<String, RecordValueType>>,
+    Option<BTreeMap<String, RecordValueType>>,
+);
+
 /// The partition a record's values route to, `0` when the table names no
 /// partitioning. The hash is the murmur2 both consumers share, over the
 /// payload encoding of the partition field's value — the normal form
@@ -401,6 +409,10 @@ async fn project_table(
     let mut maps: Vec<(RecordId, Vec<(ColumnFamily, u64)>)> = Vec::new();
     let mut cows: Vec<(u64, ColumnFamily, Vec<u8>)> = Vec::new();
 
+    // Decode each mutation's before/after once, up front: the sort below
+    // reads the key from these, and the loop consumes them, so a record's
+    // bytes are decoded once however the batch is ordered.
+    let mut prepared: Vec<Prepared<'_>> = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         let address = RecordAddress::new(namespace, database, table, mutation.id.clone());
         let old = held_object(view, &address).await?;
@@ -408,6 +420,33 @@ async fn project_table(
             RecordValue::Present(payload) => decode_object(payload)?,
             RecordValue::Tombstone => None,
         };
+        prepared.push((mutation, old, new));
+    }
+    // `SORT BY` (ADR-0135): the batch's rows reach the writers in the sort
+    // field's order, so a chunk fills with a tight range of it and the head
+    // statistics prune by ranges that mean something. Stable, so equal keys
+    // keep the log's own order; skipped — soundly, at the cost of one
+    // unsorted batch — when a record repeats in the batch, because a record's
+    // own mutations must apply in the order the log holds them and a sort by
+    // a value that itself changed between them could reorder exactly those.
+    if let Some(field) = &definition.sort {
+        let mut seen = std::collections::HashSet::with_capacity(prepared.len());
+        let unique = prepared
+            .iter()
+            .all(|(mutation, ..)| seen.insert(&mutation.id));
+        if unique {
+            let key_of = |held: &Prepared<'_>| {
+                held.2
+                    .as_ref()
+                    .or(held.1.as_ref())
+                    .and_then(|object| object.get(field).cloned())
+                    .unwrap_or(RecordValueType::None)
+            };
+            prepared.sort_by_key(key_of);
+        }
+    }
+
+    for (mutation, old, new) in prepared {
         // The row's values route to one partition's lane; the values it is
         // losing route from the lane they sit in (the object it held).
         let partition = partition_of(definition, new.as_ref().or(old.as_ref()))?;

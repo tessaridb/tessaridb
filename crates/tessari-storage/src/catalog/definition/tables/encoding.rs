@@ -1,4 +1,4 @@
-use super::super::FIELD_PARTITIONS;
+use super::super::{FIELD_PARTITIONS, FIELD_SORT};
 use super::*;
 
 impl TableDefinition {
@@ -107,6 +107,11 @@ impl TableDefinition {
         // never reached keeps the single-lane projection, as the row-store
         // contract above keeps every table the word never reached (worksheet
         // §6.3).
+        // Written only when the definition named one, for `partitions`'
+        // reason: a table the clause never reached keeps commit order.
+        if let Some(sort) = &self.sort {
+            fields.insert(FIELD_SORT.to_owned(), Value::from(sort.as_str()));
+        }
         if let Some(partitioning) = &self.partitions {
             fields.insert(
                 FIELD_PARTITIONS.to_owned(),
@@ -281,6 +286,17 @@ impl TableDefinition {
             identity: identity_kind(fields, "table")?,
             storage_kind: storage_kind(fields, "table")?,
             partitions: super::super::reading::hash_partitioning(fields, "table")?,
+            sort: match fields.get(FIELD_SORT) {
+                None => None,
+                Some(Value::String(held)) => Some(held.clone()),
+                Some(_) => {
+                    return Err(Error::CatalogMalformed {
+                        entity: "table",
+                        field: FIELD_SORT,
+                        found: "not a field name",
+                    });
+                }
+            },
             graph: match fields.get(FIELD_GRAPH) {
                 Some(_) => Some(GraphId::new(field_id(fields, FIELD_GRAPH, "table")?)),
                 None => None,
