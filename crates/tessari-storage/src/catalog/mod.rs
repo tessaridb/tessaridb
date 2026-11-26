@@ -28,6 +28,7 @@ mod consumer;
 // `pub(crate)` for the counter helpers: `crate::cardinality` stores a record
 // count with the same `count`/`count_of` pair the record sequence uses, so the
 // two per-table numbers are written and read one way rather than two.
+mod ai_provider;
 mod allocation;
 mod balancer;
 mod creating;
@@ -66,6 +67,7 @@ mod words;
 use tessari_encoding::{decode_payload, encode_payload};
 use tessari_types::{DatabaseId, NamespaceId, RecordId, TableId, Value};
 
+pub use ai_provider::AiProviderDefinition;
 pub(crate) use allocation::{Allocated, maintain as maintain_allocators};
 pub use analyzer::AnalyzerDefinition;
 pub use authority::{Authority, Held, Kind, Reach};

@@ -140,6 +140,112 @@ pub(crate) fn replace(text: &str, from: &str, to: &str, span: Span) -> Result<Va
     Ok(Value::from(text.replace(from, to).as_str()))
 }
 
+/// The most characters a built text may hold — the same order as the wire's
+/// own ceiling, so a repetition or a padding refuses rather than allocates
+/// past what an answer could carry.
+const BUILT_MOST: u64 = 1_048_576;
+
+/// The text `n` times; a repetition past [`BUILT_MOST`] characters is refused
+/// rather than allocated.
+pub(crate) fn repeat(function: Function, text: &str, count: i64, span: Span) -> Result<Value> {
+    let count = u64::try_from(count).map_err(|_| Error::CallFailed {
+        function,
+        reason: "a repetition of less than nothing",
+        span,
+    })?;
+    let held = u64::try_from(text.chars().count()).unwrap_or(u64::MAX);
+    if held.saturating_mul(count) > BUILT_MOST {
+        return Err(Error::CallFailed {
+            function,
+            reason: "that repetition is past what a value holds",
+            span,
+        });
+    }
+    let count = usize::try_from(count).unwrap_or(0);
+    Ok(Value::from(text.repeat(count).as_str()))
+}
+
+/// The text brought to `width` characters with `fill` on the asked side; a
+/// fill that is not exactly one character is refused, and a text already
+/// wider than `width` is answered unchanged.
+pub(crate) fn pad(
+    function: Function,
+    text: &str,
+    width: i64,
+    fill: &str,
+    span: Span,
+    left: bool,
+) -> Result<Value> {
+    let mut filled = fill.chars();
+    let (Some(one), None) = (filled.next(), filled.next()) else {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a fill of exactly one character",
+            span,
+        });
+    };
+    let width = u64::try_from(width).map_err(|_| Error::CallFailed {
+        function,
+        reason: "a width of less than nothing",
+        span,
+    })?;
+    if width > BUILT_MOST {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a padding past what a value holds",
+            span,
+        });
+    }
+    let held = text.chars().count();
+    let width = usize::try_from(width).unwrap_or(0);
+    if held >= width {
+        return Ok(Value::from(text));
+    }
+    let padding: String = std::iter::repeat_n(one, width.saturating_sub(held)).collect();
+    if left {
+        Ok(Value::from(format!("{padding}{text}").as_str()))
+    } else {
+        Ok(Value::from(format!("{text}{padding}").as_str()))
+    }
+}
+
+/// The fewest single-character edits turning `first` into `second` —
+/// Levenshtein over characters, two rows of the table at a time. Texts past
+/// ten thousand characters are refused: the table is quadratic, and a
+/// distance that costs a second is a denial of service wearing a function's
+/// name.
+pub(crate) fn edit_distance(
+    function: Function,
+    first: &str,
+    second: &str,
+    span: Span,
+) -> Result<Value> {
+    let a: Vec<char> = first.chars().collect();
+    let b: Vec<char> = second.chars().collect();
+    if a.len() > 10_000 || b.len() > 10_000 {
+        return Err(Error::CallFailed {
+            function,
+            reason: "a distance over texts past ten thousand characters",
+            span,
+        });
+    }
+    let mut before: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0_usize; b.len().saturating_add(1)];
+    for (row, one) in a.iter().enumerate() {
+        current[0] = row.saturating_add(1);
+        for (column, two) in b.iter().enumerate() {
+            let substitute = before[column].saturating_add(usize::from(one != two));
+            let insert = current[column].saturating_add(1);
+            let delete = before[column.saturating_add(1)].saturating_add(1);
+            current[column.saturating_add(1)] = substitute.min(insert).min(delete);
+        }
+        std::mem::swap(&mut before, &mut current);
+    }
+    Ok(Value::Number(tessari_types::Number::Integer(
+        i64::try_from(before[b.len()]).unwrap_or(i64::MAX),
+    )))
+}
+
 #[cfg(test)]
 mod tests {
     use tessari_ql::Span;

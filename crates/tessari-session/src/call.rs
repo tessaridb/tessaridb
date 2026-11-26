@@ -20,7 +20,10 @@ pub(crate) use arguments::{
     array_at, bytes_at, datetime_at, duration_at, number_at, object_at, text_at, whole, wrong_type,
 };
 pub(crate) use numbers::{count, folded, power, reshape, truncated};
-pub(crate) use time::{bucket, from_secs, from_unix, instant, instant_of, reading};
+mod series;
+pub(crate) use time::{
+    bucket, from_secs, from_unix, instant, instant_of, instant_reading, reading, start_of,
+};
 
 /// Evaluate a call, with its arguments already values.
 ///
@@ -333,6 +336,54 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::TimeHour => reading(function, arguments, span, |civil| civil.hour),
         Function::TimeMinute => reading(function, arguments, span, |civil| civil.minute),
         Function::TimeSecond => reading(function, arguments, span, |civil| civil.second),
+        Function::TimeDayOfWeek => instant_reading(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::day_of_week,
+        ),
+        Function::TimeDayOfYear => instant_reading(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::day_of_year,
+        ),
+        Function::TimeWeek => {
+            instant_reading(function, arguments, span, tessari_types::Datetime::iso_week)
+        }
+        Function::TimeQuarter => {
+            instant_reading(function, arguments, span, tessari_types::Datetime::quarter)
+        }
+        Function::TimeStartOfDay => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_day,
+        ),
+        Function::TimeStartOfWeek => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_week,
+        ),
+        Function::TimeStartOfMonth => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_month,
+        ),
+        Function::TimeStartOfQuarter => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_quarter,
+        ),
+        Function::TimeStartOfYear => start_of(
+            function,
+            arguments,
+            span,
+            tessari_types::Datetime::start_of_year,
+        ),
         // Whole seconds, and the sub-second remainder is **not** in the answer.
         // That is a loss taken deliberately, for the reason `type::float` takes
         // the nearest float for a decimal: strictness is affordable only where
@@ -367,9 +418,139 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         // The session's node and tenancy are not values either, and are answered
         // in the evaluator, where the session is.
         Function::SessionContext => Ok(Value::None),
+        // A provider call needs the session's catalog, vault and budget, none
+        // of which is a value — answered in the evaluator, where the session
+        // is, and never reaches here.
+        Function::AiGenerate
+        | Function::AiSummarize
+        | Function::AiClassify
+        | Function::AiExtract
+        | Function::AiTranslate => Ok(Value::None),
         // The one function that makes a window sayable, and the reason
         // `GROUP BY` takes an expression: without it a caller would have to
         // store the bucket alongside the instant and keep the two in step.
+        Function::MathLog2
+        | Function::MathLog10
+        | Function::MathExp2
+        | Function::MathCbrt
+        | Function::MathSin
+        | Function::MathCos
+        | Function::MathTan
+        | Function::MathAsin
+        | Function::MathAcos
+        | Function::MathAtan
+        | Function::MathDegrees
+        | Function::MathRadians => numbers::float_reading(function, arguments, span),
+        Function::MathAtan2 | Function::MathHypot => numbers::float_pair(function, arguments, span),
+        Function::MathPi => Ok(Value::Number(Number::float(std::f64::consts::PI))),
+        Function::MathE => Ok(Value::Number(Number::float(std::f64::consts::E))),
+        Function::StringRepeat => {
+            let text = text_at(function, arguments, 0, span)?;
+            let count = whole(function, arguments, 1, span)?;
+            crate::text::repeat(function, text, count, span)
+        }
+        Function::StringPadLeft | Function::StringPadRight => {
+            let text = text_at(function, arguments, 0, span)?;
+            let width = whole(function, arguments, 1, span)?;
+            let fill = text_at(function, arguments, 2, span)?;
+            crate::text::pad(
+                function,
+                text,
+                width,
+                fill,
+                span,
+                function == Function::StringPadLeft,
+            )
+        }
+        Function::StringEditDistance => {
+            let first = text_at(function, arguments, 0, span)?;
+            let second = text_at(function, arguments, 1, span)?;
+            crate::text::edit_distance(function, first, second, span)
+        }
+        Function::UrlScheme
+        | Function::UrlHost
+        | Function::UrlPort
+        | Function::UrlPath
+        | Function::UrlQuery
+        | Function::UrlFragment => {
+            crate::web::url_part(function, text_at(function, arguments, 0, span)?, span)
+        }
+        Function::UrlEncode => Ok(crate::web::encode(text_at(function, arguments, 0, span)?)),
+        Function::UrlDecode => Ok(crate::web::decode(text_at(function, arguments, 0, span)?)),
+        Function::IpIsV4 => Ok(Value::Bool(
+            text_at(function, arguments, 0, span)?
+                .parse::<std::net::Ipv4Addr>()
+                .is_ok(),
+        )),
+        Function::IpIsV6 => Ok(Value::Bool(
+            text_at(function, arguments, 0, span)?
+                .parse::<std::net::Ipv6Addr>()
+                .is_ok(),
+        )),
+        Function::IpInRange => crate::web::in_range(
+            text_at(function, arguments, 0, span)?,
+            text_at(function, arguments, 1, span)?,
+            span,
+        ),
+        Function::ArrayCompact => {
+            let items = array_at(function, arguments, 0, span)?;
+            Ok(Value::Array(
+                items
+                    .iter()
+                    .filter(|held| held.is_present())
+                    .cloned()
+                    .collect(),
+            ))
+        }
+        Function::ArrayCount => {
+            let items = array_at(function, arguments, 0, span)?;
+            let wanted = arguments.get(1).unwrap_or(&Value::None);
+            let counted = items.iter().filter(|held| **held == *wanted).count();
+            Ok(Value::Number(Number::Integer(
+                i64::try_from(counted).unwrap_or(i64::MAX),
+            )))
+        }
+        Function::ArrayRange => {
+            let start = whole(function, arguments, 0, span)?;
+            let end = whole(function, arguments, 1, span)?;
+            if end <= start {
+                return Ok(Value::Array(Vec::new()));
+            }
+            let count = usize::try_from(i128::from(end).saturating_sub(i128::from(start)))
+                .unwrap_or(usize::MAX);
+            if count > 1_000_000 {
+                return Err(crate::error::Error::CallFailed {
+                    function,
+                    reason: "a range of more than 1000000 integers is a table, not a value",
+                    span,
+                });
+            }
+            Ok(Value::Array(
+                (start..end)
+                    .map(|held| Value::Number(Number::Integer(held)))
+                    .collect(),
+            ))
+        }
+        Function::RandUuid7 => crate::generate::uuid_v7(span).map(Value::Uuid),
+        Function::UuidInstant => {
+            let Some(Value::Uuid(bytes)) = arguments.first() else {
+                return Ok(Value::None);
+            };
+            if bytes[6] >> 4 != 7 {
+                return Ok(Value::None);
+            }
+            let millis = u64::from_be_bytes([
+                0, 0, bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5],
+            ]);
+            let seconds = i64::try_from(millis / 1_000).unwrap_or(i64::MAX);
+            let nanos = u32::try_from(millis % 1_000)
+                .unwrap_or(0)
+                .saturating_mul(1_000_000);
+            Ok(tessari_types::Datetime::new(seconds, nanos).map_or(Value::None, Value::Datetime))
+        }
+        Function::SeriesOutliersTukey => series::outliers_tukey(function, arguments, span),
+        Function::SeriesPeriodDetect => series::period_detect(function, arguments, span),
+        Function::SeriesDecomposeStl => series::decompose_stl(function, arguments, span),
         Function::TimeBucket => {
             let instant = datetime_at(function, arguments, 0, span)?;
             let width = duration_at(function, arguments, 1, span)?;
@@ -409,6 +590,46 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             };
             Ok(Value::from(value.type_name()))
         }
+        // The fold's own answer out of a stored state: the accumulator of the
+        // fold the state names, merged with it, finished. A value that is not
+        // a state, a fold this build does not know, and a state that does not
+        // fit its fold each refuse by name rather than answering a number
+        // that is nearly right.
+        Function::StateFinish => {
+            let Some(value) = arguments.first() else {
+                return Err(crate::error::Error::StateExpected {
+                    kind: "nothing",
+                    span,
+                });
+            };
+            let Value::FoldState(state) = value else {
+                return Err(crate::error::Error::StateExpected {
+                    kind: value.type_name(),
+                    span,
+                });
+            };
+            let Some(fold) = tessari_ql::Aggregate::parse(&state.fold) else {
+                return Err(crate::error::Error::StateFoldMismatch {
+                    merging: state.fold.clone(),
+                    held: state.fold.clone(),
+                    span,
+                });
+            };
+            let mut accumulator = crate::accumulate::Accumulator::for_aggregate(fold, span);
+            if !accumulator.merge(&state.state)? {
+                return Err(crate::error::Error::StateFoldMismatch {
+                    merging: state.fold.clone(),
+                    held: state.fold.clone(),
+                    span,
+                });
+            }
+            accumulator.finish()
+        }
+        // Answered by the grouping machinery from the accumulator; reaching
+        // this arm means the call stood somewhere with no accumulator to
+        // answer it — outside a grouping projection, or over something that
+        // is not a bare fold.
+        Function::StateOf => Err(crate::error::Error::StateOfWhat { span }),
         // A cast either produces the kind it names or refuses; `crate::cast`
         // holds the reading for each, and the reason it refuses rather than
         // answering `none`.

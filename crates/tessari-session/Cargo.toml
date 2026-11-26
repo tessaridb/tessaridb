@@ -29,7 +29,10 @@ zeroize.workspace = true
 rust_decimal.workspace = true
 tracing.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+rustls = { workspace = true }
+tokio-rustls = { workspace = true }
+webpki-roots = { workspace = true }
 
 [features]
 # What tests and the synchronous harnesses use to run a script without a runtime of their own (`RunNow`).
@@ -37,7 +40,8 @@ test-support = ["tessari-storage/test-support"]
 
 [dev-dependencies]
 tessari-session = { path = ".", features = ["test-support"] }
-tokio = { workspace = true, features = ["rt"] }
+tokio = { workspace = true, features = ["rt", "net", "time", "io-util"] }
+rcgen.workspace = true
 tessari-encoding.workspace = true
 tessari-kv.workspace = true
 tessari-lsm.workspace = true

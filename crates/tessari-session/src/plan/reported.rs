@@ -148,6 +148,17 @@ pub struct Plan {
     /// hop, silent when no statistics exist. The written order is the
     /// executed order; these say what each hop is expected to expand.
     pub hops: Option<Box<[HopEstimate]>>,
+    /// The kept view whose stored rows answer the read, when the read was
+    /// rewritten onto one (G102 S12 v1) — the plan's own word for the
+    /// `answered-by-view` note a running read carries.
+    pub answered_by_view: Option<String>,
+    /// How many provider calls one record's projection makes (G102 C8) —
+    /// the multiplier a reader combines with the row count the plan already
+    /// carries, so a read that fans out over a table says what it will spend
+    /// before it spends it. Counted from the statement's call sites, never
+    /// estimated from rows, which is why it is exact where an estimate would
+    /// be a maybe.
+    pub ai_calls: Option<u32>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -176,6 +187,8 @@ impl Plan {
             right_rows: None,
             partitions: None,
             hops: None,
+            answered_by_view: None,
+            ai_calls: None,
             exact: access.exactness(),
         }
     }
@@ -291,6 +304,15 @@ impl Plan {
         }
         if let Some(table) = &self.table {
             plan.insert("table".to_owned(), Value::from(table.as_str()));
+        }
+        if let Some(view) = &self.answered_by_view {
+            plan.insert("answered-by-view".to_owned(), Value::from(view.as_str()));
+        }
+        if let Some(calls) = self.ai_calls {
+            plan.insert(
+                "ai-calls".to_owned(),
+                Value::Number(Number::Integer(i64::from(calls))),
+            );
         }
         if let Some(index) = &self.index {
             plan.insert("index".to_owned(), Value::from(index.as_str()));

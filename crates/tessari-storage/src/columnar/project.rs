@@ -49,6 +49,14 @@ use crate::store::Store;
 use super::chunk::{local_of_seq, split_seq};
 use super::writer::{ChunkWriter, remove_row};
 
+/// One mutation with its before/after decoded — what the projection loop
+/// consumes, and what the `SORT BY` pass orders.
+type Prepared<'a> = (
+    &'a tessari_encoding::Mutation,
+    Option<BTreeMap<String, RecordValueType>>,
+    Option<BTreeMap<String, RecordValueType>>,
+);
+
 /// The partition a record's values route to, `0` when the table names no
 /// partitioning. The hash is the murmur2 both consumers share, over the
 /// payload encoding of the partition field's value — the normal form
@@ -401,6 +409,10 @@ async fn project_table(
     let mut maps: Vec<(RecordId, Vec<(ColumnFamily, u64)>)> = Vec::new();
     let mut cows: Vec<(u64, ColumnFamily, Vec<u8>)> = Vec::new();
 
+    // Decode each mutation's before/after once, up front: the sort below
+    // reads the key from these, and the loop consumes them, so a record's
+    // bytes are decoded once however the batch is ordered.
+    let mut prepared: Vec<Prepared<'_>> = Vec::with_capacity(mutations.len());
     for mutation in mutations {
         let address = RecordAddress::new(namespace, database, table, mutation.id.clone());
         let old = held_object(view, &address).await?;
@@ -408,6 +420,33 @@ async fn project_table(
             RecordValue::Present(payload) => decode_object(payload)?,
             RecordValue::Tombstone => None,
         };
+        prepared.push((mutation, old, new));
+    }
+    // `SORT BY` (ADR-0135): the batch's rows reach the writers in the sort
+    // field's order, so a chunk fills with a tight range of it and the head
+    // statistics prune by ranges that mean something. Stable, so equal keys
+    // keep the log's own order; skipped — soundly, at the cost of one
+    // unsorted batch — when a record repeats in the batch, because a record's
+    // own mutations must apply in the order the log holds them and a sort by
+    // a value that itself changed between them could reorder exactly those.
+    if let Some(field) = &definition.sort {
+        let mut seen = std::collections::HashSet::with_capacity(prepared.len());
+        let unique = prepared
+            .iter()
+            .all(|(mutation, ..)| seen.insert(&mutation.id));
+        if unique {
+            let key_of = |held: &Prepared<'_>| {
+                held.2
+                    .as_ref()
+                    .or(held.1.as_ref())
+                    .and_then(|object| object.get(field).cloned())
+                    .unwrap_or(RecordValueType::None)
+            };
+            prepared.sort_by_key(key_of);
+        }
+    }
+
+    for (mutation, old, new) in prepared {
         // The row's values route to one partition's lane; the values it is
         // losing route from the lane they sit in (the object it held).
         let partition = partition_of(definition, new.as_ref().or(old.as_ref()))?;
@@ -492,6 +531,20 @@ async fn project_table(
     // batch.
     let mut batch = batch;
     for (seq, family, bytes) in cows {
+        // A rewritten sealed chunk keeps its seq and narrows its range:
+        // the head index takes the rewritten chunk's own statistics, so the
+        // lane stays complete and no read pays a walk for the rewrite.
+        if let Ok((_, stats)) = super::chunk::decode_head(&bytes) {
+            store.heads().rewritten(
+                &super::heads::LaneKey {
+                    table,
+                    family: family.clone(),
+                    partition: seq >> super::chunk::PARTITION_BITS,
+                },
+                super::chunk::local_of_seq(seq),
+                stats,
+            );
+        }
         batch = batch.put(
             ChunkKey::keyspace(),
             ChunkKey::new(namespace, database, table, family, seq, version).encode(),
@@ -507,21 +560,24 @@ async fn project_table(
         // record: the scan consults the open chunk every time).
         let open_local = writer.seq();
         let finished = writer.finish();
-        let contributions: Vec<SealedStat> = finished
+        let decoded: Vec<(u64, super::chunk::ChunkStats)> = finished
             .iter()
             .filter(|sealed| sealed.seq != open_local)
-            .map(|sealed| {
-                let stat = super::chunk::decode_head(&sealed.bytes)?.1;
+            .map(|sealed| Ok((sealed.seq, super::chunk::decode_head(&sealed.bytes)?.1)))
+            .collect::<Result<Vec<_>>>()?;
+        let contributions: Vec<SealedStat> = decoded
+            .iter()
+            .map(|(_, stat)| {
                 if stat.range_disabled {
-                    Ok(SealedStat::Disabled)
+                    SealedStat::Disabled
                 } else {
-                    Ok(match stat.min.zip(stat.max) {
+                    match stat.min.clone().zip(stat.max.clone()) {
                         Some((min, max)) => SealedStat::Ranged(min, max),
                         None => SealedStat::Empty,
-                    })
+                    }
                 }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         let held = lanes.entry(family.clone()).or_default();
         // A lane upgrades from absence only while its sealed history is
         // fully known: it was born under this wave and no NaN has disabled
@@ -553,6 +609,33 @@ async fn project_table(
                 Value::from(sealed.bytes),
             );
         }
+        // The head index extends by exactly the transition that preserves
+        // its completeness claim: the chunks this commit sealed, appended to
+        // a lane whose base open it still names. Updating here — before the
+        // batch lands — is sound in every outcome: a failed commit leaves
+        // the pointer behind the bumped open, which reads as stale, and
+        // stale is a walk and a reinstall.
+        let base_open = held.get(&partition).map_or(0, |lane| lane.open);
+        store.heads().sealed(
+            &super::heads::LaneKey {
+                table,
+                family: family.clone(),
+                partition,
+            },
+            base_open,
+            open_seq,
+            decoded
+                .iter()
+                .map(|(local, stats)| {
+                    (
+                        *local,
+                        super::heads::HeadEntry {
+                            stats: stats.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        );
         held.insert(
             partition,
             LanePointer {

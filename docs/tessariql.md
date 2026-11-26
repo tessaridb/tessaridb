@@ -5539,6 +5539,15 @@ instant already past the floor, which would be written and never read
 `SeriesIdentityDerived`, and changing a record's `at` is `SeriesTimeFixed` —
 delete it and write it again.
 
+`POST /series/{ns}/{db}/{series}/remote-write` is the Prometheus on-ramp: the body is a
+snappy-compressed `WriteRequest`, each `__name__` label lands as the field `metric`, every other
+label as a field of its own name, the sample's value as `value` and its millisecond timestamp in
+the series' declared `TIME` field — so a Prometheus `remote_write` URL pointed here writes into a
+series you declared, under your own grants. A series ordered by arrival time is refused by name
+(its samples' instants are the data, and there is no field to land them in), a body that does not
+decompress is refused whole, and a label a strict series does not declare is refused by the
+series' own rule.
+
 `POST /series/{ns}/{db}/{series}` appends a batch of events over HTTP in one
 transaction, each through the caller's session as a `CREATE`; the protocol
 specification carries the route.
@@ -5676,7 +5685,10 @@ SELECT increase(n, at) AS up, delta(n, at) AS change, rate(n, at) AS per_second
 ```
 
 Three aggregates fold a counter by the instant each value was observed at, so
-the samples are ordered by that instant rather than by storage. `increase` adds
+the samples are ordered by that instant rather than by storage. Seven more take
+the same pair of arguments — `resets`, `deriv`, `predict_linear` (with a horizon
+in seconds), `downsample` (with a point count) and the four `decayed_` folds
+(with a half-life in seconds) — and are in the fold table below. `increase` adds
 the rises and counts a fall as a reset — the counter restarted and counted the
 new value; `delta` is last minus first; `rate` is the increase per second between
 the first and last sample, and a single sample has none. Over `10, 15, 3, 8, 20`
@@ -5711,6 +5723,15 @@ SELECT city, count(*) AS n FROM users GROUP BY city ORDER BY n DESC LIMIT 3;
 | `collect(<expr>)` | every present value, as an array, in the order the records arrived; over nothing, `[]` |
 | `approx_distinct(<expr>)` | an **estimate** of how many distinct present values; exact up to 1 024 of them; over nothing, `0` |
 | `approx_quantile(<expr>, q)` | an **estimate** of the value at rank `q` (0 to 1) within 1 % of the true one; over no numbers, `NONE` |
+| `resets(<expr>, <instant>)` | how many times the samples fall between one and the next, ordered by the instant — the counter resets the window saw; a window of one sample saw none |
+| `deriv(<expr>, <instant>)` | the least-squares slope per second, as a float; fewer than two samples, or all at one instant, name no slope and answer `NONE` |
+| `predict_linear(<expr>, <instant>, <seconds>)` | the value the samples' least-squares line reaches `seconds` past the last sample, as a float |
+| `downsample(<expr>, <instant>, <points>)` | at most `points` samples by the largest-triangle rule, first and last always kept, as an array of `{ at, value }` in time order |
+| `decayed_sum(<expr>, <instant>, <half_life>)` | the sum where each sample weighs `0.5` to the power of its age in half-lives, measured back from the newest sample |
+| `decayed_mean(<expr>, <instant>, <half_life>)` | the weighted mean — the weighted sum over the sum of the weights |
+| `decayed_max(<expr>, <instant>, <half_life>)` | the largest weighted value |
+| `decayed_count(<expr>, <instant>, <half_life>)` | the sum of the weights alone |
+| `top_k(<expr>, <k>)` | the `k` most common present values with their counts, most common first, as `[{ value, count }]` — exact, refusing past the same 1 000 000-distinct ceiling as `count(DISTINCT …)` |
 
 **The two `approx_` folds are the ones that say so.** They answer in bounded memory however many records they
 read, and every answer that used one carries a note:
@@ -5856,6 +5877,50 @@ rather than being broken by it: `array::len` counts one record's array and
 `count` counts records, and the spelling says which arity you are looking at.
 Only `count(` is a fold — a bare `count` is a route into the record, so a field
 named `count` stays readable.
+
+### A fold's state, kept and merged: `state::of`, `state::merge`, `state::finish`
+
+A fold's **state** is what its accumulator holds before the fold finishes —
+and it is a value (from `0.55.0`). A grouping projection can answer it instead
+of the finish, a `fold_state` field stores it, `state::merge` folds states of
+one fold into one state, and `state::finish` answers the fold's own answer out
+of a state:
+
+```tessariql
+DEFINE TABLE daily_totals SCHEMAFULL;
+DEFINE FIELD day ON daily_totals TYPE datetime;
+DEFINE FIELD part ON daily_totals TYPE fold_state;
+INSERT INTO daily_totals (day, part)
+    SELECT time::start_of_day(at) AS day, state::of(sum(amount)) AS part
+    FROM payments GROUP BY time::start_of_day(at);
+```
+
+The `INSERT … SELECT` stores each day's partial sum as a state rather than
+finishing it. Later — or on another node — the states merge and finish once:
+
+```tessariql
+SELECT day, state::finish(state::merge(part)) AS total
+    FROM daily_totals GROUP BY day;
+```
+
+**A state names its fold.** The value carries the fold's spelling beside what
+the accumulator holds, so merging a `count`'s state into a `sum`'s refuses
+(`StateFoldMismatch`) rather than mis-adding, and finishing a value that is
+not a state refuses (`StateExpected`). `state::of` stands only over a bare
+fold in a grouping projection — anywhere else it refuses (`StateOfWhat`).
+
+**The oracle is the direct fold.** A state finished is the fold over the same
+records, and halves merged are the whole — the same part-merge property the
+cluster's gathered folds rest on (ADR-0114), now writable by hand: a rollup
+table you declare yourself, a partial aggregate shipped between processes, a
+two-phase aggregation in three statements.
+
+**Which folds have a state.** Every fold whose merge is the same as offering
+the values one after another: `count`, `sum`, `mean`, `min`, `max`,
+`variance`, `stddev`, and the sketch folds. `state::merge` holds one
+accumulator however many states it is offered. A state that cannot travel
+exactly — an exact total already out of range with no float to decide the
+answer — refuses (`StateCannotTravel`) rather than answering inexactly.
 
 ### A value from the records around one: `OVER`
 
@@ -6473,12 +6538,28 @@ SELECT array::first(string::split(email, '@')) AS handle FROM people;
 | `array::flatten(items)` | one level of nesting removed |
 | `array::join(items, sep)` | the elements as one text |
 | `array::slice(items, start, count)` | a run of elements |
+| `array::compact(items)` | the elements that are present, `NONE`s gone |
+| `array::count(items, value)` | how many elements equal the value |
+| `array::range(start, end)` | the integers from `start` up to `end`, `end` not included |
+| `series::outliers_tukey(values)` | the indices outside the Tukey fences, 1.5 interquartile ranges past either quartile |
+| `series::period_detect(values)` | the dominant period in samples, read off the strongest Fourier component |
+| `series::decompose_stl(values, period)` | `{ trend, seasonal, residual }` — classical seasonal decomposition |
 | `string::concat(a, b, …)` | the strings joined in order — two or more |
 | `string::split(text, sep)` | the parts between occurrences |
 | `string::slice(text, start, count)` | a run of characters |
 | `string::lines(text, start, count)` | a run of lines |
 | `string::replace(text, from, to)` | every occurrence replaced |
+| `string::repeat(text, n)` | the text `n` times |
+| `string::pad_left(text, n, fill)` · `string::pad_right(text, n, fill)` | brought to `n` characters with a one-character fill |
+| `string::edit_distance(a, b)` | the fewest single-character edits between them, characters not bytes |
 | `math::sqrt(n)` · `math::pow(base, exp)` | a root and a power |
+| `math::log2(n)` · `math::log10(n)` | the base-2 and base-10 logarithms, `NONE` at zero or below |
+| `math::exp2(n)` · `math::cbrt(n)` | two to the power; the cube root, negative for a negative |
+| `math::sin(n)` · `math::cos(n)` · `math::tan(n)` | the angle in radians |
+| `math::asin(n)` · `math::acos(n)` · `math::atan(n)` | the inverse readings, `NONE` outside −1 to 1 for the first two |
+| `math::atan2(y, x)` · `math::hypot(a, b)` | the angle in its quadrant; the hypotenuse without the overflow |
+| `math::degrees(r)` · `math::radians(d)` | between the two angle units |
+| `math::pi()` · `math::e()` | the two constants, as floats |
 
 **Of two candidate behaviours, the one the other can be written from wins.**
 That single rule settles most of the questions above, and it is why several
@@ -6585,6 +6666,15 @@ SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(
 | `time::hour(at)` | 0 through 23 |
 | `time::minute(at)` | 0 through 59 |
 | `time::second(at)` | the second **of the minute**, 0 through 59 |
+| `time::day_of_week(at)` | the ISO-8601 day of the week, Monday 1 through Sunday 7 |
+| `time::day_of_year(at)` | the day of the year, 1 through 366 |
+| `time::week(at)` | the ISO-8601 week number, 1 through 53 — a week belongs to the year holding its Thursday |
+| `time::quarter(at)` | the quarter of the year, 1 through 4 |
+| `time::start_of_day(at)` | midnight of the instant's own day |
+| `time::start_of_week(at)` | midnight of the week's Monday |
+| `time::start_of_month(at)` | midnight of the month's first day |
+| `time::start_of_quarter(at)` | midnight of the quarter's first day |
+| `time::start_of_year(at)` | midnight of the year's first day |
 | `time::unix(at)` | whole seconds since the epoch |
 | `time::from_unix(n)` | the instant a second count names |
 | `duration::from_secs(n)` | the span `n` seconds names, whole or fractional, to the nanosecond |
@@ -6657,6 +6747,40 @@ a statement, since a `USE` is a statement of its own.
 | Written | What it answers |
 |---|---|
 | `rand::uuid()` | a version-4 UUID that has never been answered before |
+| `rand::uuid7()` | a version-7 UUID — time-ordered, minted once per call |
+| `uuid::instant(id)` | the instant a version-7 identifier was minted at; `NONE` for any other version |
+
+### URLs and addresses, read as text
+
+A URL column needs its parts read far more often than it needs a type of its
+own: these are readings over the text, and a text that is no URL answers
+`NONE` from every one of them, so a read over a million rows does not stop at
+the one row somebody typed wrong.
+
+| Written | What it answers |
+|---|---|
+| `url::scheme(url)` | the scheme, lowercased; `NONE` when the text is no URL |
+| `url::host(url)` | the host — a bracketed IPv6 literal without its brackets; `NONE` when none is named |
+| `url::port(url)` | the port as an integer; `NONE` when none is named — never a guessed default |
+| `url::path(url)` | the path, `''` when none is named |
+| `url::query(url)` | the query without its `?`; `NONE` when none is named |
+| `url::fragment(url)` | the fragment without its `#`; `NONE` when none is named |
+| `url::encode(text)` | the text with every byte outside `A–Z a–z 0–9 - _ . ~` percent-escaped, uppercase hex |
+| `url::decode(text)` | the text with its percent-escapes read; `NONE` when an escape is malformed or spells no text |
+| `ip::is_v4(text)` | whether the text parses as an IPv4 address |
+| `ip::is_v6(text)` | whether the text parses as an IPv6 address |
+| `ip::in_range(ip, cidr)` | whether the address is inside the range, by mask; **refused** when either side does not parse, and `false` — not an error — when the families differ |
+
+```
+SELECT url::host(link) AS site, count(*) AS n FROM visits GROUP BY url::host(link);
+SELECT ip::in_range(client, '10.0.0.0/8') AS internal FROM requests;
+```
+
+The one refusal is the range test's: a range test against an address nobody
+can parse has no answer, only a mistake, so `ip::in_range` refuses
+(`WrongArgument`) where the accessors above answer `NONE`. The parser is an
+RFC 3986 subset — `scheme://[user@]host[:port] path ?query #fragment` — and
+the address parsing is the standard library's own, so neither is a dependency.
 
 The case it is for is a field that gives every record an identity of its own:
 
@@ -8558,6 +8682,22 @@ value — it keeps a membership map beside its rows, written in the same commit.
 grouped view declared before `0.26.0-beta` is rebuilt this way on its first
 maintenance pass after the upgrade, which is when its row identities change.
 
+**A grouped view can answer the table's own reads.** From `0.55.0` a grouped
+read of the **source table** is answered from a grouped view's stored rows when
+the store can prove the answers are the same: the read groups by keys the view
+groups by (or by a subset of them, or by nothing at all — a whole-table
+aggregate), folds only `count`, `sum`, `min` and `max` over expressions the
+view folds verbatim — a `count` becomes the **sum** of the stored counts —
+its `WHERE` contains every conjunct the view's own `WHERE` has, and any extra
+conjunct is over the view's group keys, so it keeps and drops whole groups.
+The view must also be **current** at the read's snapshot and the caller's
+grant over the source must hide nothing — the rows were computed for
+everybody. Anything else reads the base table exactly as before, and the
+decision costs the read nothing it can notice. A read answered this way says
+so: its `notes` carry `answered-by-view` naming the view, and `EXPLAIN`
+reports `answered-by-view` in the plan, so the path an answer took is never
+folklore.
+
 **What it costs.** A per-record view recomputes one record per change, and a
 grouped view the groups its changes touched — 50 000 records in 500 groups, one
 change per batch, on disk: 51.5 → 5.1 ms per batch at the median, about one
@@ -10126,6 +10266,7 @@ The kinds include:
 | `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
 | `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.40.0`) |
 | `answered-as-of` | a read that named a freshness bound was answered locally from a copy that is not the leader's own, and this is how old that copy was: the bound named is the guarantee, and this is the copy's actual age (§7b‴″′) |
+| `answered-by-view` | a grouped read was answered from a kept view's stored rows rather than from the base table — taken only when the store can prove the answers are the same, and naming the view (§6d, *A view that keeps its answer*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the
@@ -11415,6 +11556,102 @@ carries the same two counts per pool as `tessari_pool_running` and
 because an always-empty series trains whoever watches it to ignore the one
 reading that matters.
 
+### A provider the `ai::` calls go to — `DEFINE AI PROVIDER`
+
+```tessariql
+DEFINE AI PROVIDER anthropic
+    URL 'https://api.example.test/v1/messages' MODEL 'a-model'
+    KEY VAULT secrets FIELD anthropic_key
+    BUDGET 1000 PER 1h TIMEOUT 10s;
+DROP AI PROVIDER anthropic;
+```
+
+A provider is a catalog object — replicated, versioned, dropped like any
+definition — naming where the namespace's `ai::` calls go and how they are
+bounded. **Every clause is required and none has a default**, on the
+`DEFINE` rule that a value the store guessed would decide behaviour nobody
+chose: the endpoint (`https` only — a key never crosses plaintext), the
+model, where the key lives, how many calls a span admits, and how long one
+call may take.
+
+**The key is named, never written.** `KEY VAULT secrets FIELD anthropic_key`
+says which vault secret the key lives in; the catalog row carries the NAME,
+the key itself never travels in the log, never replicates and never appears
+in a backup of the catalog — each node reads its own vault at call time. A
+vault the database does not hold refuses the declaration
+(`AiKeyNotSealed`): a provider whose key has nowhere sealed to live is a
+plaintext key waiting to be written somewhere else. Declaring one also
+needs the store's format finalized past the version that added the row
+(`FormatNotFinalized` below it), like every catalog addition before it.
+
+**The call is `ai::generate(prompt)`** — one request to the declared
+provider, answered with the reply text:
+
+```
+RETURN ai::generate('Summarise this ticket in one line: ' + title);
+SELECT ai::generate('Classify: ' + body) AS label FROM tickets LIMIT 10;
+```
+
+The provider speaks the chat-completions shape — the one shape every hosted
+and local provider already serves — and the answer is the text of
+`choices[0].message.content`. The call is **asked again for every record**,
+like `rand::uuid()`: a prompt built from the record differs per row, the
+budget counts each call, and the provider need not answer twice alike, so
+folding it above the records would silently answer every row with one row's
+reply.
+
+**Four derived calls are the same call with the instruction written for
+you**, and they share everything above — the provider, the budget, the
+timeout, the sealed key:
+
+| Written | What it answers |
+|---|---|
+| `ai::summarize(text)` | a few sentences over the text |
+| `ai::classify(text, labels)` | the one label of `labels` the reply names — in the label's declared spelling — or `NONE` when it names none of them, never a label the call did not offer |
+| `ai::extract(text, field)` | the named field's value out of the text |
+| `ai::translate(text, language)` | the text translated into the named language |
+
+```
+SELECT ai::classify(body, ['billing', 'technical', 'other']) AS team FROM tickets;
+```
+
+An argument that is absent or of a kind the call has no meaning for answers
+`NONE` rather than refusing — a row without the text is a row the call
+skips, and a read over a million rows does not stop at the one row somebody
+typed wrong. For `ai::classify` that includes a labels argument that is not
+an array of strings, or an empty one: there is nothing to classify into.
+
+**`EXPLAIN` says what a read will spend before it spends it.** A plan whose
+projection holds provider calls carries `ai-calls: n` — the number of calls
+one record's projection makes, counted from the statement's own call sites.
+It is a multiplier, not a total: combined with the bound the plan already
+carries (`LIMIT 10` and `ai-calls: 1` is at most ten calls), it is the one
+number the planner can state exactly, where a row count would be an
+estimate wearing an exact number's clothes.
+
+What bounds the call is declared, and each bound refuses rather than
+degrades:
+
+- **The budget** is a token bucket per provider, per node, in memory:
+  `BUDGET n PER span` refills `n` calls every span, a call spends one, and
+  an empty bucket refuses `AiBudgetSpent` — a queued provider call inside a
+  read is a stalled read, so the caller's retry is the honest queue.
+- **The timeout** ends a call the provider does not answer in time
+  (`AiTimedOut`); there is no retry — the caller decides.
+- **The answer** is capped at a mebibyte (`AiAnswerTooLarge`), and a
+  non-2xx status refuses with the status CLASS alone (`AiProviderRefused`) —
+  never the body, because a provider's error page can echo the request, and
+  the request carried the key.
+- **No provider to go to** refuses by name (`AiNoProvider`): the namespace
+  declares none, or declares several and the call cannot choose. One
+  declared provider is the provider; naming one of several is a later
+  clause, not a guess the store makes.
+
+At call time the key is read from its vault under the engine's own
+authority, held in a buffer that zeroizes on drop, sent in the
+`authorization` header, and never logged, stored or answered; a sealed
+vault or a missing secret refuses the call (`AiKeyNotSealed`) rather than
+sending anything unsealed.
 
 ### The layout a cluster is arranged over
 
@@ -11793,7 +12030,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.54.0", "build": "0.54.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.55.0", "build": "0.55.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

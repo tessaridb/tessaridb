@@ -182,3 +182,151 @@ fn a_closed_store_asks_for_a_credential_and_a_grant_like_every_route() {
     assert_eq!(send(&address, "POST", ROUTE, &batch, owner).0, 200);
     assert!(stored(&address, owner).contains("\"a\""));
 }
+
+/// One binary request: the remote-write body is snappy, not text.
+fn send_bytes(address: &str, path: &str, body: &[u8]) -> (u16, String) {
+    let mut stream = TcpStream::connect(address).unwrap();
+    let head = format!(
+        "POST {path} HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        body.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(body).unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut rest = String::new();
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 {
+            break;
+        }
+        rest.push_str(&line);
+    }
+    (status, rest)
+}
+
+/// A `WriteRequest` for one series of one sample, built by hand — the same
+/// three messages the route's walker reads.
+fn write_request(metric: &str, value: f64, at_ms: i64) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut held: u64) {
+        loop {
+            let byte = u8::try_from(held & 0x7f).unwrap_or(0);
+            held >>= 7;
+            if held == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    fn field(out: &mut Vec<u8>, number: u64, wire: u64) {
+        varint(out, (number << 3) | wire);
+    }
+    fn text(out: &mut Vec<u8>, number: u64, held: &str) {
+        field(out, number, 2);
+        varint(out, held.len() as u64);
+        out.extend_from_slice(held.as_bytes());
+    }
+    let mut label_name = Vec::new();
+    text(&mut label_name, 1, "__name__");
+    text(&mut label_name, 2, metric);
+    let mut label_job = Vec::new();
+    text(&mut label_job, 1, "job");
+    text(&mut label_job, 2, "probe");
+    let mut sample = Vec::new();
+    field(&mut sample, 1, 1);
+    sample.extend_from_slice(&value.to_le_bytes());
+    field(&mut sample, 2, 0);
+    varint(&mut sample, u64::try_from(at_ms).unwrap_or(0));
+    let mut series = Vec::new();
+    field(&mut series, 1, 2);
+    varint(&mut series, label_name.len() as u64);
+    series.extend_from_slice(&label_name);
+    field(&mut series, 1, 2);
+    varint(&mut series, label_job.len() as u64);
+    series.extend_from_slice(&label_job);
+    field(&mut series, 2, 2);
+    varint(&mut series, sample.len() as u64);
+    series.extend_from_slice(&sample);
+    let mut request = Vec::new();
+    field(&mut request, 1, 2);
+    varint(&mut request, series.len() as u64);
+    request.extend_from_slice(&series);
+    request
+}
+
+#[test]
+fn a_remote_write_batch_lands_with_its_labels_and_instants() {
+    let (_node, address) = node();
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE remote; USE NAMESPACE remote; DEFINE DATABASE intake; USE DATABASE intake; DEFINE SERIES hits RETAIN 36500d TIME at;",
+        None,
+    );
+    assert_eq!(status, 200);
+    let plain = write_request("cpu_load", 0.75, 1_795_651_200_500);
+    let packed = snap::raw::Encoder::new().compress_vec(&plain).unwrap();
+    let (status, body) = send_bytes(&address, "/series/remote/intake/hits/remote-write", &packed);
+    assert_eq!(status, 200, "{body}");
+    assert!(body.contains(r#""appended":1"#), "{body}");
+    let (status, body) = send(
+        &address,
+        "POST",
+        "/script",
+        "USE NAMESPACE remote; USE DATABASE intake; SELECT metric, job, value, at FROM hits;",
+        None,
+    );
+    assert_eq!(status, 200);
+    assert!(body.contains("cpu_load"), "{body}");
+    assert!(body.contains("probe"), "{body}");
+    assert!(body.contains("0.75"), "{body}");
+    assert!(body.contains("2026-11-26"), "{body}");
+}
+
+#[test]
+fn a_remote_write_refuses_what_it_cannot_land_honestly() {
+    let (_node, address) = node();
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE remote; USE NAMESPACE remote; DEFINE DATABASE intake; USE DATABASE intake; DEFINE SERIES arrived RETAIN 36500d;",
+        None,
+    );
+    assert_eq!(status, 200);
+    let plain = write_request("m", 1.0, 1_000);
+    let packed = snap::raw::Encoder::new().compress_vec(&plain).unwrap();
+    // A series ordered by arrival time cannot hold the samples' instants.
+    let (status, body) = send_bytes(
+        &address,
+        "/series/remote/intake/arrived/remote-write",
+        &packed,
+    );
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("arrival time"), "{body}");
+    // A body that is not snappy is refused whole.
+    let (status, body) = send_bytes(
+        &address,
+        "/series/remote/intake/arrived/remote-write",
+        b"not snappy",
+    );
+    assert_eq!(status, 400, "{body}");
+    // A series that is not there is a 404, after the credential would have
+    // been asked for on a secured node.
+    let (status, _) = send_bytes(
+        &address,
+        "/series/remote/intake/nothing/remote-write",
+        &packed,
+    );
+    assert_eq!(status, 404);
+}

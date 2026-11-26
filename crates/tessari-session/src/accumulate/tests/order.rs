@@ -84,9 +84,12 @@ fn a_constant_space_fold_holds_at_most_one_value_however_many_it_is_offered() {
     {
         let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
         for held in 0..OFFERED {
-            // A quantile is offered each value with its rank.
+            // A quantile is offered each value with its rank; a merge, a
+            // state — the one value kind its offer accepts.
             let offered = if *aggregate == Aggregate::ApproxQuantile {
                 Value::Array(vec![integer(held), float(0.5)])
+            } else if *aggregate == Aggregate::StateMerge {
+                a_sum_state()
             } else {
                 integer(held)
             };
@@ -122,12 +125,20 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
     {
         let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
         for held in 0..OFFERED {
-            // A counter fold is offered each value with its instant.
-            let offered = if aggregate.takes_an_instant() {
-                Value::Array(vec![
+            // A fold with a second argument is offered each value with it —
+            // the instant for the counter family, the count for `top_k` —
+            // and a fold taking a horizon with that as the third element.
+            let offered = if !aggregate.takes_an_instant() && aggregate.second().is_some() {
+                Value::Array(vec![integer(held), integer(2)])
+            } else if aggregate.takes_an_instant() {
+                let mut pair = vec![
                     integer(held),
                     Value::Datetime(tessari_types::Datetime::from_seconds(held)),
-                ])
+                ];
+                if aggregate.takes_ahead() {
+                    pair.push(integer(10));
+                }
+                Value::Array(pair)
             } else {
                 integer(held)
             };

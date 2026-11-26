@@ -307,8 +307,7 @@ fn a_catalog_change_between_identical_calls_is_visible() {
 fn the_compile_cache_is_bounded() {
     let store = store();
     let mut session = ready(&store);
-    let cap =
-        usize::try_from(tessari_constants::COMPILE_CACHE_MAX).expect("the capacity fits a usize");
+    let cap = tessari_constants::COMPILE_CACHE_MAX;
     for at in 0..cap.saturating_add(4) {
         session
             .run_now(&format!("SELECT * FROM users WHERE name = 'n{at}';"))

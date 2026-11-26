@@ -71,7 +71,7 @@ pub use replication_class::ReplicationClass;
 pub use stemmer::stem;
 pub use text::{article, parse_uuid, string_to_literal, uuid_to_text};
 pub use time::{Datetime, Duration};
-pub use value::{RecordRef, Value, ValueRange};
+pub use value::{FoldState, RecordRef, Value, ValueRange};
 pub use write_kind::WriteKind;
 
 /// The split bound the store bakes into a bare `SPLIT AUTOMATICALLY` and an

@@ -95,6 +95,7 @@ impl Parser<'_> {
                 let mut expire: Option<TableExpiry> = None;
                 let mut store: Option<crate::ast::StoreKind> = None;
                 let mut partitions: Option<(u64, String)> = None;
+                let mut sort: Option<String> = None;
                 loop {
                     if strictness.is_none() && self.eat_keyword(Keyword::Schemafull) {
                         strictness = Some(true);
@@ -167,6 +168,12 @@ impl Parser<'_> {
                         )?;
                         self.expect_word("by", "`BY` and the field a record's lane is picked by")?;
                         partitions = Some((count, self.name()?.text));
+                    // `SORT BY field` — the columnar projection's layout
+                    // order (ADR-0135). One field; the catalog refuses it
+                    // anywhere but beside `STORE COLUMN`.
+                    } else if sort.is_none() && self.eat_word("sort") {
+                        self.expect_word("by", "`BY` and the field the chunks are laid out in order of")?;
+                        sort = Some(self.name()?.text);
                     } else {
                         break;
                     }
@@ -205,6 +212,7 @@ impl Parser<'_> {
                     expire,
                     store,
                     partitions,
+                    sort,
                     if_not_exists,
                 })
             }
@@ -351,6 +359,9 @@ impl Parser<'_> {
             // And a sixth, on the same reasoning: `pool` is a name data
             // already uses, and nothing but a subject can stand after `DEFINE`.
             _ if self.eat_word("pool") => self.define_pool(),
+            // Contextual, as `pool` is: `AI` reserves nothing, and only
+            // `PROVIDER` can follow it here.
+            _ if self.eat_word("ai") => self.define_ai_provider(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called

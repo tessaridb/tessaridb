@@ -50,6 +50,7 @@ mod latest;
 mod lent;
 mod nearest;
 mod nearest_place;
+mod onto_view;
 mod ordered;
 mod partition;
 mod paths;
@@ -397,6 +398,18 @@ impl Session<'_> {
         }
         if *function == Function::SessionContext {
             return self.session_context().await;
+        }
+        // A provider call needs the catalog, the vault and the budget,
+        // none of which is a value — answered here where the session is.
+        if let Function::AiGenerate
+        | Function::AiSummarize
+        | Function::AiClassify
+        | Function::AiExtract
+        | Function::AiTranslate = function
+        {
+            return self
+                .ai(transaction, *function, arguments, scope, *span)
+                .await;
         }
         // One clock per statement (DB-21): the reading `step` took as
         // the statement began, not a fresh one per call.

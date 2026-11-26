@@ -47,6 +47,48 @@ pub enum Aggregate {
     Rate,
     /// `delta(<value>, <instant>)` — last minus first, with no reset handling.
     Delta,
+    /// `resets(<value>, <instant>)` — how many times the samples, ordered by
+    /// the instant, fall between one and the next: the counter resets the
+    /// window saw. A window of one sample saw none, which is a complete
+    /// answer rather than an absent one — unlike `increase`, whose total is
+    /// genuinely unknown there.
+    Resets,
+    /// `deriv(<value>, <instant>)` — the least-squares slope of the samples
+    /// per second, as a float. A window with fewer than two samples, or all
+    /// at one instant, names no slope and answers `NONE`.
+    Deriv,
+    /// `predict_linear(<value>, <instant>, <seconds>)` — the value the
+    /// samples' least-squares line reaches `seconds` past the last sample,
+    /// as a float. The horizon is read at the last sample; the answer is
+    /// `NONE` wherever `deriv` is.
+    PredictLinear,
+    /// `downsample(<value>, <instant>, <points>)` — at most `points` of the
+    /// samples, chosen by the largest-triangle rule so the shape survives:
+    /// the first and last always, and between them the points a line through
+    /// their neighbours would lose most. The answer is an array of
+    /// `{ at, value }` in time order; a group with no more samples than
+    /// `points` answers all of them.
+    Downsample,
+    /// `decayed_sum(<value>, <instant>, <half_life>)` — the sum where each
+    /// sample weighs `0.5` to the power of its age in half-lives, measured
+    /// back from the newest sample, as a float.
+    DecayedSum,
+    /// `decayed_mean(<value>, <instant>, <half_life>)` — the weighted mean,
+    /// the weighted sum over the sum of the weights.
+    DecayedMean,
+    /// `decayed_max(<value>, <instant>, <half_life>)` — the largest weighted
+    /// value.
+    DecayedMax,
+    /// `decayed_count(<value>, <instant>, <half_life>)` — the sum of the
+    /// weights alone: how many samples there were, counting the old ones for
+    /// less.
+    DecayedCount,
+    /// `top_k(<expr>, <k>)` — the `k` most common present values with how
+    /// many records held each, most common first and ties in the value
+    /// system's order, as an array of `{ value, count }`. Exact, so it holds
+    /// every distinct value of its group like `count(DISTINCT …)` and refuses
+    /// past the same ceiling.
+    TopK,
     /// `collect(<expr>)` — every present value, in the order the records arrived.
     ///
     /// Over nothing, `[]` and not `NONE`, by `sum`'s rule: an answer every
@@ -72,6 +114,14 @@ pub enum Aggregate {
     /// [`COUNT_DISTINCT_MOST`] distinct values is refused rather than grown
     /// without bound; `approx_distinct` is the fold whose space does not grow.
     CountDistinct,
+    /// `state::merge(<expr>)` — the states of one fold, merged into one state
+    /// (G102 S11).
+    ///
+    /// The one fold whose values are themselves fold states: each must be a
+    /// `fold_state` of the same fold, and the answer is a `fold_state` again —
+    /// finishing it is `state::finish`'s job. A state of another fold is
+    /// refused rather than mis-added.
+    StateMerge,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -114,10 +164,20 @@ impl Aggregate {
         Self::Increase,
         Self::Rate,
         Self::Delta,
+        Self::Resets,
+        Self::Deriv,
+        Self::PredictLinear,
+        Self::Downsample,
+        Self::DecayedSum,
+        Self::DecayedMean,
+        Self::DecayedMax,
+        Self::DecayedCount,
+        Self::TopK,
         Self::Collect,
         Self::ApproxDistinct,
         Self::ApproxQuantile,
         Self::CountDistinct,
+        Self::StateMerge,
     ];
 
     /// How the fold is written.
@@ -135,12 +195,24 @@ impl Aggregate {
             Self::Increase => "increase",
             Self::Rate => "rate",
             Self::Delta => "delta",
+            Self::Resets => "resets",
+            Self::Deriv => "deriv",
+            Self::PredictLinear => "predict_linear",
+            Self::Downsample => "downsample",
+            Self::DecayedSum => "decayed_sum",
+            Self::DecayedMean => "decayed_mean",
+            Self::DecayedMax => "decayed_max",
+            Self::DecayedCount => "decayed_count",
+            Self::TopK => "top_k",
             Self::Collect => "collect",
             Self::ApproxDistinct => "approx_distinct",
             Self::ApproxQuantile => "approx_quantile",
             // Written `count(DISTINCT x)`; this spelling names it in messages and
             // cannot be read as a word, so `count` stays the plain count.
             Self::CountDistinct => "count distinct",
+            // Namespaced like a function; the parser recognises the three
+            // tokens rather than one word.
+            Self::StateMerge => "state::merge",
         }
     }
 
@@ -162,10 +234,20 @@ impl Aggregate {
             | Self::Stddev
             | Self::ApproxDistinct
             | Self::ApproxQuantile => Retention::Constant,
+            Self::StateMerge => Retention::Constant,
             Self::Median
             | Self::Increase
             | Self::Rate
             | Self::Delta
+            | Self::Resets
+            | Self::Deriv
+            | Self::PredictLinear
+            | Self::Downsample
+            | Self::DecayedSum
+            | Self::DecayedMean
+            | Self::DecayedMax
+            | Self::DecayedCount
+            | Self::TopK
             | Self::Collect
             | Self::CountDistinct => Retention::WholeGroup,
         }
@@ -174,7 +256,35 @@ impl Aggregate {
     /// Whether the fold orders its values by an instant, and so takes one.
     #[must_use]
     pub const fn takes_an_instant(self) -> bool {
-        matches!(self, Self::Increase | Self::Rate | Self::Delta)
+        matches!(
+            self,
+            Self::Increase
+                | Self::Rate
+                | Self::Delta
+                | Self::Resets
+                | Self::Deriv
+                | Self::PredictLinear
+                | Self::Downsample
+                | Self::DecayedSum
+                | Self::DecayedMean
+                | Self::DecayedMax
+                | Self::DecayedCount
+        )
+    }
+
+    /// Whether the fold takes a third argument: the horizon, in seconds past
+    /// the last sample, that `predict_linear` projects to.
+    #[must_use]
+    pub const fn takes_ahead(self) -> bool {
+        matches!(
+            self,
+            Self::PredictLinear
+                | Self::Downsample
+                | Self::DecayedSum
+                | Self::DecayedMean
+                | Self::DecayedMax
+                | Self::DecayedCount
+        )
     }
 
     /// What the fold's second argument is, for a fold that takes one: the
@@ -182,10 +292,19 @@ impl Aggregate {
     #[must_use]
     pub const fn second(self) -> Option<&'static str> {
         match self {
-            Self::Increase | Self::Rate | Self::Delta => {
-                Some("`,` and the instant each value was observed at")
-            }
+            Self::Increase
+            | Self::Rate
+            | Self::Delta
+            | Self::Resets
+            | Self::Deriv
+            | Self::PredictLinear
+            | Self::Downsample
+            | Self::DecayedSum
+            | Self::DecayedMean
+            | Self::DecayedMax
+            | Self::DecayedCount => Some("`,` and the instant each value was observed at"),
             Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
+            Self::TopK => Some("`,` and how many of the most common values to answer"),
             _ => None,
         }
     }

@@ -1,10 +1,10 @@
 //! Walking an expression for its folds, and putting what they answered back.
 
-use tessari_ql::{Expr, ExprKind};
+use tessari_ql::{Expr, ExprKind, Function};
 use tessari_types::Value;
 
 /// The expressions one expression is built out of.
-pub(super) fn children(expr: &Expr) -> Vec<&Expr> {
+pub(crate) fn children(expr: &Expr) -> Vec<&Expr> {
     match &expr.kind {
         ExprKind::Fold { over, .. } => over.as_deref().into_iter().collect(),
         ExprKind::Not(inner) | ExprKind::Negate(inner) => vec![inner],
@@ -35,6 +35,29 @@ pub(super) fn folds_in<'a>(expr: &'a Expr, found: &mut Vec<&'a Expr>) {
     }
 }
 
+/// For each fold [`folds_in`] finds, whether it stands directly under
+/// `state::of` — in walk order, so the flags index beside the occurrences.
+///
+/// A fold under `state::of` is answered with its accumulator's **state**
+/// rather than its finish (G102 S11); anything deeper inside the call is not,
+/// which is what makes `state::of(sum(x) + 1)` refuse at the call rather than
+/// answer something shaped like an accident.
+pub(super) fn stated_in(expr: &Expr, under_of: bool, found: &mut Vec<bool>) {
+    if matches!(expr.kind, ExprKind::Fold { .. }) {
+        found.push(under_of);
+    }
+    let under_of = matches!(
+        &expr.kind,
+        ExprKind::Call {
+            function: Function::StateOf,
+            ..
+        }
+    );
+    for child in children(expr) {
+        stated_in(child, under_of, found);
+    }
+}
+
 /// The same expression with each fold replaced by the value it produced.
 ///
 /// A fold's value is **constant within its group**, and this makes that
@@ -46,6 +69,22 @@ pub(super) fn folds_in<'a>(expr: &'a Expr, found: &mut Vec<&'a Expr>) {
 /// the collections in.
 pub(super) fn substituted(expr: &Expr, taken: &mut std::vec::IntoIter<Value>) -> Expr {
     if matches!(expr.kind, ExprKind::Fold { .. }) {
+        return Expr {
+            kind: ExprKind::Literal(taken.next().unwrap_or(Value::None)),
+            span: expr.span,
+        };
+    }
+    // `state::of(<fold>)` IS its fold's value — the state, which the second
+    // pass computed in place of the finish — so the call itself substitutes
+    // away rather than evaluating over it.
+    if let ExprKind::Call {
+        function: Function::StateOf,
+        arguments,
+        ..
+    } = &expr.kind
+        && let [only] = arguments.as_slice()
+        && matches!(only.kind, ExprKind::Fold { .. })
+    {
         return Expr {
             kind: ExprKind::Literal(taken.next().unwrap_or(Value::None)),
             span: expr.span,

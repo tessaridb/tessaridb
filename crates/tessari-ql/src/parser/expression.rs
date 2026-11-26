@@ -88,15 +88,19 @@ impl Parser<'_> {
 
     fn primary(&mut self) -> Result<Expr> {
         let span = self.span_here();
+        // A fold is recognised before a call, because one fold — `state::merge`
+        // — is spelled like a call and would be claimed by that shape first.
+        // The two sets cannot otherwise collide: every other fold is one word
+        // and every call is `group::name`.
+        if let Some(fold) = self.fold()? {
+            return Ok(fold);
+        }
         // A call is recognised before a keyword is, so `type::of(x)` reads as
         // the function it obviously is. A reserved word before `::` cannot be
         // anything else, which is the same reasoning that lets one stand after
         // `TYPE` and inside an object literal.
         if self.call_follows() {
             return self.call(span);
-        }
-        if let Some(fold) = self.fold()? {
-            return Ok(fold);
         }
         // Before `keyword_value`, which would read `IF` as a value it is not.
         // The two positions `IF` appears in never meet: here it leads an

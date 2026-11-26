@@ -41,11 +41,16 @@ impl Function {
         match self {
             Self::TimeNow
             | Self::RandUuid
+            | Self::RandUuid7
+            | Self::MathPi
+            | Self::MathE
             | Self::SearchRanks
             | Self::SearchTable
             | Self::SearchSnippet
             | Self::SessionContext => 0,
             Self::StringLen
+            | Self::AiGenerate
+            | Self::AiSummarize
             | Self::StringLower
             | Self::StringUpper
             | Self::StringTrim
@@ -70,10 +75,47 @@ impl Function {
             | Self::TimeHour
             | Self::TimeMinute
             | Self::TimeSecond
+            | Self::TimeDayOfWeek
+            | Self::TimeDayOfYear
+            | Self::TimeWeek
+            | Self::TimeQuarter
+            | Self::TimeStartOfDay
+            | Self::TimeStartOfWeek
+            | Self::TimeStartOfMonth
+            | Self::TimeStartOfQuarter
+            | Self::TimeStartOfYear
+            | Self::MathLog2
+            | Self::MathLog10
+            | Self::MathExp2
+            | Self::MathCbrt
+            | Self::MathSin
+            | Self::MathCos
+            | Self::MathTan
+            | Self::MathAsin
+            | Self::MathAcos
+            | Self::MathAtan
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::UuidInstant
+            | Self::ArrayCompact
+            | Self::SeriesOutliersTukey
+            | Self::SeriesPeriodDetect
             | Self::TimeUnix
             | Self::TimeFromUnix
             | Self::DurationFromSecs
             | Self::TypeOf
+            | Self::StateOf
+            | Self::StateFinish
+            | Self::UrlScheme
+            | Self::UrlHost
+            | Self::UrlPort
+            | Self::UrlPath
+            | Self::UrlQuery
+            | Self::UrlFragment
+            | Self::UrlDecode
+            | Self::UrlEncode
+            | Self::IpIsV4
+            | Self::IpIsV6
             | Self::TypeBool
             | Self::TypeInt
             | Self::TypeFloat
@@ -114,6 +156,14 @@ impl Function {
             | Self::SearchScore
             | Self::SearchExplain
             | Self::TimeBucket
+            | Self::MathAtan2
+            | Self::MathHypot
+            | Self::StringRepeat
+            | Self::StringEditDistance
+            | Self::IpInRange
+            | Self::ArrayCount
+            | Self::ArrayRange
+            | Self::SeriesDecomposeStl
             | Self::GeoIntersects
             | Self::GeoDisjoint
             | Self::GeoCovers
@@ -143,10 +193,15 @@ impl Function {
             | Self::ScoresScore
             | Self::ScoresRank
             | Self::ScoresUnion
+            | Self::AiClassify
+            | Self::AiExtract
+            | Self::AiTranslate
             | Self::ScoresIntersect => 2,
             Self::ArraySlice
             | Self::StringSlice
             | Self::StringLines
+            | Self::StringPadLeft
+            | Self::StringPadRight
             | Self::StringReplace
             | Self::ScoresRange
             | Self::ScoresBetween => 3,
@@ -180,7 +235,16 @@ impl Function {
             // The one function the fold may not touch. Reading no record makes
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.
-            Self::RandUuid => Purity::PerCall,
+            Self::RandUuid | Self::RandUuid7 => Purity::PerCall,
+            // A provider call is spent per call — the budget counts it, the
+            // provider need not answer twice alike, and a prompt built from
+            // the record differs per row. Folded above the records, one row's
+            // reply would silently answer for every row.
+            Self::AiGenerate
+            | Self::AiSummarize
+            | Self::AiClassify
+            | Self::AiExtract
+            | Self::AiTranslate => Purity::PerCall,
             // A record's ranks are the fusion's, not a function of anything the
             // call is given: folded above the records it would answer one row's
             // ranks for every row.
@@ -223,6 +287,32 @@ impl Function {
             | Self::TimeHour
             | Self::TimeMinute
             | Self::TimeSecond
+            | Self::TimeDayOfWeek
+            | Self::TimeDayOfYear
+            | Self::TimeWeek
+            | Self::TimeQuarter
+            | Self::TimeStartOfDay
+            | Self::TimeStartOfWeek
+            | Self::TimeStartOfMonth
+            | Self::TimeStartOfQuarter
+            | Self::TimeStartOfYear
+            | Self::MathLog2
+            | Self::MathLog10
+            | Self::MathExp2
+            | Self::MathCbrt
+            | Self::MathSin
+            | Self::MathCos
+            | Self::MathTan
+            | Self::MathAsin
+            | Self::MathAcos
+            | Self::MathAtan
+            | Self::MathDegrees
+            | Self::MathRadians
+            | Self::UuidInstant
+            | Self::ArrayCompact
+            | Self::SeriesOutliersTukey
+            | Self::SeriesPeriodDetect
+            | Self::SeriesDecomposeStl
             | Self::TimeUnix
             | Self::TimeFromUnix
             | Self::DurationFromSecs
@@ -293,7 +383,33 @@ impl Function {
             | Self::ScoresBetween
             | Self::ScoresUnion
             | Self::ScoresIntersect
-            | Self::CryptoSha512 => Purity::Pure,
+            | Self::CryptoSha512
+            | Self::MathAtan2
+            | Self::MathHypot
+            | Self::MathPi
+            | Self::MathE
+            | Self::StringRepeat
+            | Self::StringPadLeft
+            | Self::StringPadRight
+            | Self::StringEditDistance
+            | Self::ArrayCount
+            | Self::ArrayRange
+            | Self::UrlScheme
+            | Self::UrlHost
+            | Self::UrlPort
+            | Self::UrlPath
+            | Self::UrlQuery
+            | Self::UrlFragment
+            | Self::UrlDecode
+            | Self::UrlEncode
+            | Self::IpIsV4
+            | Self::IpIsV6
+            | Self::IpInRange
+            // Both answer from the value they are given: `state::of` is
+            // answered by the grouping machinery from the accumulator, and
+            // reaching the evaluator at all is its own refusal.
+            | Self::StateOf
+            | Self::StateFinish => Purity::Pure,
         }
     }
 }

@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod reference;
-mod walk;
+pub(crate) mod walk;
 
 use std::collections::BTreeMap;
 
@@ -24,7 +24,7 @@ use crate::evaluate::Scope;
 use crate::session::Session;
 #[cfg(test)]
 pub(crate) use reference::fold;
-use walk::{children, folds_in, substituted};
+use walk::{children, folds_in, stated_in, substituted};
 
 /// Whether a projection folds many records into one.
 pub(crate) fn folds(wanted: &[Projected]) -> bool {
@@ -230,7 +230,14 @@ impl Session<'_> {
                 for (which, fold) in held.iter().enumerate() {
                     let index = walked;
                     walked = walked.saturating_add(1);
-                    let ExprKind::Fold { over, at, span, .. } = &fold.kind else {
+                    let ExprKind::Fold {
+                        over,
+                        at,
+                        ahead,
+                        span,
+                        ..
+                    } = &fold.kind
+                    else {
                         continue;
                     };
                     // A sketch fold over a rollup's sketch column merges the
@@ -273,13 +280,24 @@ impl Session<'_> {
                         }
                     };
                     // A counter fold is offered the value with the instant it
-                    // was observed at, so it can order its samples itself.
+                    // was observed at, so it can order its samples itself; a
+                    // fold taking a horizon is offered that as the third
+                    // element.
                     let value = match at {
-                        Some(at) => Value::Array(vec![
-                            value,
-                            self.evaluate_in(transaction, at, Scope::of(&record))
-                                .await?,
-                        ]),
+                        Some(at) => {
+                            let mut pair = vec![
+                                value,
+                                self.evaluate_in(transaction, at, Scope::of(&record))
+                                    .await?,
+                            ];
+                            if let Some(ahead) = ahead {
+                                pair.push(
+                                    self.evaluate_in(transaction, ahead, Scope::of(&record))
+                                        .await?,
+                                );
+                            }
+                            Value::Array(pair)
+                        }
                         None => value,
                     };
                     if let Some(accumulator) = entry
@@ -322,9 +340,17 @@ impl Session<'_> {
             let mut fields = BTreeMap::new();
             for (position, value) in wanted.iter().enumerate() {
                 let held = occurrences.get(position).map_or(&[][..], Vec::as_slice);
+                // Which of this projection's folds answer with their state
+                // rather than their finish — `state::of`'s marks, in the walk
+                // order the occurrences were collected in.
+                let mut stated = Vec::with_capacity(held.len());
+                stated_in(&value.value, false, &mut stated);
                 let mut computed = Vec::with_capacity(held.len());
                 for (which, fold) in held.iter().enumerate() {
-                    let ExprKind::Fold { .. } = &fold.kind else {
+                    let ExprKind::Fold {
+                        fold: named, span, ..
+                    } = &fold.kind
+                    else {
                         continue;
                     };
                     let Some(accumulator) =
@@ -332,7 +358,24 @@ impl Session<'_> {
                     else {
                         continue;
                     };
-                    computed.push(accumulator.finish()?);
+                    computed.push(if stated.get(which).copied().unwrap_or(false) {
+                        // The state, named by its fold so a merge elsewhere
+                        // refuses a stranger; a fold whose state cannot travel
+                        // exactly refuses rather than answering inexactly.
+                        let state =
+                            accumulator
+                                .state()
+                                .ok_or(crate::error::Error::StateCannotTravel {
+                                    fold: named.spelling(),
+                                    span: *span,
+                                })?;
+                        Value::FoldState(Box::new(tessari_types::FoldState {
+                            fold: named.spelling().to_owned(),
+                            state,
+                        }))
+                    } else {
+                        accumulator.finish()?
+                    });
                 }
                 let answer = if computed.is_empty() {
                     // No fold in this projection, so it is a group key — and a

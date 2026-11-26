@@ -31,6 +31,15 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "increase",
             "rate",
             "delta",
+            "resets",
+            "deriv",
+            "predict_linear",
+            "downsample",
+            "decayed_sum",
+            "decayed_mean",
+            "decayed_max",
+            "decayed_count",
+            "top_k",
             "collect",
             "count distinct"
         ]

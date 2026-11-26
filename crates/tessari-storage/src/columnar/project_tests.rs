@@ -586,7 +586,7 @@ fn lane_range_merges_and_stays_absent_on_a_nan_chunk() {
 
     let sealed = |values: &[Value]| {
         let ids: Vec<RecordId> = (0..values.len())
-            .map(|row| RecordId::Int(row as i64))
+            .map(|row| RecordId::Int(i64::try_from(row).expect("a row count an i64 holds")))
             .collect();
         let bytes = super::chunk::encode_chunk(&ids, values);
         let (_, stats) = super::chunk::decode_head(&bytes).expect("the head reads");

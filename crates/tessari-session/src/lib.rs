@@ -70,6 +70,7 @@ mod plan;
 mod pool;
 mod presented;
 pub use presented::{Certificates, ClientTransport, Listener, Presented};
+mod ai;
 mod pushdown;
 mod queue;
 mod rank;
@@ -92,6 +93,7 @@ mod topic;
 mod vault_surface;
 mod vector;
 mod view;
+mod web;
 
 pub use detached::Detached;
 pub use effect::{Effect, admits};

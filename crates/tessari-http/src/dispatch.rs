@@ -265,7 +265,26 @@ pub(super) async fn answer(id: u64, node: &Shared, mut request: Incoming) -> Ans
         {
             respond::vault::one_vault(db, method, url, &mut request, tokens, &presented).await
         }
-        // A batch of events for one series, in one transaction (G044 C12).
+        // A batch of events for one series, in one transaction (G044 C12);
+        // the `remote-write` suffix is the Prometheus on-ramp, whose body is
+        // snappy-compressed protobuf rather than text.
+        (Method::POST, url) if url.starts_with("/series/") && url.ends_with("/remote-write") => {
+            let aimed = url
+                .strip_prefix("/series/")
+                .and_then(|rest| rest.strip_suffix("/remote-write"));
+            match aimed.map(|rest| rest.splitn(3, '/').collect::<Vec<_>>()) {
+                Some(parts) if parts.len() == 3 => match body::bytes(&mut request) {
+                    Ok(body) => {
+                        respond::remote_write::append(
+                            db, parts[0], parts[1], parts[2], &body, tokens, &presented,
+                        )
+                        .await
+                    }
+                    Err(refused) => refused,
+                },
+                _ => Answer::new(404, r#"{"error":"no such route"}"#.to_owned()),
+            }
+        }
         (Method::POST, url) if url.starts_with("/series/") => match respond::series::target(url) {
             Some(aimed) => match body::text(&mut request) {
                 Ok(body) => respond::series::append(db, &aimed, &body, tokens, &presented).await,

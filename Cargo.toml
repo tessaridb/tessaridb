@@ -3,7 +3,7 @@ resolver = "3"
 members = ["crates/*"]
 
 [workspace.package]
-version = "0.54.0"
+version = "0.55.0"
 edition = "2024"
 rust-version = "1.98"
 license = "BUSL-1.1"
@@ -12,28 +12,28 @@ repository = "https://github.com/tessaridb/tessaridb"
 publish = false
 
 [workspace.dependencies]
-tessari-types = { path = "crates/tessari-types", version = "0.54.0" }
-tessari-constants = { path = "crates/tessari-constants", version = "0.54.0" }
-tessari-kv = { path = "crates/tessari-kv", version = "0.54.0" }
+tessari-types = { path = "crates/tessari-types", version = "0.55.0" }
+tessari-constants = { path = "crates/tessari-constants", version = "0.55.0" }
+tessari-kv = { path = "crates/tessari-kv", version = "0.55.0" }
 # The storage engine.
 tessarikv = "0.2.0"
-tessari-encoding = { path = "crates/tessari-encoding", version = "0.54.0" }
-tessari-geo = { path = "crates/tessari-geo", version = "0.54.0" }
-tessari-storage = { path = "crates/tessari-storage", version = "0.54.0" }
-tessari-lsm = { path = "crates/tessari-lsm", version = "0.54.0" }
-tessari-ql = { path = "crates/tessari-ql", version = "0.54.0" }
-tessari-session = { path = "crates/tessari-session", version = "0.54.0" }
-tessari-conformance = { path = "crates/tessari-conformance", version = "0.54.0" }
-tessaridb = { path = "crates/tessaridb", version = "0.54.0" }
-tessari-backup = { path = "crates/tessari-backup", version = "0.54.0" }
-tessari-wire = { path = "crates/tessari-wire", version = "0.54.0" }
-tessari-http = { path = "crates/tessari-http", version = "0.54.0" }
-tessari-ingest = { path = "crates/tessari-ingest", version = "0.54.0" }
-tessari-serve = { path = "crates/tessari-serve", version = "0.54.0" }
-tessari-vault = { path = "crates/tessari-vault", version = "0.54.0" }
-tessari-kafka = { path = "crates/tessari-kafka", version = "0.54.0" }
-tessari-pg = { path = "crates/tessari-pg", version = "0.54.0" }
-tessari-resp = { path = "crates/tessari-resp", version = "0.54.0" }
+tessari-encoding = { path = "crates/tessari-encoding", version = "0.55.0" }
+tessari-geo = { path = "crates/tessari-geo", version = "0.55.0" }
+tessari-storage = { path = "crates/tessari-storage", version = "0.55.0" }
+tessari-lsm = { path = "crates/tessari-lsm", version = "0.55.0" }
+tessari-ql = { path = "crates/tessari-ql", version = "0.55.0" }
+tessari-session = { path = "crates/tessari-session", version = "0.55.0" }
+tessari-conformance = { path = "crates/tessari-conformance", version = "0.55.0" }
+tessaridb = { path = "crates/tessaridb", version = "0.55.0" }
+tessari-backup = { path = "crates/tessari-backup", version = "0.55.0" }
+tessari-wire = { path = "crates/tessari-wire", version = "0.55.0" }
+tessari-http = { path = "crates/tessari-http", version = "0.55.0" }
+tessari-ingest = { path = "crates/tessari-ingest", version = "0.55.0" }
+tessari-serve = { path = "crates/tessari-serve", version = "0.55.0" }
+tessari-vault = { path = "crates/tessari-vault", version = "0.55.0" }
+tessari-kafka = { path = "crates/tessari-kafka", version = "0.55.0" }
+tessari-pg = { path = "crates/tessari-pg", version = "0.55.0" }
+tessari-resp = { path = "crates/tessari-resp", version = "0.55.0" }
 
 thiserror = "2"
 # The Kafka surface's record batches (ADR-0129): CRC-32C, and the four codecs a
@@ -119,6 +119,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # the other provider.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+# The public root set for the one surface that calls OUT to a public API: the
+# `ai::` provider transport (G102 C8). Every other TLS surface trusts explicit
+# operator authorities; a public provider is the case the Mozilla roots exist
+# for, and the crate is the rustls project's own, with no dependencies.
+webpki-roots = { version = "1", default-features = false }
 # The only way a chain reaches the process. `Credential.chain` is a chain, and
 # DER has no container for one — a DER-only reader would force one file per
 # certificate and a flag that takes a list. From the rustls project, already

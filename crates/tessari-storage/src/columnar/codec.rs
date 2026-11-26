@@ -67,6 +67,19 @@ pub(crate) enum Encoding {
     FrameOfReference = 3,
     /// Monotone integers: first value, bit-packed non-negative deltas.
     Delta = 4,
+    /// Integers, second order: first value, first delta, bit-packed
+    /// zig-zagged delta-of-deltas — a near-linear run (timestamps at a
+    /// cadence, ids with gaps) collapses to a bit or two per value.
+    DoubleDelta = 5,
+    /// Floats by XOR against the previous value: a leading/meaningful-bits
+    /// window per value, so a slowly-moving measure stores only the bits
+    /// that changed.
+    XorWindow = 6,
+    /// Decimal floats as scaled integers: every value an exact multiple of
+    /// `10^-k` for one `k`, stored as bit-packed offsets from the smallest.
+    /// A run where one value does not scale exactly does not apply — the
+    /// cascade falls back rather than rounds.
+    ScaledDecimal = 7,
 }
 
 impl Encoding {
@@ -78,6 +91,9 @@ impl Encoding {
             Self::RunLength => 2,
             Self::FrameOfReference => 3,
             Self::Delta => 4,
+            Self::DoubleDelta => 5,
+            Self::XorWindow => 6,
+            Self::ScaledDecimal => 7,
         }
     }
 
@@ -89,16 +105,22 @@ impl Encoding {
             2 => Ok(Self::RunLength),
             3 => Ok(Self::FrameOfReference),
             4 => Ok(Self::Delta),
+            5 => Ok(Self::DoubleDelta),
+            6 => Ok(Self::XorWindow),
+            7 => Ok(Self::ScaledDecimal),
             _ => Err(Error::ColumnarUnknownEncoding { found }),
         }
     }
 
     /// Cascade order: the order ties keep.
-    const CASCADE: [Self; 5] = [
+    const CASCADE: [Self; 8] = [
         Self::Dictionary,
         Self::RunLength,
         Self::FrameOfReference,
         Self::Delta,
+        Self::DoubleDelta,
+        Self::XorWindow,
+        Self::ScaledDecimal,
         Self::Plain,
     ];
 }
@@ -189,6 +211,9 @@ pub(crate) fn encode(encoding: Encoding, values: &[Value]) -> Option<Vec<u8>> {
         Encoding::RunLength => Some(encode_runs(values)),
         Encoding::FrameOfReference => encode_reference(values),
         Encoding::Delta => encode_delta(values),
+        Encoding::DoubleDelta => encode_double_delta(values),
+        Encoding::XorWindow => encode_xor_window(values),
+        Encoding::ScaledDecimal => encode_scaled(values),
     }
 }
 
@@ -212,6 +237,9 @@ pub(crate) fn decode(
         Encoding::RunLength => decode_runs(cursor, count),
         Encoding::FrameOfReference => decode_reference(cursor, count),
         Encoding::Delta => decode_delta(cursor, count),
+        Encoding::DoubleDelta => decode_double_delta(cursor, count),
+        Encoding::XorWindow => decode_xor_window(cursor, count),
+        Encoding::ScaledDecimal => decode_scaled(cursor, count),
     }
 }
 
@@ -648,4 +676,321 @@ impl<'a> Cursor<'a> {
             Err(self.truncated())
         }
     }
+}
+
+/// Zig-zag: a signed value as an unsigned one, small magnitudes staying small.
+fn zigzag(value: i64) -> u64 {
+    let wide = i128::from(value);
+    let folded = (wide << 1) ^ (wide >> 63);
+    u64::try_from(folded).unwrap_or(u64::MAX)
+}
+
+/// The signed value a zig-zag names.
+fn unzigzag(held: u64) -> i64 {
+    let half = i128::from(held >> 1);
+    let sign = i128::from(held & 1).checked_neg().unwrap_or(0);
+    i64::try_from(half ^ sign).unwrap_or(i64::MIN)
+}
+
+/// The second-order encoding: first value, first delta as a zig-zag, then
+/// bit-packed zig-zagged delta-of-deltas. `None` when the run is not all
+/// integers or a second difference leaves the `i64` range — the cascade
+/// falls back rather than truncates.
+fn encode_double_delta(values: &[Value]) -> Option<Vec<u8>> {
+    let integers = integer_run(values)?;
+    let first = *integers.first()?;
+    let Some(second) = integers.get(1) else {
+        // One value: the width byte and the value, no deltas at all.
+        let mut out = vec![0_u8];
+        put_u64(&mut out, bits_of(first));
+        put_u64(&mut out, 0);
+        return Some(out);
+    };
+    let first_delta = i128::from(*second).checked_sub(i128::from(first))?;
+    let first_delta = i64::try_from(first_delta).ok()?;
+    let mut previous = *second;
+    let mut previous_delta = first_delta;
+    let mut turns = Vec::with_capacity(integers.len().saturating_sub(2));
+    let mut widest = 0_u64;
+    for value in integers.iter().skip(2) {
+        let delta = i128::from(*value).checked_sub(i128::from(previous))?;
+        let delta = i64::try_from(delta).ok()?;
+        let turn = i128::from(delta).checked_sub(i128::from(previous_delta))?;
+        let turn = i64::try_from(turn).ok()?;
+        let held = zigzag(turn);
+        widest = widest.max(held);
+        turns.push(held);
+        previous = *value;
+        previous_delta = delta;
+    }
+    let width = bit_width(widest);
+    let mut out = Vec::new();
+    out.push(width);
+    put_u64(&mut out, bits_of(first));
+    put_u64(&mut out, zigzag(first_delta));
+    out.extend(pack(width, &turns));
+    Some(out)
+}
+
+/// The run the second-order encoding wrote.
+fn decode_double_delta(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Value>> {
+    let width = cursor.u8()?;
+    let first = i64_of(cursor.u64()?);
+    let first_delta = unzigzag(cursor.u64()?);
+    let mut values = Vec::with_capacity(count.min(1024));
+    values.push(Value::Number(Number::Integer(first)));
+    if count < 2 {
+        return Ok(values);
+    }
+    let mut previous = i128::from(first)
+        .checked_add(i128::from(first_delta))
+        .ok_or_else(|| cursor.truncated())?;
+    let mut previous_delta = first_delta;
+    values.push(Value::Number(Number::Integer(
+        i64::try_from(previous).map_err(|_| cursor.truncated())?,
+    )));
+    for turn in unpack(width, count.saturating_sub(2), cursor)? {
+        let delta = i128::from(previous_delta)
+            .checked_add(i128::from(unzigzag(turn)))
+            .ok_or_else(|| cursor.truncated())?;
+        previous_delta = i64::try_from(delta).map_err(|_| cursor.truncated())?;
+        previous = previous
+            .checked_add(delta)
+            .ok_or_else(|| cursor.truncated())?;
+        values.push(Value::Number(Number::Integer(
+            i64::try_from(previous).map_err(|_| cursor.truncated())?,
+        )));
+    }
+    Ok(values)
+}
+
+/// A bit-level writer for the XOR windows — LSB-first like `pack`.
+pub(crate) struct Bits {
+    out: Vec<u8>,
+    acc: u128,
+    held: u32,
+}
+
+impl Bits {
+    pub(crate) fn new() -> Self {
+        Self {
+            out: Vec::new(),
+            acc: 0,
+            held: 0,
+        }
+    }
+
+    /// `width` low bits of `value`; `width` is 1 through 64.
+    pub(crate) fn write(&mut self, value: u64, width: u8) {
+        let masked = if width >= 64 {
+            value
+        } else {
+            value & ((1_u64 << width).wrapping_sub(1))
+        };
+        self.acc |= u128::from(masked) << self.held;
+        self.held = self.held.saturating_add(u32::from(width));
+        while self.held >= 8 {
+            self.out.push(u8::try_from(self.acc & 0xff).unwrap_or(0));
+            self.acc >>= 8;
+            self.held = self.held.saturating_sub(8);
+        }
+    }
+
+    pub(crate) fn finish(mut self) -> Vec<u8> {
+        if self.held > 0 {
+            self.out.push(u8::try_from(self.acc & 0xff).unwrap_or(0));
+        }
+        self.out
+    }
+}
+
+/// The bit-level reader the XOR windows are decoded with, pulling bytes from
+/// the section's cursor as it needs them; running out mid-value is the same
+/// truncation every other section refuses with.
+pub(crate) struct BitReader<'c, 'a> {
+    cursor: &'c mut Cursor<'a>,
+    acc: u128,
+    held: u32,
+}
+
+impl<'c, 'a> BitReader<'c, 'a> {
+    pub(crate) fn new(cursor: &'c mut Cursor<'a>) -> Self {
+        Self {
+            cursor,
+            acc: 0,
+            held: 0,
+        }
+    }
+
+    pub(crate) fn read(&mut self, width: u8) -> Result<u64> {
+        while self.held < u32::from(width) {
+            let byte = self.cursor.u8()?;
+            self.acc |= u128::from(byte) << self.held;
+            self.held = self.held.saturating_add(8);
+        }
+        let mask = (1_u128 << width).wrapping_sub(1);
+        let value = u64::try_from(self.acc & mask).map_err(|_| self.cursor.truncated())?;
+        self.acc >>= width;
+        self.held = self.held.saturating_sub(u32::from(width));
+        Ok(value)
+    }
+}
+
+/// The XOR encoding: the first value's bits whole, then per value one bit
+/// when nothing changed, or a `10`/`11` marker with the window of bits that
+/// did — the leading-zero count in 6 bits (clamped at 63) and the meaningful
+/// length in 6 bits (0 meaning 64).
+fn encode_xor_window(values: &[Value]) -> Option<Vec<u8>> {
+    let floats = float_run(values)?;
+    let first = *floats.first()?;
+    let mut out = Vec::new();
+    put_u64(&mut out, first);
+    let mut bits = Bits::new();
+    let mut previous = first;
+    for held in floats.iter().skip(1) {
+        let differing = held ^ previous;
+        if differing == 0 {
+            bits.write(0, 1);
+        } else {
+            let leading = differing.leading_zeros().min(63);
+            let trailing = differing.trailing_zeros();
+            let meaningful = 64_u32.saturating_sub(leading).saturating_sub(trailing);
+            // The writer is LSB-first, so the marker bits go one write at a
+            // time in the order the reader takes them: `1`, then the wide
+            // flag.
+            bits.write(1, 1);
+            if leading > 31 || meaningful > 32 {
+                // A wide window pays more than the whole value would.
+                bits.write(1, 1);
+                bits.write(*held, 64);
+            } else {
+                bits.write(0, 1);
+                bits.write(u64::from(leading), 5);
+                bits.write(u64::from(meaningful.saturating_sub(1)), 5);
+                bits.write(
+                    differing >> trailing,
+                    u8::try_from(meaningful).unwrap_or(64),
+                );
+            }
+        }
+        previous = *held;
+    }
+    out.extend(bits.finish());
+    Some(out)
+}
+
+/// The run the XOR encoding wrote.
+fn decode_xor_window(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Value>> {
+    let first = cursor.u64()?;
+    let mut values = Vec::with_capacity(count.min(1024));
+    if count == 0 {
+        return Ok(values);
+    }
+    values.push(Value::Number(Number::Float(f64::from_bits(first))));
+    let mut bits = BitReader::new(cursor);
+    let mut previous = first;
+    for _ in 1..count {
+        let marker = bits.read(1)?;
+        let value = if marker == 0 {
+            previous
+        } else {
+            let wide = bits.read(1)?;
+            if wide == 0 {
+                let leading = bits.read(5)?;
+                let meaningful = bits.read(5)?.saturating_add(1);
+                let payload = bits.read(u8::try_from(meaningful).unwrap_or(64))?;
+                let shift = 64_u64.saturating_sub(leading).saturating_sub(meaningful);
+                let differing = payload
+                    .checked_shl(u32::try_from(shift).unwrap_or(0))
+                    .ok_or_else(|| bits.cursor.truncated())?;
+                previous ^ differing
+            } else {
+                // The wide form carries the value's bits whole.
+                bits.read(64)?
+            }
+        };
+        values.push(Value::Number(Number::Float(f64::from_bits(value))));
+        previous = value;
+    }
+    Ok(values)
+}
+
+/// The smallest power of ten every value scales by exactly, with the scaled
+/// integers — `None` when any value is not a whole multiple of some
+/// `10^-k` within the searched range, is not finite, or leaves the `i64`
+/// range scaled.
+fn scaled_integers(values: &[Value]) -> Option<(u8, Vec<i64>)> {
+    let floats = float_run(values)?;
+    for power in 0_u8..=9 {
+        let scale = 10_f64.powi(i32::from(power));
+        let mut scaled = Vec::with_capacity(floats.len());
+        let mut exact = true;
+        for bits in &floats {
+            let held = f64::from_bits(*bits);
+            let times = held * scale;
+            if times.fract() != 0.0 || times.abs() > 9.0e18 || (times / scale).to_bits() != *bits {
+                exact = false;
+                break;
+            }
+            scaled.push(whole_as_i64(times)?);
+        }
+        if exact {
+            return Some((power, scaled));
+        }
+    }
+    None
+}
+
+/// A float that is a whole number, as the integer it is — `None` outside
+/// the `i64` range, where the conversion would wrap.
+fn whole_as_i64(held: f64) -> Option<i64> {
+    rust_decimal::prelude::ToPrimitive::to_i64(&held)
+}
+
+/// The scaled-decimal encoding: the power, the smallest scaled value, and
+/// bit-packed offsets from it.
+fn encode_scaled(values: &[Value]) -> Option<Vec<u8>> {
+    let (power, scaled) = scaled_integers(values)?;
+    let base = *scaled.iter().min()?;
+    let mut widest = 0_u64;
+    let mut deltas = Vec::with_capacity(scaled.len());
+    for held in &scaled {
+        let delta = u64::try_from(i128::from(*held).checked_sub(i128::from(base))?).ok()?;
+        widest = widest.max(delta);
+        deltas.push(delta);
+    }
+    let width = bit_width(widest);
+    let mut out = Vec::new();
+    out.push(power);
+    out.push(width);
+    put_u64(&mut out, bits_of(base));
+    out.extend(pack(width, &deltas));
+    Some(out)
+}
+
+/// The run the scaled-decimal encoding wrote.
+fn decode_scaled(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Value>> {
+    let power = cursor.u8()?;
+    let width = cursor.u8()?;
+    let base = i64_of(cursor.u64()?);
+    let scale = 10_f64.powi(i32::from(power));
+    let mut values = Vec::with_capacity(count.min(1024));
+    for delta in unpack(width, count, cursor)? {
+        let held = i128::from(base)
+            .checked_add(i128::from(delta))
+            .ok_or_else(|| cursor.truncated())?;
+        let held = i64::try_from(held).map_err(|_| cursor.truncated())?;
+        let back = i64_as_f64(held) / scale;
+        if back.to_bits() == 0 && held != 0 {
+            return Err(cursor.truncated());
+        }
+        values.push(Value::Number(Number::Float(back)));
+    }
+    Ok(values)
+}
+
+/// An `i64` as the nearest float — exact inside 2^53, which every scaled
+/// value the encoder admits is (its round-trip check proved it).
+fn i64_as_f64(held: i64) -> f64 {
+    rust_decimal::prelude::ToPrimitive::to_f64(&held).unwrap_or(f64::NAN)
 }

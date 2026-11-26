@@ -122,7 +122,26 @@ impl FormatVersion {
     /// is one it must not open. A store below keeps its stamp, and a
     /// partitioned vector index refuses (`FormatNotFinalized`) until the
     /// store is finalized.
-    pub const CURRENT: Self = Self(18);
+    /// Format 19 is the version-17 shape for the value codec: tag `0x12`
+    /// carries a fold's state (G102 S11) — a value an older build refuses as
+    /// an unknown tag, so a store holding one is one it must not open. A
+    /// store below keeps its stamp, and `TYPE fold_state` refuses
+    /// (`FormatNotFinalized`) until the store is finalized.
+    ///
+    /// Format 20 is the version-13 shape once more: the catalog keeps a
+    /// namespace's AI providers in system table `36` (G102 C8) — a build
+    /// before it never reads the row, but its key grammar cannot place a key
+    /// naming table `36`. A store below keeps its stamp, and
+    /// `DEFINE AI PROVIDER` refuses (`FormatNotFinalized`) until finalized.
+    pub const CURRENT: Self = Self(20);
+
+    /// The first format whose catalog keeps AI providers (system table
+    /// `36`). Named for the reason [`Self::HOMED_LOG`] is.
+    pub const AI_PROVIDERS: Self = Self(20);
+
+    /// The first format whose value codec carries a fold's state (tag
+    /// `0x12`). Named for the reason [`Self::HOMED_LOG`] is.
+    pub const FOLD_STATES: Self = Self(19);
 
     /// The first format whose search indexes carry a monotonic term bloom
     /// (key kind `0x4b`): an older build would neither write it nor read it,
@@ -231,6 +250,8 @@ impl FormatVersion {
             16 => (0, 50),
             17 => (0, 52),
             18 => (0, 54),
+            19 => (0, 55),
+            20 => (0, 55),
             _ => return None,
         };
         Some(crate::NodeVersion {

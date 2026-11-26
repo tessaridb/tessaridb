@@ -65,6 +65,28 @@ pub(crate) struct Summary {
     pub(crate) saw_float: bool,
     /// Whether every sample was an integer.
     pub(crate) all_integer: bool,
+    /// How many falls between consecutive samples the run saw — the counter
+    /// resets (`resets`, ADR-0088 §5's fall rule read as the answer itself).
+    pub(crate) resets: u64,
+    /// The least-squares sums, `x` in seconds since `first`'s instant
+    /// (`deriv` / `predict_linear`). Floats by declaration, like every
+    /// regression; they merge by origin-shifting, so parts answer what the
+    /// walk answers.
+    pub(crate) regression: Regression,
+}
+
+/// The four sums a least-squares line needs, over `x` relative to the run's
+/// first instant. `n` is the summary's own `counted`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub(crate) struct Regression {
+    /// Σx.
+    pub(crate) sum_x: f64,
+    /// Σx².
+    pub(crate) sum_xx: f64,
+    /// Σy.
+    pub(crate) sum_y: f64,
+    /// Σxy.
+    pub(crate) sum_xy: f64,
 }
 
 impl Summary {
@@ -76,6 +98,13 @@ impl Summary {
             float: ExactSum::default(),
             saw_float: matches!(sample.1, Number::Float(_)),
             all_integer: matches!(sample.1, Number::Integer(_)),
+            resets: 0,
+            regression: Regression {
+                sum_x: 0.0,
+                sum_xx: 0.0,
+                sum_y: approximate(&sample.1).unwrap_or(f64::NAN),
+                sum_xy: 0.0,
+            },
             first: sample.clone(),
             last: sample,
         }
@@ -106,6 +135,17 @@ impl Summary {
         };
         self.float.add(bridge_float(before, after));
         self.float.absorb(&next.float);
+        if fell(before, after) {
+            self.resets = self.resets.saturating_add(1);
+        }
+        self.resets = self.resets.saturating_add(next.resets);
+        let shift = elapsed_f64(self.first.0, next.first.0);
+        let arriving = super::arithmetic::count(next.counted);
+        self.regression.sum_x += next.regression.sum_x + arriving * shift;
+        self.regression.sum_xx +=
+            next.regression.sum_xx + 2.0 * shift * next.regression.sum_x + arriving * shift * shift;
+        self.regression.sum_y += next.regression.sum_y;
+        self.regression.sum_xy += next.regression.sum_xy + shift * next.regression.sum_y;
         self.counted = self.counted.saturating_add(next.counted);
         self.last = next.last.clone();
         self.saw_float = self.saw_float || next.saw_float;
@@ -120,6 +160,15 @@ fn bridge_exact(before: &Number, after: &Number) -> Option<Decimal> {
         after.checked_sub(before)
     } else {
         Some(after)
+    }
+}
+
+/// Whether the sample after falls below the one before — the reset rule
+/// `bridge_exact` applies, read as a yes-or-no.
+fn fell(before: &Number, after: &Number) -> bool {
+    match (before.as_decimal(), after.as_decimal()) {
+        (Some(before), Some(after)) => after < before,
+        _ => approximate(after).unwrap_or(f64::NAN) < approximate(before).unwrap_or(f64::NAN),
     }
 }
 
@@ -182,8 +231,24 @@ fn joined(summaries: Vec<Option<Summary>>) -> Option<Option<Summary>> {
 
 /// Whether the parts merged here interleave in time, so the read must ask
 /// for their samples (ADR-0121 D3).
-pub(crate) fn needs_samples(held: &[Sample], parts: &[Part]) -> bool {
-    summarised(parts) && joined(ordered(held, parts)).is_none()
+pub(crate) fn needs_samples(fold: Aggregate, held: &[Sample], parts: &[Part]) -> bool {
+    // A summary holds neither points nor age-weighted totals, so the folds
+    // reading them take every part as samples; the other folds need samples
+    // only when the parts interleave in time.
+    summarised(parts) && (reads_samples_only(fold) || joined(ordered(held, parts)).is_none())
+}
+
+/// Whether the fold's answer is a function of the samples themselves rather
+/// than of anything a summary carries.
+pub(crate) fn reads_samples_only(fold: Aggregate) -> bool {
+    matches!(
+        fold,
+        Aggregate::Downsample
+            | Aggregate::DecayedSum
+            | Aggregate::DecayedMean
+            | Aggregate::DecayedMax
+            | Aggregate::DecayedCount
+    )
 }
 
 /// The fold's answer over the parts merged here and the samples held.
@@ -196,9 +261,85 @@ pub(crate) fn finish(
     fold: Aggregate,
     held: &[Sample],
     parts: &[Part],
+    ahead: Option<f64>,
     span: Span,
 ) -> Result<Value> {
     let name = fold.spelling();
+    if matches!(
+        fold,
+        Aggregate::DecayedSum
+            | Aggregate::DecayedMean
+            | Aggregate::DecayedMax
+            | Aggregate::DecayedCount
+    ) {
+        if summarised(parts) {
+            return Err(failed(
+                name,
+                "parts sent as summaries rather than samples",
+                span,
+            ));
+        }
+        let mut every: Vec<Sample> = Vec::new();
+        for part in parts {
+            if let Part::Samples(samples) = part {
+                every.extend_from_slice(samples);
+            }
+        }
+        every.extend_from_slice(held);
+        every.sort_by_key(|(at, _)| *at);
+        if every.is_empty() {
+            return Ok(Value::None);
+        }
+        let Some(half_life) = ahead.filter(|held| *held > 0.0) else {
+            return Err(failed(
+                name,
+                "a half-life in seconds, more than nothing",
+                span,
+            ));
+        };
+        return Ok(decayed(fold, &every, half_life));
+    }
+    if fold == Aggregate::Downsample {
+        if summarised(parts) {
+            // The read asks `needs_samples` first, so a summary here is that
+            // ask having been skipped — refused rather than answered from a
+            // form that holds no points.
+            return Err(failed(
+                name,
+                "parts sent as summaries rather than samples",
+                span,
+            ));
+        }
+        let mut every: Vec<Sample> = Vec::new();
+        for part in parts {
+            if let Part::Samples(samples) = part {
+                every.extend_from_slice(samples);
+            }
+        }
+        every.extend_from_slice(held);
+        every.sort_by_key(|(at, _)| *at);
+        let Some(points) = ahead
+            .filter(|n| n.fract() == 0.0 && *n >= 3.0)
+            .and_then(|n| rust_decimal::prelude::ToPrimitive::to_usize(&n))
+        else {
+            return Err(failed(
+                name,
+                "a whole number of points, at least three",
+                span,
+            ));
+        };
+        return Ok(Value::Array(
+            largest_triangle(&every, points)
+                .into_iter()
+                .map(|(at, value)| {
+                    let mut held = std::collections::BTreeMap::new();
+                    held.insert("at".to_string(), Value::Datetime(at));
+                    held.insert("value".to_string(), Value::Number(value));
+                    Value::Object(held)
+                })
+                .collect(),
+        ));
+    }
     let summary = if summarised(parts) {
         joined(ordered(held, parts))
             .ok_or_else(|| failed(name, "parts that interleave in time", span))?
@@ -216,13 +357,47 @@ pub(crate) fn finish(
     let Some(summary) = summary else {
         return Ok(Value::None);
     };
-    answer(fold, &summary, span)
+    answer(fold, &summary, ahead, span)
 }
 
 /// What the fold answers for one whole run.
-fn answer(fold: Aggregate, summary: &Summary, span: Span) -> Result<Value> {
+fn answer(fold: Aggregate, summary: &Summary, ahead: Option<f64>, span: Span) -> Result<Value> {
+    // `resets` answers before the two-sample rule: a window of one sample saw
+    // no falls, and zero is the complete truth there — unlike a rise, which is
+    // genuinely unknown.
+    if fold == Aggregate::Resets {
+        return Ok(Value::Number(Number::Integer(
+            i64::try_from(summary.resets).unwrap_or(i64::MAX),
+        )));
+    }
     if summary.counted < 2 {
         return Ok(Value::None);
+    }
+    if matches!(fold, Aggregate::Deriv | Aggregate::PredictLinear) {
+        let counted = elapsed_count(summary.counted);
+        let sums = summary.regression;
+        let denominator = counted * sums.sum_xx - sums.sum_x * sums.sum_x;
+        if denominator == 0.0 {
+            return Ok(Value::None);
+        }
+        let slope = (counted * sums.sum_xy - sums.sum_x * sums.sum_y) / denominator;
+        let answered = match fold {
+            Aggregate::Deriv => slope,
+            _ => {
+                let Some(ahead) = ahead else {
+                    return Err(failed(
+                        fold.spelling(),
+                        "a horizon, in seconds past the last sample",
+                        span,
+                    ));
+                };
+                let last = elapsed_f64(summary.first.0, summary.last.0);
+                let mean_x = sums.sum_x / counted;
+                let mean_y = sums.sum_y / counted;
+                mean_y + slope * (last + ahead - mean_x)
+            }
+        };
+        return Ok(Value::Number(Number::float(answered)));
     }
     let name = fold.spelling();
     let seconds = elapsed(summary.first.0, summary.last.0);
@@ -279,6 +454,18 @@ fn answer(fold: Aggregate, summary: &Summary, span: Span) -> Result<Value> {
     Ok(Value::Number(Number::Decimal(answer.normalize())))
 }
 
+/// A count as the float the regression arithmetic runs in.
+fn elapsed_count(counted: u64) -> f64 {
+    approximate(&Number::Integer(i64::try_from(counted).unwrap_or(i64::MAX))).unwrap_or(f64::NAN)
+}
+
+/// The seconds between two instants, as the float the regression runs in.
+fn elapsed_f64(first: Datetime, last: Datetime) -> f64 {
+    elapsed(first, last).map_or(f64::NAN, |held| {
+        approximate(&Number::Decimal(held)).unwrap_or(f64::NAN)
+    })
+}
+
 /// The seconds between two instants, exactly.
 fn elapsed(first: Datetime, last: Datetime) -> Option<Decimal> {
     let whole = last.seconds().checked_sub(first.seconds())?;
@@ -287,4 +474,98 @@ fn elapsed(first: Datetime, last: Datetime) -> Option<Decimal> {
         .checked_mul(i128::from(NANOS))?
         .checked_add(i128::from(nanos))?;
     Decimal::from_i128_with_scale(total, 9).into()
+}
+
+/// The largest-triangle down-sampling: the first and last samples always,
+/// and between them the point of each of `points - 2` equal buckets that
+/// makes the largest triangle with the previously chosen point and the next
+/// bucket's average — the shape's sharpest survivors. `x` runs in seconds
+/// from the first sample, as the regression's does.
+fn largest_triangle(ordered: &[Sample], points: usize) -> Vec<Sample> {
+    if ordered.len() <= points {
+        return ordered.to_vec();
+    }
+    let last = ordered.len().saturating_sub(1);
+    let x = |at: Datetime| elapsed_f64(ordered[0].0, at);
+    let y = |value: &Number| approximate(value).unwrap_or(f64::NAN);
+    // Both are non-zero here: `points` is at least three and the series is
+    // longer than it, so the divisions below never see a zero divisor.
+    let interior = ordered.len().saturating_sub(2);
+    let buckets = points.saturating_sub(2);
+    let share = |upto: usize| {
+        upto.saturating_mul(interior)
+            .checked_div(buckets)
+            .unwrap_or(0)
+            .saturating_add(1)
+    };
+    let mut chosen: Vec<Sample> = vec![ordered[0].clone()];
+    for bucket in 0..buckets {
+        let from = share(bucket);
+        let to = share(bucket.saturating_add(1));
+        let (next_from, next_to) = (to, share(bucket.saturating_add(2)).min(last).max(to));
+        let average = if next_from < next_to {
+            let span = wide(next_to.saturating_sub(next_from));
+            let x_mean = (next_from..next_to).map(|i| x(ordered[i].0)).sum::<f64>() / span;
+            let y_mean = (next_from..next_to).map(|i| y(&ordered[i].1)).sum::<f64>() / span;
+            (x_mean, y_mean)
+        } else {
+            (x(ordered[last].0), y(&ordered[last].1))
+        };
+        let (ax, ay) = (
+            x(chosen[chosen.len().saturating_sub(1)].0),
+            y(&chosen[chosen.len().saturating_sub(1)].1),
+        );
+        let mut best = from;
+        let mut best_area = -1.0_f64;
+        let upto = to.max(from.saturating_add(1)).min(ordered.len());
+        for (candidate, sample) in ordered.iter().enumerate().take(upto).skip(from) {
+            let (bx, by) = (x(sample.0), y(&sample.1));
+            let area = ((ax - average.0) * (by - ay) - (ax - bx) * (average.1 - ay)).abs();
+            if area > best_area {
+                best_area = area;
+                best = candidate;
+            }
+        }
+        chosen.push(ordered[best].clone());
+    }
+    chosen.push(ordered[last].clone());
+    chosen
+}
+
+/// A place count as the float the geometry runs in.
+fn wide(held: usize) -> f64 {
+    super::arithmetic::count(u64::try_from(held).unwrap_or(u64::MAX))
+}
+
+/// The age-weighted answers: each sample weighs `0.5` to the power of its
+/// age in half-lives, measured back from the newest sample. Floats by
+/// declaration — a weight is a power, and no exact kind holds one.
+fn decayed(fold: Aggregate, ordered: &[Sample], half_life: f64) -> Value {
+    let Some((newest, _)) = ordered.last() else {
+        return Value::None;
+    };
+    let mut weights = Vec::with_capacity(ordered.len());
+    let mut values = Vec::with_capacity(ordered.len());
+    for (at, value) in ordered {
+        let age = elapsed_f64(*at, *newest);
+        weights.push(0.5_f64.powf(age / half_life));
+        values.push(approximate(value).unwrap_or(f64::NAN));
+    }
+    let weight_total: f64 = weights.iter().sum();
+    let answered = match fold {
+        Aggregate::DecayedSum => weights.iter().zip(&values).map(|(w, v)| w * v).sum(),
+        Aggregate::DecayedMean => {
+            if weight_total == 0.0 {
+                return Value::None;
+            }
+            weights.iter().zip(&values).map(|(w, v)| w * v).sum::<f64>() / weight_total
+        }
+        Aggregate::DecayedMax => weights
+            .iter()
+            .zip(&values)
+            .map(|(w, v)| w * v)
+            .fold(f64::NEG_INFINITY, f64::max),
+        _ => weight_total,
+    };
+    Value::Number(Number::float(answered))
 }

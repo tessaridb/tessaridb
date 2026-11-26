@@ -75,6 +75,9 @@ impl Accumulator {
             ])),
             Self::Extreme { held, .. } => Some(held.clone().unwrap_or(Value::None)),
             Self::Distinct { .. } | Self::Quantile { .. } => self.sketch_state(),
+            // A merge's state is its finish: the merged `fold_state` itself,
+            // which another node's merge takes as one more state offered.
+            Self::Merging { .. } => self.finish().ok(),
             _ => self.holding_state(),
         }
     }
@@ -150,6 +153,10 @@ impl Accumulator {
             }
             Self::Extreme { .. } => self.offer(state)?,
             Self::Distinct { .. } | Self::Quantile { .. } => return Ok(self.merge_sketch(state)),
+            // A part that does not fit — another fold's state, or not a state
+            // at all — is the `false` every merge answers for a part that
+            // does not fit: the caller gathers records instead.
+            Self::Merging { .. } => return Ok(self.offer(state).is_ok()),
             _ => return Ok(self.merge_holding(state).unwrap_or(false)),
         }
         Ok(true)

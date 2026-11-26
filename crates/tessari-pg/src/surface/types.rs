@@ -104,6 +104,14 @@ pub(crate) fn text_of(value: &Value) -> Option<String> {
         Value::Table(_) | Value::Record(_) | Value::Geometry(_) | Value::Regex(_) => {
             Some(value.to_string())
         }
+        // A fold's state crossing to a dialect client renders as its JSON
+        // shape, the way the other structural kinds cross.
+        Value::FoldState(_) => {
+            let names = json::Names::new();
+            let mut out = String::new();
+            json::write(&mut out, value, &names);
+            Some(out)
+        }
     }
 }
 

@@ -95,6 +95,7 @@ const FIELD_SERIES: &str = "series";
 /// The storage kind a table declared, when it declared one.
 const FIELD_STORAGE_KIND: &str = "storage_kind";
 const FIELD_PARTITIONS: &str = "partitions";
+const FIELD_SORT: &str = "sort";
 /// A space's declaration: present (possibly empty) exactly when the table is one.
 const FIELD_SPACE: &str = "space";
 /// A topic's declaration: present (possibly empty) exactly when the table is one.

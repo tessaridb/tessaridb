@@ -221,6 +221,16 @@ pub fn write(out: &mut String, value: &Value, names: &Names) {
         // rendering it as a plain string says exactly that — a client that wants
         // to run it knows it is a pattern from the field's declared type.
         Value::Regex(pattern) => string(out, pattern),
+        // A fold's state, structurally: the fold that reached it and what it
+        // holds. JSON has no literal for it, so the shape says what it is —
+        // and a client that only displays it loses nothing.
+        Value::FoldState(held) => {
+            out.push_str("{\"$fold_state\":");
+            string(out, &held.fold);
+            out.push_str(",\"state\":");
+            write(out, &held.state, names);
+            out.push('}');
+        }
         Value::Duration(held) => string(out, &held.to_literal()),
         Value::Datetime(held) => string(out, &held.to_rfc3339()),
         Value::Uuid(_) | Value::Table(_) | Value::Record(_) => {

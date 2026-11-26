@@ -16,6 +16,7 @@
 pub(crate) mod bloom;
 mod chunk;
 mod codec;
+pub(crate) mod heads;
 mod project;
 // Test-only: the production reader is scan.rs; these are the equivalence
 // suite's decode helpers (the SG3 plan's 'foundation' is shared at the

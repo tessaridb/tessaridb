@@ -165,6 +165,28 @@ pub enum Function {
     /// `time::second(instant)` — the second **of the minute**, 0 through 59.
     /// Not the seconds since the epoch, which is [`Function::TimeUnix`].
     TimeSecond,
+    /// `time::day_of_week(instant)` — the ISO-8601 day of the week, Monday 1
+    /// through Sunday 7.
+    TimeDayOfWeek,
+    /// `time::day_of_year(instant)` — the day of the year, 1 through 366.
+    TimeDayOfYear,
+    /// `time::week(instant)` — the ISO-8601 week number, 1 through 53. A week
+    /// belongs to the year holding its Thursday, so the first days of January
+    /// can read 52 or 53 and the last of December can read 1.
+    TimeWeek,
+    /// `time::quarter(instant)` — the quarter of the year, 1 through 4.
+    TimeQuarter,
+    /// `time::start_of_day(instant)` — midnight of the instant's own day.
+    TimeStartOfDay,
+    /// `time::start_of_week(instant)` — midnight of the week's Monday,
+    /// ISO-8601 like [`Function::TimeDayOfWeek`].
+    TimeStartOfWeek,
+    /// `time::start_of_month(instant)` — midnight of the month's first day.
+    TimeStartOfMonth,
+    /// `time::start_of_quarter(instant)` — midnight of the quarter's first day.
+    TimeStartOfQuarter,
+    /// `time::start_of_year(instant)` — midnight of the year's first day.
+    TimeStartOfYear,
     /// `time::unix(instant)` — whole seconds since the epoch.
     TimeUnix,
     /// `time::from_unix(seconds)` — the instant a second count names.
@@ -176,6 +198,12 @@ pub enum Function {
     RandUuid,
     /// `type::of(value)` — the type's name, as §3 spells it.
     TypeOf,
+    /// `state::of(<fold>)` — the group's STATE instead of the fold's finish
+    /// (G102 S11). Legal only over a bare fold in a grouping projection; the
+    /// grouping machinery answers it, and any other position refuses.
+    StateOf,
+    /// `state::finish(state)` — the fold's own answer out of a stored state.
+    StateFinish,
     /// `type::bool(value)` — the value as a boolean, or a refusal.
     TypeBool,
     /// `type::int(value)` — the value as an integer, or a refusal.
@@ -220,6 +248,106 @@ pub enum Function {
     SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
+    /// `math::log2(number)` — the base-2 logarithm, `NONE` at zero or below.
+    MathLog2,
+    /// `math::log10(number)` — the base-10 logarithm, `NONE` at zero or below.
+    MathLog10,
+    /// `math::exp2(number)` — two to the power.
+    MathExp2,
+    /// `math::cbrt(number)` — the cube root, negative for a negative.
+    MathCbrt,
+    /// `math::sin(number)`, `math::cos(number)`, `math::tan(number)` — the
+    /// angle in radians.
+    MathSin,
+    /// See [`Function::MathSin`].
+    MathCos,
+    /// See [`Function::MathSin`].
+    MathTan,
+    /// `math::asin(number)`, `math::acos(number)` — `NONE` outside −1 to 1.
+    MathAsin,
+    /// See [`Function::MathAsin`].
+    MathAcos,
+    /// `math::atan(number)` — the angle whose tangent this is.
+    MathAtan,
+    /// `math::atan2(y, x)` — the angle of the point, in the right quadrant.
+    MathAtan2,
+    /// `math::hypot(a, b)` — the hypotenuse, without the overflow a square
+    /// and a root would risk.
+    MathHypot,
+    /// `math::degrees(radians)` — radians as degrees.
+    MathDegrees,
+    /// `math::radians(degrees)` — degrees as radians.
+    MathRadians,
+    /// `math::pi()` — π as a float.
+    MathPi,
+    /// `math::e()` — e as a float.
+    MathE,
+    /// `string::repeat(text, n)` — the text `n` times.
+    StringRepeat,
+    /// `string::pad_left(text, n, fill)` — the text brought to `n` characters
+    /// with `fill` on the left; a fill that is not one character is refused.
+    StringPadLeft,
+    /// `string::pad_right(text, n, fill)` — the same on the right.
+    StringPadRight,
+    /// `string::edit_distance(a, b)` — the fewest single-character edits
+    /// turning one text into the other, characters rather than bytes.
+    StringEditDistance,
+    /// `url::scheme(url)` — the scheme of a URL, lowercased; `NONE` when the
+    /// text is not a URL.
+    UrlScheme,
+    /// `url::host(url)` — the host of a URL; `NONE` when the text is not a
+    /// URL or names no host.
+    UrlHost,
+    /// `url::port(url)` — the port a URL names, as an integer; `NONE` when it
+    /// names none.
+    UrlPort,
+    /// `url::path(url)` — the path of a URL, `''` when it names none.
+    UrlPath,
+    /// `url::query(url)` — the query of a URL without its `?`; `NONE` when it
+    /// names none.
+    UrlQuery,
+    /// `url::fragment(url)` — the fragment of a URL without its `#`; `NONE`
+    /// when it names none.
+    UrlFragment,
+    /// `url::decode(text)` — the text with its percent-escapes read; `NONE`
+    /// when an escape is not two hex digits.
+    UrlDecode,
+    /// `url::encode(text)` — the text with every byte outside the unreserved
+    /// set percent-escaped, uppercase hex.
+    UrlEncode,
+    /// `ip::is_v4(text)` — whether the text parses as an IPv4 address.
+    IpIsV4,
+    /// `ip::is_v6(text)` — whether the text parses as an IPv6 address.
+    IpIsV6,
+    /// `ip::in_range(ip, cidr)` — whether the address is inside the range;
+    /// refused when either side does not parse.
+    IpInRange,
+    /// `array::compact(items)` — the elements that are present, `NONE`s gone.
+    ArrayCompact,
+    /// `array::count(items, value)` — how many elements equal the value.
+    ArrayCount,
+    /// `array::range(start, end)` — the integers from `start` up to `end`,
+    /// `end` not included; an empty range is `[]`.
+    ArrayRange,
+    /// `rand::uuid7()` — a fresh version-7 identifier: time-ordered, once
+    /// per call.
+    RandUuid7,
+    /// `uuid::instant(id)` — the instant a version-7 identifier was minted
+    /// at, to the millisecond; `NONE` for any other version.
+    UuidInstant,
+    /// `series::outliers_tukey(values)` — the indices whose numbers fall
+    /// outside the Tukey fences, 1.5 interquartile ranges past either
+    /// quartile.
+    SeriesOutliersTukey,
+    /// `series::period_detect(values)` — the dominant period of the series in
+    /// samples, read off the strongest non-DC Fourier component; `NONE` for
+    /// fewer than four samples.
+    SeriesPeriodDetect,
+    /// `series::decompose_stl(values, period)` — classical seasonal
+    /// decomposition: `{ trend, seasonal, residual }`, each an array the
+    /// length of the series with `NONE` where a part is undefined (the
+    /// trend's edges).
+    SeriesDecomposeStl,
     /// `geo::intersects(a, b)` — whether the two shapes share any position,
     /// boundaries included.
     GeoIntersects,
@@ -461,6 +589,25 @@ pub enum Function {
     /// where nothing is. What a client following a redirect checks on arrival
     /// and replays from where it left (G051 SG3).
     SessionContext,
+    /// `ai::generate(prompt)` — one call to the namespace's declared AI
+    /// provider, answered with the reply text. The call leaves the store: a
+    /// token-bucket budget bounds it, a stated timeout ends it, and the
+    /// provider's key is read from its vault at call time and never stored
+    /// or answered (G102 C8).
+    AiGenerate,
+    /// `ai::summarize(text)` — a bounded summarising prompt over the same
+    /// provider call, answered with the reply text.
+    AiSummarize,
+    /// `ai::classify(text, labels)` — a classifying prompt over the same
+    /// provider call; the reply is validated against the declared labels and
+    /// answers the one it names, or `NONE` when it names none of them.
+    AiClassify,
+    /// `ai::extract(text, field)` — an extracting prompt over the same
+    /// provider call: one named field's value out of the text.
+    AiExtract,
+    /// `ai::translate(text, language)` — a translating prompt over the same
+    /// provider call, answered with the reply text.
+    AiTranslate,
 }
 
 impl fmt::Display for Function {

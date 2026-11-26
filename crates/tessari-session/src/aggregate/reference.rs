@@ -30,9 +30,21 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Increase
         | Aggregate::Rate
         | Aggregate::Delta
+        | Aggregate::Resets
+        | Aggregate::Deriv
+        | Aggregate::PredictLinear
+        | Aggregate::Downsample
+        | Aggregate::DecayedSum
+        | Aggregate::DecayedMean
+        | Aggregate::DecayedMax
+        | Aggregate::DecayedCount
+        | Aggregate::TopK
         | Aggregate::ApproxDistinct
         | Aggregate::ApproxQuantile
-        | Aggregate::CountDistinct => {
+        | Aggregate::CountDistinct
+        // A merge of states has no batch twin either: its values are states,
+        // and the statement-level suite folds real ones through it.
+        | Aggregate::StateMerge => {
             let mut running = crate::accumulate::Accumulator::for_aggregate(aggregate, span);
             for value in values {
                 running.offer(value)?;

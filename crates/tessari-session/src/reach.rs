@@ -150,6 +150,8 @@ pub(crate) fn tables_named(kind: &StatementKind) -> Vec<&TableRef> {
         // and user are names the grant loop resolves, not tables it checks,
         // for the scheme's reason — nothing here is a table.
         | StatementKind::DefinePool { .. }
+        | StatementKind::DefineAiProvider { .. }
+        | StatementKind::DropAiProvider { .. }
         | StatementKind::DropPool { .. }
         // Forgetting a consumer names no table. Declaring one does, and it is
         // listed below rather than here — see the arm that returns its

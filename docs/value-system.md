@@ -153,6 +153,7 @@ them.
 | `0x0f` | `set` | `<count:u32>` then values |
 | `0x10` | `geometry` | the shape byte (§5.2), then its positions as `<longitude:f64><latitude:f64>` pairs, counted per part |
 | `0x11` | `regex` | `<len:u32>` then the pattern's UTF-8 source |
+| `0x12` | `fold_state` | `<len:u32>` then the fold's UTF-8 spelling, then the state as one payload value |
 
 An unknown tag is **refused**, and refused as `incompatible` rather than
 `corruption`: the bytes are well formed and a newer build would read them, so the

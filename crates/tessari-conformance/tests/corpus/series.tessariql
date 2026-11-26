@@ -1,0 +1,34 @@
+# The series functions: readings of a whole numeric series held as one array —
+# the shapes a chart or an alert asks about.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE series_probe;
+USE NAMESPACE series_probe;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+--- expect: ok
+
+--- case: tukey names the index of the value outside the fences
+RETURN series::outliers_tukey([1, 2, 3, 4, 5, 6, 7, 8, 40]);
+--- expect: value [8]
+
+--- case: a calm series has no outliers, and that is an empty array
+RETURN series::outliers_tukey([1, 2, 3]);
+--- expect: value []
+
+--- case: the period is where the series repeats
+RETURN series::period_detect([0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3, 0, 1, 2, 3]);
+--- expect: value 4
+
+--- case: too short to say a period is an absence, not a failure
+RETURN series::period_detect([1, 2]);
+--- expect: value NONE
+
+--- case: a decomposition answers its three parts
+LET $parts = series::decompose_stl([1, 2, 3, 4, 1, 2, 3, 4, 1, 2, 3, 4], 4);
+RETURN $parts.seasonal;
+--- expect: ok
+
+--- case: a period under two samples is refused
+RETURN series::decompose_stl([1, 2, 3], 1);
+--- expect: error CallFailed

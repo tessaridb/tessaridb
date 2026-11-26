@@ -200,6 +200,13 @@ impl Parser<'_> {
             _ if self.eat_word("pool") => Ok(StatementKind::DropPool {
                 name: self.dropped_name()?,
             }),
+            // Contextual, as `pool` is; only `PROVIDER` can follow.
+            _ if self.eat_word("ai") => {
+                self.expect_word("provider", "`PROVIDER` and the name to drop")?;
+                Ok(StatementKind::DropAiProvider {
+                    name: self.dropped_name()?,
+                })
+            }
             // Contextual, as the word is everywhere else it appears.
             _ if self.eat_word("vector") => Ok(StatementKind::DropVector {
                 name: self.dropped_name()?,

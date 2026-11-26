@@ -245,6 +245,12 @@ pub const BALANCER: TableId = TableId::new(34);
 /// about, so a pool travels in the log the same way.
 pub const POOLS: TableId = TableId::new(35);
 
+/// The AI providers a namespace declares, beside [`POOLS`]: a provider is a
+/// catalog object every node must agree about — its URL, model, budget and
+/// the NAME of the vault secret its key lives in (never the key itself), so
+/// it travels in the log the same way (G102 C8).
+pub const AI_PROVIDERS: TableId = TableId::new(36);
+
 /// Every system table and its name, in id order — part of the on-disk format,
 /// because a row's key carries the table id (`docs/key-grammar.md` §9).
 pub const ALL: &[(TableId, &str)] = &[
@@ -283,6 +289,7 @@ pub const ALL: &[(TableId, &str)] = &[
     (TOPOLOGY, "TOPOLOGY"),
     (BALANCER, "BALANCER"),
     (POOLS, "POOLS"),
+    (AI_PROVIDERS, "AI_PROVIDERS"),
 ];
 
 /// The one record [`VAULT_ROOT`] holds.
@@ -458,6 +465,7 @@ mod tests {
             KAFKA_QUARANTINE,
             BALANCER,
             POOLS,
+            AI_PROVIDERS,
         ];
         for (index, table) in ids.iter().enumerate() {
             assert!(

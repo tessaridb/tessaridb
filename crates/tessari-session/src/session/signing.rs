@@ -181,6 +181,7 @@ impl<'a> Session<'a> {
             namespace: self.namespace.clone(),
             database: self.database.clone(),
             identity: Identity::Anonymous,
+            ai_roots: self.ai_roots.clone(),
             // A probe reads a catalog as somebody else and never claims, so it
             // carries no claimant. Copying one would let a permission probe
             // release the real session's work.

@@ -83,7 +83,7 @@ use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
-pub(crate) use arithmetic::{Moments, add_exact, add_float, failed, middle, summable};
+pub(crate) use arithmetic::{Moments, add_exact, add_float, count, failed, middle, summable};
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
 
@@ -158,13 +158,17 @@ pub(crate) enum Accumulator {
     /// The counter folds: every sample and the instant it was observed at,
     /// ordered by the instant when the group finishes (ADR-0088 §5).
     Counter {
-        /// Which of the three.
+        /// Which of the six.
         fold: Aggregate,
         /// The samples, in record order.
         held: Vec<(tessari_types::Datetime, Number)>,
         /// The parts merged so far in key order, each a leader's summary or
         /// its samples, with this node's own samples between them (ADR-0121 D3).
         parts: Vec<counter::Part>,
+        /// The horizon `predict_linear` projects to, in seconds past the last
+        /// sample — the last one offered, since the expression is one value
+        /// wherever it reads no record. `None` for every other fold.
+        ahead: Option<f64>,
         /// Where to point a failure.
         span: Span,
     },
@@ -186,6 +190,16 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// `top_k`'s counts and the `k` it answers at — exact, so bounded by the
+    /// same ceiling `count(DISTINCT …)` holds (ADR-0134 D8).
+    Common {
+        /// How many records held each value.
+        held: std::collections::BTreeMap<Value, u64>,
+        /// The `k`, once a record has offered it.
+        asked: Option<u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `approx_quantile`'s sketch and the rank it answers at (ADR-0122 C3).
     Quantile {
         /// The sketch so far.
@@ -193,6 +207,15 @@ pub(crate) enum Accumulator {
         /// The rank, once a record has offered it.
         rank: Option<f64>,
         /// Where to point a failure.
+        span: Span,
+    },
+    /// `state::merge`'s one accumulator: the states offered all name one fold,
+    /// and this is that fold's accumulator, merged into (G102 S11).
+    Merging {
+        /// The fold the first state named, and the accumulator merging its
+        /// states — `None` until one arrives.
+        held: Option<(String, Box<Accumulator>)>,
+        /// Where to point a refusal.
         span: Span,
     },
 }
@@ -262,15 +285,32 @@ impl Accumulator {
             Aggregate::ApproxDistinct => Self::Distinct {
                 sketch: distinct::Distinct::default(),
             },
+            Aggregate::TopK => Self::Common {
+                held: std::collections::BTreeMap::new(),
+                asked: None,
+                span,
+            },
             Aggregate::ApproxQuantile => Self::Quantile {
                 sketch: quantile::Quantile::default(),
                 rank: None,
                 span,
             },
-            Aggregate::Increase | Aggregate::Rate | Aggregate::Delta => Self::Counter {
+            Aggregate::StateMerge => Self::Merging { held: None, span },
+            Aggregate::Increase
+            | Aggregate::Rate
+            | Aggregate::Delta
+            | Aggregate::Resets
+            | Aggregate::Deriv
+            | Aggregate::PredictLinear
+            | Aggregate::Downsample
+            | Aggregate::DecayedSum
+            | Aggregate::DecayedMean
+            | Aggregate::DecayedMax
+            | Aggregate::DecayedCount => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
                 parts: Vec::new(),
+                ahead: None,
                 span,
             },
         }
@@ -360,7 +400,11 @@ impl Accumulator {
             // Offered `[value, instant]`: a sample without a number is not a
             // sample, and one without an instant has no place in the order.
             Self::Counter {
-                fold, held, span, ..
+                fold,
+                held,
+                ahead,
+                span,
+                ..
             } => {
                 let Value::Array(pair) = value else {
                     return Ok(());
@@ -378,6 +422,13 @@ impl Accumulator {
                         *span,
                     ));
                 };
+                // `predict_linear` carries its horizon as the third element;
+                // the last one offered is the one the answer uses.
+                if let Some(Value::Number(horizon)) = pair.get(2)
+                    && let Some(seconds) = crate::aggregate::approximate(horizon)
+                {
+                    *ahead = Some(seconds);
+                }
                 held.push((*at, number.clone()));
             }
             // The one fold that keeps a value of any kind, because it is not
@@ -401,6 +452,27 @@ impl Accumulator {
                     sketch.offer(value);
                 }
             }
+            // Offered `[value, k]`: the k is the fold's second argument, read
+            // like the quantile's rank; a value that is absent is not counted.
+            Self::Common { held, asked, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(wanted)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_k(asked, wanted, *span)?;
+                if present(sample) {
+                    let entry = held.entry(sample.clone()).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    if held.len() > tessari_ql::COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: tessari_ql::COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                }
+            }
             // Offered `[value, rank]`: the rank is the fold's second argument.
             Self::Quantile { sketch, rank, span } => {
                 let Value::Array(pair) = value else {
@@ -417,6 +489,56 @@ impl Accumulator {
                             failed("approx_quantile", "a number no float can hold", *span)
                         })?;
                     sketch.offer(held);
+                }
+            }
+            // A state of one fold, merged into that fold's accumulator. The
+            // first state names the fold; a state of any other refuses rather
+            // than mis-adds, which is the whole reason the name travels.
+            Self::Merging { held, span } => {
+                if !present(value) {
+                    return Ok(());
+                }
+                let Value::FoldState(state) = value else {
+                    return Err(crate::error::Error::StateExpected {
+                        kind: value.type_name(),
+                        span: *span,
+                    });
+                };
+                match held {
+                    Some((fold, accumulator)) => {
+                        if *fold != state.fold {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                        if !accumulator.merge(&state.state)? {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                    }
+                    slot @ None => {
+                        let Some(fold) = tessari_ql::Aggregate::parse(&state.fold) else {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: state.fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        };
+                        let mut accumulator = Box::new(Accumulator::for_aggregate(fold, *span));
+                        if !accumulator.merge(&state.state)? {
+                            return Err(crate::error::Error::StateFoldMismatch {
+                                merging: state.fold.clone(),
+                                held: state.fold.clone(),
+                                span: *span,
+                            });
+                        }
+                        *slot = Some((state.fold.clone(), accumulator));
+                    }
                 }
             }
         }
@@ -520,12 +642,58 @@ impl Accumulator {
                 fold,
                 held,
                 parts,
+                ahead,
                 span,
-            } => counter::finish(*fold, held, parts, *span),
+            } => counter::finish(*fold, held, parts, *ahead, *span),
             Self::Distinct { sketch } => Ok(sketch.answer()),
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
+            Self::Common { held, asked, span } => {
+                let Some(asked) = *asked else {
+                    return Err(failed("top_k", "a whole number of values to answer", *span));
+                };
+                let mut ranked: Vec<(&Value, u64)> =
+                    held.iter().map(|(value, many)| (value, *many)).collect();
+                ranked.sort_by(|(one_value, one), (other_value, other)| {
+                    other.cmp(one).then_with(|| one_value.cmp(other_value))
+                });
+                let answered: Vec<Value> = ranked
+                    .into_iter()
+                    .take(usize::try_from(asked).unwrap_or(usize::MAX))
+                    .map(|(value, many)| {
+                        let mut held = std::collections::BTreeMap::new();
+                        held.insert(
+                            "count".to_string(),
+                            Value::Number(Number::Integer(i64::try_from(many).unwrap_or(i64::MAX))),
+                        );
+                        held.insert("value".to_string(), value.clone());
+                        Value::Object(held)
+                    })
+                    .collect();
+                Ok(Value::Array(answered))
+            }
+            // The merged state, named by its fold — finished by
+            // `state::finish`, or stored and merged again. A merge nothing was
+            // offered answers `NONE`, the absence every fold answers over
+            // nothing but `count` and `sum`.
+            Self::Merging { held, span } => match held {
+                None => Ok(Value::None),
+                Some((fold, accumulator)) => {
+                    let state =
+                        accumulator
+                            .state()
+                            .ok_or(crate::error::Error::StateCannotTravel {
+                                fold: tessari_ql::Aggregate::parse(fold)
+                                    .map_or("fold", tessari_ql::Aggregate::spelling),
+                                span: *span,
+                            })?;
+                    Ok(Value::FoldState(Box::new(tessari_types::FoldState {
+                        fold: fold.clone(),
+                        state,
+                    })))
+                }
+            },
         }
     }
 
@@ -555,7 +723,11 @@ impl Accumulator {
             Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
+            Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
+            // One accumulator however many states merged into it — constant
+            // by the inner fold's own retention.
+            Self::Merging { .. } => 0,
         }
     }
 }
@@ -565,6 +737,32 @@ impl Accumulator {
 /// Once a float has arrived the float total answers, whatever follows, so the
 /// exact one is dropped rather than carried: converting each float to a decimal
 /// was most of what a `sum` over floats cost (ADR-0114, measured).
+/// The `k` a `top_k` answers at, read like the quantile's rank: a whole
+/// number, and the same one on every record — a `k` that differs between
+/// records is a question with two answers, refused rather than picked from.
+fn settle_k(held: &mut Option<u64>, asked: &Value, span: Span) -> Result<()> {
+    let Value::Number(number) = asked else {
+        return Err(failed("top_k", "a count that is not a number", span));
+    };
+    let Some(wanted) = number.as_exact_integer().filter(|wanted| *wanted >= 0) else {
+        return Err(failed("top_k", "a whole count of none or more", span));
+    };
+    let wanted =
+        u64::try_from(wanted).map_err(|_| failed("top_k", "a count past what fits", span))?;
+    match held {
+        Some(kept) if *kept != wanted => Err(failed(
+            "top_k",
+            "a count that differs between records",
+            span,
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *held = Some(wanted);
+            Ok(())
+        }
+    }
+}
+
 fn exact_unless_float(exact: &mut Running<Decimal>, number: &Number, saw_float: bool) {
     if saw_float {
         *exact = Err("a total a float answers instead");

@@ -87,6 +87,7 @@ mod tag {
     pub(super) const SET: u8 = 0x0f;
     pub(super) const GEOMETRY: u8 = 0x10;
     pub(super) const REGEX: u8 = 0x11;
+    pub(super) const FOLD_STATE: u8 = 0x12;
 }
 
 /// Which shape a geometry is.
@@ -134,6 +135,7 @@ pub(crate) const TAGS: &[(u8, &str)] = &[
     (tag::SET, "set"),
     (tag::GEOMETRY, "geometry"),
     (tag::REGEX, "regex"),
+    (tag::FOLD_STATE, "fold_state"),
 ];
 
 /// Every shape byte of a geometry, for the format surface.
@@ -263,6 +265,11 @@ fn put_value(writer: &mut KeyWriter, value: &Value) {
             writer.put_u8(tag::REGEX);
             put_bytes(writer, pattern.as_bytes());
         }
+        Value::FoldState(held) => {
+            writer.put_u8(tag::FOLD_STATE);
+            put_bytes(writer, held.fold.as_bytes());
+            put_value(writer, &held.state);
+        }
     }
 }
 
@@ -350,6 +357,17 @@ fn take_value(reader: &mut KeyReader<'_>, depth: usize) -> Result<Value> {
                 .map_err(|_| Error::InvalidUtf8 {
                     kind: KeyKind::Record,
                 })
+        }
+        tag::FOLD_STATE => {
+            let fold = take_bytes(reader)?;
+            let fold = String::from_utf8(fold).map_err(|_| Error::InvalidUtf8 {
+                kind: KeyKind::Record,
+            })?;
+            let state = take_value(reader, depth)?;
+            Ok(Value::FoldState(Box::new(tessari_types::FoldState {
+                fold,
+                state,
+            })))
         }
         unknown => Err(Error::UnknownValueTag { tag: unknown }),
     }

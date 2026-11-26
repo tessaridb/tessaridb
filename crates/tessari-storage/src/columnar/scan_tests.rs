@@ -707,7 +707,7 @@ fn float(value: f64) -> Value {
 fn insert_readings(store: &Store, ids: (u32, u32, u32), count: i64, nan_at: i64) {
     let mut transaction = store.begin().now().expect("a transaction begins");
     for row in 0..count {
-        let measure = if nan_at > 0 && row % nan_at == 0 {
+        let measure = if nan_at > 0 && row.checked_rem(nan_at) == Some(0) {
             float(f64::NAN)
         } else {
             // The fixture's rows are small; the conversion is exact there.

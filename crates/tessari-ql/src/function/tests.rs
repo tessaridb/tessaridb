@@ -46,7 +46,13 @@ fn the_functions_the_fold_may_not_touch_are_exactly_the_one_that_generates() {
             "search::score",
             "search::ranks",
             "search::table_name",
-            "search::snippet"
+            "search::snippet",
+            "rand::uuid7",
+            "ai::generate",
+            "ai::summarize",
+            "ai::classify",
+            "ai::extract",
+            "ai::translate"
         ]
     );
 }
@@ -57,10 +63,16 @@ fn every_function_is_classified_and_only_the_clock_and_the_generator_are_not_pur
         let expected = match function {
             Function::TimeNow | Function::SessionContext => Purity::PerStatement,
             Function::RandUuid
+            | Function::RandUuid7
             | Function::SearchRanks
             | Function::SearchScore
             | Function::SearchTable
-            | Function::SearchSnippet => Purity::PerCall,
+            | Function::SearchSnippet
+            | Function::AiGenerate
+            | Function::AiSummarize
+            | Function::AiClassify
+            | Function::AiExtract
+            | Function::AiTranslate => Purity::PerCall,
             _ => Purity::Pure,
         };
         assert_eq!(function.purity(), expected, "{function} is misclassified");

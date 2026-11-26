@@ -77,6 +77,14 @@ fn write(out: &mut String, held: &Value, names: &Names) {
             string_into(out, pattern);
             out.push('>');
         }
+        // A fold's state has no literal either, for `Regex`'s reason: printing
+        // something that looked like one would paste back as a parse error.
+        // The description names the fold, which is the part a reader can act on.
+        Value::FoldState(held) => {
+            out.push('<');
+            out.push_str(&held.fold);
+            out.push_str(" state>");
+        }
         Value::Duration(held) => out.push_str(&held.to_literal()),
         Value::Datetime(held) => {
             out.push_str("datetime ");

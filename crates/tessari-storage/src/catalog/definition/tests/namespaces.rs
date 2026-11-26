@@ -162,6 +162,7 @@ fn every_definition_round_trips_through_its_value() {
         referenced_by: Vec::new(),
         storage_kind: None,
         partitions: None,
+        sort: None,
     };
     assert_eq!(
         TableDefinition::from_value(&table.to_value()).unwrap(),

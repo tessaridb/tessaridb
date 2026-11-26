@@ -143,6 +143,7 @@ impl<'a> Session<'a> {
             namespace,
             database,
             identity: self.identity.clone(),
+            ai_roots: self.ai_roots.clone(),
             consumer: self.consumer.clone(),
             elsewhere: self.elsewhere.clone(),
             gather: None,

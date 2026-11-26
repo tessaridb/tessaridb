@@ -70,6 +70,11 @@ pub struct Session<'a> {
     pub(crate) database: Option<String>,
     /// Visible to the crate because `authorize.rs` asks it three questions.
     pub(crate) identity: Identity,
+    /// The root store the `ai::` transport trusts, when a test replaces the
+    /// public roots so a stub provider with a test CA can answer (G102 C8).
+    /// `None` everywhere outside a test: a public provider's authority is
+    /// the public roots, and there is no operator knob for it.
+    pub(crate) ai_roots: Option<std::sync::Arc<rustls::RootCertStore>>,
     /// Who this session is when it claims, once `USE CONSUMER` has said.
     ///
     /// Visible to the crate because `queue.rs` writes it into a record and
@@ -180,6 +185,7 @@ impl<'a> Session<'a> {
         Self {
             store,
             identity: Identity::Anonymous,
+            ai_roots: None,
             namespace: None,
             database: None,
             consumer: None,
@@ -249,6 +255,17 @@ impl<'a> Session<'a> {
     #[must_use]
     pub fn presenting(mut self, certificates: Arc<dyn crate::presented::Certificates>) -> Self {
         self.certificates = Some(certificates);
+        self
+    }
+
+    /// Open this session trusting `roots` for its AI provider calls in place
+    /// of the public root set — the seam a test's stub provider needs, since
+    /// its certificate chains to a test authority no public root vouches for.
+    /// A serving node never calls this: a public provider is the one surface
+    /// where the public roots are the correct authority.
+    #[must_use]
+    pub fn trusting_ai_roots(mut self, roots: Arc<rustls::RootCertStore>) -> Self {
+        self.ai_roots = Some(roots);
         self
     }
 

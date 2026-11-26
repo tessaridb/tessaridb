@@ -856,6 +856,112 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+    /// An `ai::` call found no provider to go to: the namespace declares
+    /// none, or declares several and the call cannot choose (G102 C8).
+    #[error("no AI provider answers this call: it {reason} (at {span})")]
+    AiNoProvider {
+        /// Why no provider was chosen.
+        reason: &'static str,
+        /// Where the call sits.
+        span: Span,
+    },
+    /// The provider's budget admitted no call: the token bucket is empty and
+    /// refills with time. The retry is the caller's — the store never queues
+    /// a provider call inside a read.
+    #[error("the AI provider `{provider}` has spent its budget for this span (at {span})")]
+    AiBudgetSpent {
+        /// The provider.
+        provider: String,
+        /// Where the call sits.
+        span: Span,
+    },
+    /// The provider did not answer within the declared TIMEOUT.
+    #[error("the AI provider `{provider}` did not answer within {seconds}s (at {span})")]
+    AiTimedOut {
+        /// The provider.
+        provider: String,
+        /// The declared ceiling.
+        seconds: u64,
+        /// Where the call sits.
+        span: Span,
+    },
+    /// The provider refused the call, or the transport to it failed. The
+    /// status is the CLASS (`4xx`, `5xx`), never the body — a provider's
+    /// error page can echo a request, and the request carried the key.
+    #[error("the AI provider `{provider}` refused the call ({status}) (at {span})")]
+    AiProviderRefused {
+        /// The provider.
+        provider: String,
+        /// The status class.
+        status: &'static str,
+        /// Where the call sits.
+        span: Span,
+    },
+    /// The provider's answer exceeded the ceiling a frame already keeps.
+    #[error("the AI provider `{provider}` answered more than the ceiling holds (at {span})")]
+    AiAnswerTooLarge {
+        /// The provider.
+        provider: String,
+        /// Where the call sits.
+        span: Span,
+    },
+    /// `DEFINE AI PROVIDER` named a vault the database does not hold, or the
+    /// call time found the key's vault sealed or the secret missing (G102
+    /// C8): a provider's key lives sealed or the provider does not exist.
+    #[error("the AI provider `{provider}` has no sealed key: it {reason} (at {span})")]
+    AiKeyNotSealed {
+        /// The provider.
+        provider: String,
+        /// What is missing.
+        reason: &'static str,
+        /// Where the statement sits.
+        span: Span,
+    },
+    /// `state::merge` was offered a state of a fold other than the one its
+    /// group is merging, or a state this build cannot read (G102 S11).
+    ///
+    /// Refused rather than mis-added: a `count`'s state is an integer and a
+    /// `sum`'s is an array, and merging one into the other would answer a
+    /// number that is neither.
+    #[error(
+        "a state of `{held}` cannot merge into a `{merging}` (at {span}) — only states of one fold merge"
+    )]
+    StateFoldMismatch {
+        /// The fold the merge is of.
+        merging: String,
+        /// The fold the offered state belongs to.
+        held: String,
+        /// Where the merge stands.
+        span: Span,
+    },
+    /// `state::finish` was given a value that is not a fold state.
+    #[error("state::finish answers a fold state and was given {kind} (at {span})")]
+    StateExpected {
+        /// What it was given, by type name.
+        kind: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
+    /// `state::of` stood anywhere but over a bare fold in a grouping
+    /// projection — the one position whose accumulator it can answer.
+    #[error(
+        "state::of answers the state of a fold, written `state::of(<fold>)` in a grouping read (at {span})"
+    )]
+    StateOfWhat {
+        /// Where it was written.
+        span: Span,
+    },
+    /// A fold's state could not be taken exactly — its exact total had
+    /// already failed with no float to decide the answer (ADR-0114).
+    #[error(
+        "the {fold} of this group cannot be stated exactly (at {span}) — its exact total is outside the representable range"
+    )]
+    StateCannotTravel {
+        /// The fold whose state was asked for.
+        fold: &'static str,
+        /// Where it was written.
+        span: Span,
+    },
     /// A materialized view's read depends on something its source table's
     /// changes do not cover (ADR-0109 D4).
     ///

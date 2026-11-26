@@ -114,6 +114,64 @@ impl Expr {
                         .zip(right.iter())
                         .all(|(one, two)| one.same_shape(two))
             }
+            (
+                ExprKind::Fold {
+                    fold,
+                    over,
+                    at,
+                    ahead,
+                    ..
+                },
+                ExprKind::Fold {
+                    fold: other_fold,
+                    over: other_over,
+                    at: other_at,
+                    ahead: other_ahead,
+                    ..
+                },
+            ) => {
+                fold == other_fold
+                    && same_optional(over, other_over)
+                    && same_optional(at, other_at)
+                    && same_optional(ahead, other_ahead)
+            }
+            (
+                ExprKind::If {
+                    condition,
+                    then,
+                    otherwise,
+                },
+                ExprKind::If {
+                    condition: other_condition,
+                    then: other_then,
+                    otherwise: other_otherwise,
+                },
+            ) => {
+                condition.same_shape(other_condition)
+                    && then.same_shape(other_then)
+                    && same_optional(otherwise, other_otherwise)
+            }
+            (ExprKind::Coalesce(left, right), ExprKind::Coalesce(other_left, other_right)) => {
+                left.same_shape(other_left) && right.same_shape(other_right)
+            }
+            (ExprKind::Range(left), ExprKind::Range(right)) => {
+                left.inclusive == right.inclusive
+                    && left.start.same_shape(&right.start)
+                    && left.end.same_shape(&right.end)
+            }
+            (ExprKind::Object(left), ExprKind::Object(right)) => {
+                left.len() == right.len()
+                    && left.iter().zip(right.iter()).all(|(one, two)| {
+                        one.name.text == two.name.text && one.value.same_shape(&two.value)
+                    })
+            }
+            (
+                ExprKind::Route { value, steps },
+                ExprKind::Route {
+                    value: other_value,
+                    steps: other_steps,
+                },
+            ) => value.same_shape(other_value) && steps == other_steps,
             (ExprKind::Path(left), ExprKind::Path(right)) => left.path == right.path,
             (ExprKind::Literal(left), ExprKind::Literal(right)) => left == right,
             (ExprKind::Table(left), ExprKind::Table(right)) => left.name.text == right.name.text,
@@ -123,6 +181,17 @@ impl Expr {
             // about, and claiming they are the same would be a guess.
             (left, right) => left == right,
         }
+    }
+}
+
+/// Two optional sub-expressions that must both be absent or both say the same
+/// thing — `same_shape`'s arm for `Fold`'s `over`/`at`/`ahead` and `If`'s
+/// `ELSE`.
+fn same_optional(left: &Option<Box<Expr>>, right: &Option<Box<Expr>>) -> bool {
+    match (left, right) {
+        (None, None) => true,
+        (Some(one), Some(two)) => one.same_shape(two),
+        _ => false,
     }
 }
 
@@ -182,6 +251,10 @@ pub enum ExprKind {
         /// `approx_quantile(v, q)` is asked at (ADR-0122 C3). `None` for every
         /// other fold.
         at: Option<Box<Expr>>,
+        /// The horizon, in seconds past the last sample, that
+        /// `predict_linear(v, at, ahead)` projects to. `None` for every other
+        /// fold.
+        ahead: Option<Box<Expr>>,
         /// Where it was written.
         span: Span,
     },

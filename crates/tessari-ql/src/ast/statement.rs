@@ -175,6 +175,10 @@ pub enum StatementKind {
         /// Only valid beside `STORE COLUMN`; the catalog refuses the other
         /// combinations by name.
         partitions: Option<(u64, String)>,
+        /// `SORT BY seq` — the field a columnar projection lays its chunks
+        /// out in order of (ADR-0135). One field, immutable after define as
+        /// the storage kind is; only valid beside `STORE COLUMN`.
+        sort: Option<String>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
@@ -891,6 +895,41 @@ pub enum StatementKind {
     /// pool, which names no limit.
     DropPool {
         /// The pool to drop.
+        name: Name,
+    },
+    /// `DEFINE AI PROVIDER anthropic URL 'https://…' MODEL '…' KEY VAULT v
+    /// FIELD f BUDGET n PER 1h TIMEOUT 10s` — a provider the namespace's
+    /// `ai::` calls go to (G102 C8).
+    ///
+    /// Every clause is required and none has a default, on the `DEFINE`'s own
+    /// rule: a value the store guessed would decide behaviour nobody chose.
+    /// The key is named as a vault secret and is never written here — the
+    /// catalog row carries the NAME, each node reads its own vault at call
+    /// time, and a store with no vault cannot declare a provider.
+    DefineAiProvider {
+        /// The name calls know the provider by, unique within its namespace.
+        name: Name,
+        /// The endpoint; `https` only.
+        url: String,
+        /// The model the provider is asked for.
+        model: String,
+        /// The vault the key is sealed in.
+        vault: Name,
+        /// The secret's name inside that vault.
+        secret: Name,
+        /// How many calls the budget admits per span.
+        budget: u64,
+        /// The budget's span.
+        budget_span: Duration,
+        /// How long one call may take.
+        timeout: Duration,
+        /// Whether re-defining an existing name is accepted.
+        if_not_exists: bool,
+    },
+    /// `DROP AI PROVIDER anthropic` — the provider whole; its calls refuse
+    /// `AiNoProvider` from then on.
+    DropAiProvider {
+        /// The provider to drop.
         name: Name,
     },
     /// `REVOKE CERTIFICATE '<sha256>'` — a peer certificate refused by every

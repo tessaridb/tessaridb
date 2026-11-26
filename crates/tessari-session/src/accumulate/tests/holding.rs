@@ -252,3 +252,280 @@ fn a_counters_float_rises_are_summed_exactly_and_rounded_once() {
     let answer = walked(Aggregate::Increase, &values);
     assert_eq!(answer, Value::Number(Number::float(0.6)));
 }
+
+/// A sample carrying the prediction horizon as its third element.
+fn ahead(value: Value, second: i64, ahead: i64) -> Value {
+    Value::Array(vec![
+        value,
+        Value::Datetime(Datetime::from_seconds(second)),
+        integer(ahead),
+    ])
+}
+
+#[test]
+fn resets_count_the_falls_and_a_window_of_one_sample_saw_none() {
+    // 1, 4, 9, then a fall to 2, then 5, 5, 8: one fall; the equal pair is
+    // not one.
+    let values = &series()[0];
+    assert_eq!(walked(Aggregate::Resets, values), integer(1));
+    assert_eq!(
+        walked(Aggregate::Resets, &[sample(integer(7), 10)]),
+        integer(0)
+    );
+    assert_eq!(walked(Aggregate::Resets, &[]), Value::None);
+    // The count survives the parts being summarised and merged, the fall at a
+    // boundary counted by the merge itself.
+    for cuts in every_cut(values) {
+        let here = merged(Aggregate::Resets, values, &cuts);
+        assert_eq!(here.finish().unwrap(), integer(1), "cut at {cuts:?}");
+    }
+}
+
+#[test]
+fn deriv_is_the_least_squares_slope_per_second() {
+    // A straight line of slope 0.2 per second, sampled off the line nowhere.
+    let line = [
+        sample(integer(1), 100),
+        sample(integer(3), 110),
+        sample(integer(5), 120),
+    ];
+    let answered = walked(Aggregate::Deriv, &line);
+    assert_eq!(format!("{answered:?}"), format!("{:?}", float(0.2)));
+    // One sample, or samples at one instant, name no slope.
+    assert_eq!(
+        walked(Aggregate::Deriv, &[sample(integer(1), 10)]),
+        Value::None
+    );
+    let flat = [sample(integer(1), 10), sample(integer(2), 10)];
+    assert_eq!(walked(Aggregate::Deriv, &flat), Value::None);
+    // The sums merge exactly, so a cut anywhere answers the same slope.
+    for cuts in every_cut(&line) {
+        let here = merged(Aggregate::Deriv, &line, &cuts);
+        let answered = here.finish().unwrap();
+        assert_eq!(
+            format!("{answered:?}"),
+            format!("{:?}", float(0.2)),
+            "cut at {cuts:?}"
+        );
+    }
+}
+
+#[test]
+fn predict_linear_extends_the_line_past_the_last_sample() {
+    // The same line, extended thirty seconds past its last sample at t=120:
+    // 5 + 0.2 * 30 = 11.
+    let line = [
+        ahead(integer(1), 100, 30),
+        ahead(integer(3), 110, 30),
+        ahead(integer(5), 120, 30),
+    ];
+    let answered = walked(Aggregate::PredictLinear, &line);
+    assert_eq!(format!("{answered:?}"), format!("{:?}", float(11.0)));
+    assert_eq!(
+        walked(Aggregate::PredictLinear, &[ahead(integer(1), 10, 30)]),
+        Value::None
+    );
+}
+
+#[test]
+fn downsample_keeps_the_ends_and_the_sharpest_point_between_them() {
+    // A zigzag (0,0) (1,10) (2,0) (3,10) (4,0) down to three points keeps the
+    // first, the last, and (1,10) — the largest triangle against the closing
+    // average.
+    let zigzag = [
+        sample(integer(0), 0),
+        sample(integer(10), 1),
+        sample(integer(0), 2),
+        sample(integer(10), 3),
+        sample(integer(0), 4),
+    ];
+    let answered = walked_downsample(&zigzag, 3);
+    assert_eq!(
+        answered,
+        Value::Array(vec![
+            point(integer(0), 0),
+            point(integer(10), 1),
+            point(integer(0), 4),
+        ])
+    );
+}
+
+#[test]
+fn downsample_with_room_for_everything_answers_everything_in_time_order() {
+    let few = [sample(integer(7), 30), sample(integer(1), 10)];
+    let answered = walked_downsample(&few, 5);
+    assert_eq!(
+        answered,
+        Value::Array(vec![point(integer(1), 10), point(integer(7), 30)])
+    );
+}
+
+#[test]
+fn downsample_merged_in_parts_answers_the_walk() {
+    // A downsampling leader's state is its samples — a summary holds no
+    // points — so however the group is cut, the merge picks the same points
+    // the one walk picks.
+    let zigzag = [
+        sample(integer(0), 0),
+        sample(integer(10), 1),
+        sample(integer(0), 2),
+        sample(integer(10), 3),
+        sample(integer(0), 4),
+        sample(integer(3), 5),
+        sample(integer(0), 6),
+    ];
+    let expected = walked_downsample(&zigzag, 4);
+    for cuts in every_cut(&zigzag) {
+        let parts = parts(&zigzag, &cuts);
+        let mut here = reduced_downsample(parts[0], 4);
+        for part in &parts[1..] {
+            let state = reduced_downsample(part, 4)
+                .state()
+                .expect("samples to send");
+            assert!(here.merge(&state).unwrap(), "cut at {cuts:?}");
+        }
+        assert_eq!(here.finish().unwrap(), expected, "cut at {cuts:?}");
+    }
+}
+
+/// One part reduced with the horizon carried on every offer.
+fn reduced_downsample(part: &[Value], n: i64) -> Accumulator {
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Downsample, span());
+    for value in part {
+        let Value::Array(pair) = value else {
+            panic!("a sample")
+        };
+        let mut triple = pair.clone();
+        triple.push(integer(n));
+        accumulator.offer(&Value::Array(triple)).unwrap();
+    }
+    accumulator
+}
+
+/// `downsample` over the walk with `n` as the horizon element.
+fn walked_downsample(values: &[Value], n: i64) -> Value {
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Downsample, span());
+    for value in values {
+        let Value::Array(pair) = value else {
+            panic!("a sample")
+        };
+        let mut triple = pair.clone();
+        triple.push(integer(n));
+        accumulator.offer(&Value::Array(triple)).unwrap();
+    }
+    accumulator.finish().unwrap()
+}
+
+/// One answered point, `{ at, value }`.
+fn point(value: Value, second: i64) -> Value {
+    let mut held = std::collections::BTreeMap::new();
+    held.insert(
+        "at".to_string(),
+        Value::Datetime(Datetime::from_seconds(second)),
+    );
+    held.insert("value".to_string(), value);
+    Value::Object(held)
+}
+
+#[test]
+fn decayed_folds_weigh_each_sample_by_its_age_in_half_lives() {
+    // Samples 2, 4, 8 at t = 0, 10, 20 with a half-life of ten seconds weigh
+    // 1/4, 1/2, 1: sum 10.5, mean 6, max 8, count 1.75.
+    let samples = [
+        sample(integer(2), 0),
+        sample(integer(4), 10),
+        sample(integer(8), 20),
+    ];
+    let cases = [
+        (Aggregate::DecayedSum, 10.5_f64),
+        (Aggregate::DecayedMean, 6.0),
+        (Aggregate::DecayedMax, 8.0),
+        (Aggregate::DecayedCount, 1.75),
+    ];
+    for (fold, expected) in cases {
+        let answered = walked_third(fold, &samples, 10);
+        assert_eq!(
+            format!("{answered:?}"),
+            format!("{:?}", float(expected)),
+            "{fold:?}"
+        );
+        // The parts send samples and the half-life, so any cut answers alike.
+        for cuts in every_cut(&samples) {
+            let parts = parts(&samples, &cuts);
+            let mut here = reduced_third(fold, parts[0], 10);
+            for part in &parts[1..] {
+                let state = reduced_third(fold, part, 10).state().expect("samples");
+                assert!(here.merge(&state).unwrap(), "{fold:?} cut at {cuts:?}");
+            }
+            assert_eq!(
+                format!("{:?}", here.finish().unwrap()),
+                format!("{:?}", float(expected)),
+                "{fold:?} cut at {cuts:?}"
+            );
+        }
+    }
+    // No samples, no answer; a half-life that is not positive is refused.
+    assert_eq!(walked_third(Aggregate::DecayedSum, &[], 10), Value::None);
+}
+
+/// The walk with a third element on every offer.
+fn walked_third(fold: Aggregate, values: &[Value], third: i64) -> Value {
+    reduced_third(fold, values, third).finish().unwrap()
+}
+
+/// One part reduced with the third element carried on every offer.
+fn reduced_third(fold: Aggregate, part: &[Value], third: i64) -> Accumulator {
+    let mut accumulator = Accumulator::for_aggregate(fold, span());
+    for value in part {
+        let Value::Array(pair) = value else {
+            panic!("a sample")
+        };
+        let mut triple = pair.clone();
+        triple.push(integer(third));
+        accumulator.offer(&Value::Array(triple)).unwrap();
+    }
+    accumulator
+}
+
+#[test]
+fn top_k_answers_the_most_common_values_with_their_counts() {
+    let offered = [
+        sample(integer(2), 1),
+        sample(integer(1), 2),
+        sample(integer(2), 3),
+        sample(integer(3), 4),
+        sample(integer(2), 5),
+        sample(integer(1), 6),
+    ];
+    // k = 2: value 2 held three times, value 1 twice; the tie-free order.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::TopK, span());
+    for value in &offered {
+        let Value::Array(pair) = value else {
+            panic!("a sample")
+        };
+        let Some(held) = pair.first() else {
+            panic!("a value")
+        };
+        accumulator
+            .offer(&Value::Array(vec![held.clone(), integer(2)]))
+            .unwrap();
+    }
+    let answered = accumulator.finish().unwrap();
+    let point = |value: Value, count: i64| {
+        let mut held = std::collections::BTreeMap::new();
+        held.insert("count".to_string(), integer(count));
+        held.insert("value".to_string(), value);
+        Value::Object(held)
+    };
+    assert_eq!(
+        answered,
+        Value::Array(vec![point(integer(2), 3), point(integer(1), 2)])
+    );
+    // A k that differs between records is refused, not picked from.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::TopK, span());
+    accumulator
+        .offer(&Value::Array(vec![integer(1), integer(2)]))
+        .unwrap();
+    let refused = accumulator.offer(&Value::Array(vec![integer(1), integer(3)]));
+    assert!(refused.is_err());
+}

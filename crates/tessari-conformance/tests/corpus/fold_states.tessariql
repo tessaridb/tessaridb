@@ -1,0 +1,63 @@
+# Fold states: a group's state as a value that travels and merges (G102 S11).
+#
+# `state::of(<fold>)` answers what the accumulator holds instead of the
+# fold's finish; the value stores in a `fold_state` field, `state::merge`
+# folds states of one fold into one state, and `state::finish` answers the
+# fold's own answer out of a state. The oracle is the direct fold: a state
+# finished is the fold, and halves merged are the whole.
+
+--- case: a namespace and a database, to work in
+DEFINE NAMESPACE states;
+USE NAMESPACE states;
+DEFINE DATABASE intake;
+USE DATABASE intake;
+DEFINE COLLECTION readings;
+--- expect: ok
+
+--- case: readings to fold, one band split across two inserts
+CREATE readings:1 = { band: 0, total: 10 };
+CREATE readings:2 = { band: 0, total: 20 };
+CREATE readings:3 = { band: 1, total: 5 };
+--- expect: ok
+
+--- case: a table that keeps states, one per half of band 0
+DEFINE TABLE halves SCHEMAFULL;
+DEFINE FIELD half ON halves TYPE int;
+DEFINE FIELD part ON halves TYPE fold_state;
+--- expect: ok
+
+--- case: the first half stated
+INSERT INTO halves (half, part) SELECT 1 AS half, state::of(sum(total)) AS part
+FROM readings WHERE band = 0 AND total < 20 GROUP BY band;
+--- expect: ok
+
+--- case: the second half stated
+INSERT INTO halves (half, part) SELECT 2 AS half, state::of(sum(total)) AS part
+FROM readings WHERE band = 0 AND total >= 20 GROUP BY band;
+--- expect: ok
+
+--- case: halves merged and finished are the whole band
+RETURN (SELECT state::finish(state::merge(part)) AS f FROM halves
+        GROUP BY true) = [{ f: 30 }];
+--- expect: value true
+
+--- case: a state of another fold refuses rather than mis-adds
+INSERT INTO halves (half, part) SELECT 3 AS half, state::of(count(*)) AS part
+FROM readings WHERE band = 1 GROUP BY band;
+--- expect: ok
+
+--- case: merging a count into the sums refuses
+SELECT state::finish(state::merge(part)) AS f FROM halves GROUP BY true;
+--- expect: error StateFoldMismatch
+
+--- case: finishing what is not a state refuses
+SELECT state::finish(3) AS f FROM readings LIMIT 1;
+--- expect: error StateExpected
+
+--- case: state::of over something that is not a fold refuses
+SELECT state::of(3) AS f FROM readings LIMIT 1;
+--- expect: error StateOfWhat
+
+--- case: a field of states admits nothing else
+CREATE halves:'bad' = { half: 9, part: 'text' };
+--- expect: error SchemaViolation

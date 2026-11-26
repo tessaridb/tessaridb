@@ -1,4 +1,4 @@
-use tessari_ql::{JoinSide, Select, Source};
+use tessari_ql::{Expr, ExprKind, Function, JoinSide, Select, Source};
 use tessari_storage::{Catalog, Transaction};
 
 use crate::error::Result;
@@ -37,7 +37,11 @@ impl Session<'_> {
         transaction: &mut Transaction<'_>,
         select: &Select,
     ) -> Result<crate::outcome::Outcome> {
-        let plan = self.plan_of(transaction, select).await?;
+        let mut plan = self.plan_of(transaction, select).await?;
+        let calls = ai_calls(select);
+        if calls > 0 {
+            plan.ai_calls = Some(calls);
+        }
         Ok(crate::outcome::Outcome::Value(plan.to_value()))
     }
 
@@ -98,6 +102,14 @@ impl Session<'_> {
                 let (_, gated) = self.resolve_readable_table(transaction, table).await?;
                 self.refuse_reading_a_vault(transaction, gated, table)
                     .await?;
+                // A grouped read a kept view covers plans as the rewritten
+                // read it will run as — the same gate the read passes, so the
+                // plan reported is the plan taken — and says which view.
+                if let Some((onto, view)) = self.onto_a_kept_view(transaction, select).await? {
+                    let mut plan = Box::pin(self.plan_of(transaction, &onto)).await?;
+                    plan.answered_by_view = Some(view);
+                    return Ok(plan);
+                }
                 // A grouped read of a partitioned columnar table folds
                 // partition-locally when the read's gate qualifies it  — the same gate, so the plan reported is the plan
                 // taken.
@@ -392,4 +404,33 @@ impl Session<'_> {
             Source::Subquery { .. } => Ok(Plan::new(AccessPath::Materialised)),
         }
     }
+}
+
+/// How many provider calls one record's projection makes (G102 C8) — counted
+/// from the statement's own call sites, so the number is exact where a row
+/// estimate would be a maybe, and a reader combines it with the bound the
+/// plan already carries to see what a read will spend before it spends it.
+fn ai_calls(select: &Select) -> u32 {
+    fn count(expr: &Expr, calls: &mut u32) {
+        if let ExprKind::Call { function, .. } = &expr.kind
+            && matches!(
+                function,
+                Function::AiGenerate
+                    | Function::AiSummarize
+                    | Function::AiClassify
+                    | Function::AiExtract
+                    | Function::AiTranslate
+            )
+        {
+            *calls = calls.saturating_add(1);
+        }
+        for child in crate::aggregate::walk::children(expr) {
+            count(child, calls);
+        }
+    }
+    let mut calls = 0_u32;
+    for projected in select.projection.written() {
+        count(&projected.value, &mut calls);
+    }
+    calls
 }

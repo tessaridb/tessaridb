@@ -91,6 +91,8 @@ fn is_definition(kind: &StatementKind) -> bool {
         | StatementKind::DefineTopology { .. }
         | StatementKind::DefineBalancer { .. }
         | StatementKind::DefinePool { .. }
+        | StatementKind::DefineAiProvider { .. }
+        | StatementKind::DropAiProvider { .. }
         | StatementKind::DefineReplica { .. }
         | StatementKind::DefineReplication { .. }
         | StatementKind::DefineConsumer { .. }

@@ -189,10 +189,16 @@ fn a_selective_equality_answers_through_the_columnar_path() {
     else {
         panic!("the note is columnar: {note:?}");
     };
-    assert_eq!(chunks_examined, 3, "two sealed chunks and the open one");
+    assert_eq!(
+        chunks_examined, 2,
+        "the matching sealed chunk and the open one — the reads above \
+         remembered the lane, so the chunk that cannot hold the value is \
+         told apart in memory instead of being sought and denied (ADR-0135)"
+    );
     assert_eq!(
         chunks_skipped, 2,
-        "the bloom denies the two chunks that cannot hold the value"
+        "the remembered head denies the first chunk and the open chunk's \
+         min/max proves it away"
     );
     // 12_345 sits in the second sealed chunk (8_192..16_383): the first is
     // bloom-denied, the second decodes whole, the open chunk's min/max

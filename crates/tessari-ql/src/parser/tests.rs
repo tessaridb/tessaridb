@@ -114,3 +114,15 @@ fn a_word_naming_an_absent_feature_still_names_it() {
     );
     assert_eq!(absent_feature("nothing_like_this"), None);
 }
+
+/// `state::merge` is a fold spelled like a call — and `MERGE` is a reserved
+/// word — so the shape is recognised before the call shape claims it.
+#[test]
+fn a_state_merge_is_a_fold_not_a_call() {
+    let read = super::parse_read("SELECT state::merge(part) AS f FROM halves GROUP BY band");
+    assert!(read.is_ok(), "{read:?}");
+    let nested = super::parse_read(
+        "SELECT state::finish(state::merge(part)) AS f FROM halves GROUP BY band",
+    );
+    assert!(nested.is_ok(), "{nested:?}");
+}

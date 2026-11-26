@@ -19,6 +19,7 @@ use crate::evaluate::Scope;
 use crate::outcome::Outcome;
 use crate::session::Session;
 
+mod ai;
 mod analyzed;
 mod cluster;
 mod containers;
@@ -175,6 +176,7 @@ impl Session<'_> {
                 expire,
                 store,
                 partitions,
+                sort,
                 if_not_exists,
             } => {
                 // The endpoints are resolved **before** the table is created, so
@@ -217,6 +219,20 @@ impl Session<'_> {
                         span: name.span,
                     });
                 }
+                // The sort key answers to the same rule as the partition key:
+                // a schemafull declaration naming no such column is refused
+                // before anything is created (ADR-0135).
+                if let Some(key) = sort
+                    && *schemafull
+                    && !columns.is_empty()
+                    && !columns.iter().any(|column| column.name.text == *key)
+                {
+                    return Err(Error::PartitionKeyUndeclared {
+                        table: name.text.clone(),
+                        field: key.clone(),
+                        span: name.span,
+                    });
+                }
                 let existed = expire.is_some() && self.names_a_table(transaction, name).await;
                 let storage_kind = store.map(|kind| match kind {
                     tessari_ql::StoreKind::Row => tessari_storage::StorageKind::Row,
@@ -245,6 +261,7 @@ impl Session<'_> {
                                     }
                                 })
                             }),
+                            sort: sort.clone(),
                         },
                         *if_not_exists,
                         span,
@@ -437,6 +454,16 @@ impl Session<'_> {
                     ),
                     None => None,
                 };
+                // A fold state's value tag is one a build below format 19
+                // refuses as unknown (G102 S11), for the reason the
+                // containment gate states.
+                if matches!(kind, tessari_types::FieldKind::FoldState) {
+                    self.refuse_a_format_the_store_does_not_hold(
+                        "a fold_state field",
+                        tessari_encoding::FormatVersion::FOLD_STATES,
+                    )
+                    .await?;
+                }
                 let added = self
                     .add_field(
                         transaction,
@@ -696,6 +723,32 @@ impl Session<'_> {
                 self.define_pool(transaction, name, &stated, span).await
             }
             StatementKind::DropPool { name } => self.drop_pool(transaction, name, span).await,
+            StatementKind::DefineAiProvider {
+                name,
+                url,
+                model,
+                vault,
+                secret,
+                budget,
+                budget_span,
+                timeout,
+                if_not_exists,
+            } => {
+                let stated = ai::StatedProvider {
+                    url,
+                    model,
+                    vault,
+                    secret,
+                    budget: *budget,
+                    budget_span_seconds: u64::try_from(budget_span.seconds()).unwrap_or(0),
+                    timeout_seconds: u64::try_from(timeout.seconds()).unwrap_or(0),
+                };
+                self.define_ai_provider(transaction, name, &stated, *if_not_exists, span)
+                    .await
+            }
+            StatementKind::DropAiProvider { name } => {
+                self.drop_ai_provider(transaction, name, span).await
+            }
             StatementKind::DefineConsumer {
                 name,
                 source,
@@ -1629,6 +1682,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1669,6 +1723,7 @@ impl Session<'_> {
                             spread: false,
                             storage_kind: None,
                             partitions: None,
+                            sort: None,
                         },
                         *if_not_exists,
                         span,
@@ -1779,6 +1834,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1831,6 +1887,7 @@ impl Session<'_> {
                                 }
                             })
                         }),
+                        sort: None,
                     },
                     *if_not_exists,
                     span,
@@ -1914,6 +1971,7 @@ impl Session<'_> {
                         spread: false,
                         storage_kind: None,
                         partitions: None,
+                        sort: None,
                     },
                     *if_not_exists,
                     span,

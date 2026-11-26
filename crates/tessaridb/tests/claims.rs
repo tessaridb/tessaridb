@@ -135,7 +135,7 @@ fn the_changelog_counts_the_same_cases_the_badge_does() {
 
 /// The corpora the engines table does not name, because they are cross-cutting
 /// rather than the work of one engine.
-const CROSS_CUTTING: [&str; 32] = [
+const CROSS_CUTTING: [&str; 36] = [
     // A fused order combines the orders of several engines — full-text, vector,
     // geographic — by rank, and is the work of none of them: filing it under one
     // would make that engine look like the owner of the other two's answers.
@@ -170,6 +170,15 @@ const CROSS_CUTTING: [&str; 32] = [
     // nearest-neighbour read, and the same is true of the calendar readings and
     // of everything that opens an object or reshapes an array.
     "calendar",
+    // A reading of a whole numeric series held as one array — outliers, the
+    // period, a decomposition — is a function over a value any table can
+    // hold, not the work of the series engine, which stores points rather
+    // than reading arrays.
+    "series",
+    // Further readings over values any table can hold — logarithms, paddings,
+    // distances, ranges, identifier instants — filed with the calendar and
+    // the series readings for the same reason.
+    "breadth",
     "casts",
     "collections",
     // Where a page begins belongs to no engine: `AFTER` resumes a scan, an
@@ -178,6 +187,14 @@ const CROSS_CUTTING: [&str; 32] = [
     "cursor",
     "conditionals",
     "consumers",
+    // A fold's state travels beside the folds themselves: stated in one read,
+    // stored in any table, merged and finished in another — the work of no one
+    // engine, like the folds it states.
+    "fold_states",
+    // URLs and addresses read as text belong to no engine: a link is a
+    // string in any table, and the readings split it where the standard
+    // splits it.
+    "web",
     // A fold reduces records to an answer and does not care where the records
     // came from: `median(price)` reads the same over a scan, an index read and a
     // walk. What the two collecting folds *do* belong to is the memory ceiling,

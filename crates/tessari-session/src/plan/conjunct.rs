@@ -238,6 +238,43 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::TimeHour
         | Function::TimeMinute
         | Function::TimeSecond
+        | Function::TimeDayOfWeek
+        | Function::TimeDayOfYear
+        | Function::TimeWeek
+        | Function::TimeQuarter
+        | Function::TimeStartOfDay
+        | Function::TimeStartOfWeek
+        | Function::TimeStartOfMonth
+        | Function::TimeStartOfQuarter
+        | Function::TimeStartOfYear
+        | Function::SeriesOutliersTukey
+        | Function::SeriesPeriodDetect
+        | Function::SeriesDecomposeStl
+        | Function::MathLog2
+        | Function::MathLog10
+        | Function::MathExp2
+        | Function::MathCbrt
+        | Function::MathSin
+        | Function::MathCos
+        | Function::MathTan
+        | Function::MathAsin
+        | Function::MathAcos
+        | Function::MathAtan
+        | Function::MathAtan2
+        | Function::MathHypot
+        | Function::MathDegrees
+        | Function::MathRadians
+        | Function::MathPi
+        | Function::MathE
+        | Function::StringRepeat
+        | Function::StringPadLeft
+        | Function::StringPadRight
+        | Function::StringEditDistance
+        | Function::ArrayCompact
+        | Function::ArrayCount
+        | Function::ArrayRange
+        | Function::RandUuid7
+        | Function::UuidInstant
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::DurationFromSecs
@@ -246,6 +283,19 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::CryptoSha512
         | Function::TimeBucket
         | Function::TypeOf
+        | Function::StateOf
+        | Function::StateFinish
+        | Function::UrlScheme
+        | Function::UrlHost
+        | Function::UrlPort
+        | Function::UrlPath
+        | Function::UrlQuery
+        | Function::UrlFragment
+        | Function::UrlDecode
+        | Function::UrlEncode
+        | Function::IpIsV4
+        | Function::IpIsV6
+        | Function::IpInRange
         | Function::TypeBool
         | Function::TypeInt
         | Function::TypeFloat
@@ -303,6 +353,11 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ScoresUnion
         | Function::ScoresIntersect
         | Function::SessionContext
+        | Function::AiGenerate
+        | Function::AiSummarize
+        | Function::AiClassify
+        | Function::AiExtract
+        | Function::AiTranslate
         | Function::SearchHighlight => None,
     }
 }

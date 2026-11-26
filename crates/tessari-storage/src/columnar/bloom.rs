@@ -37,6 +37,7 @@ const MIN_BIT_COUNT: usize = 64;
 const MAX_BLOOM_BYTES: usize = super::chunk::BYTES_PER_CHUNK;
 
 /// A decoded bloom filter: the bit bytes, the bit count, and the probe count.
+#[derive(Debug, Clone)]
 pub(crate) struct BloomBits {
     bytes: Vec<u8>,
     bit_count: usize,

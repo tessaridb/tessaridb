@@ -272,6 +272,9 @@ impl Effect {
             // balancer policy's reason: an admission limit that reached one
             // node and not the rest would refuse on half the cluster.
             StatementKind::DefinePool { .. } | StatementKind::DropPool { .. } => Self::Write,
+            StatementKind::DefineAiProvider { .. } | StatementKind::DropAiProvider { .. } => {
+                Self::Write
+            }
             // A catalog record every replica applies by raising its own stamp
             // (ADR-0118), for the reason a failover policy is a write.
             StatementKind::FinalizeFormat => Self::Write,

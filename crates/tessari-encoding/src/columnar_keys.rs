@@ -61,7 +61,7 @@ const TAG_FIELD_ID: u8 = b'I';
 const TAG_FIELD_NAME: u8 = b'N';
 
 /// Which column a chunk family holds.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ColumnFamily {
     /// A declared field, keyed by the catalog's stable field id — the name
     /// resolves at the catalog, the id rides on disk, and a rename does not

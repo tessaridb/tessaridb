@@ -198,7 +198,8 @@ pub(crate) fn literal(value: &Value) -> Option<String> {
         | Value::Range(_)
         | Value::Set(_)
         | Value::Geometry(_)
-        | Value::Regex(_) => None,
+        | Value::Regex(_)
+        | Value::FoldState(_) => None,
     }
 }
 

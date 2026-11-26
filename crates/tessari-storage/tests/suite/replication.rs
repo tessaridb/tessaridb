@@ -1933,6 +1933,7 @@ fn declaring(policy: Option<ConflictPolicy>) -> (Store, NamespaceId, DatabaseId,
                 spread: false,
                 storage_kind: None,
                 partitions: None,
+                sort: None,
             },
         )
         .now()

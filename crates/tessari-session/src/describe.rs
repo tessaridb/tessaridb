@@ -451,6 +451,12 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 partitioning.count, partitioning.by
             );
         }
+        // The layout order rides the declaration for the same reason the kind
+        // does: a restore that lost it would rebuild the table in commit
+        // order and prune nothing the original pruned (ADR-0135).
+        if let Some(sort) = &definition.sort {
+            let _ = write!(script, " SORT BY {sort}");
+        }
     }
     write_identity(script, definition);
     write_conflict(script, definition);

@@ -1172,6 +1172,7 @@ order across types **is** the declared cross-type order.
 | `0x0e` | `range` | two bounds, each `<kind:1>` and, unless open, a value |
 | `0x10` | `geometry` | the shape byte (`docs/value-system.md` §5.2), then its positions as the payload writes them |
 | `0x11` | `regex` | the pattern's source text, escaped (§4.3) |
+| `0x12` | `fold_state` | the fold's spelling, escaped (§4.3), then the state as one index value |
 
 These are the same numbers as the payload codec's tags (`docs/value-system.md`
 §5) so that a hex dump reads the same way in both. They are nonetheless
@@ -1267,6 +1268,7 @@ already written carries it. A new table takes the next id; none is reused.
 | `33` | `TOPOLOGY` | the realm/domain scheme the cluster is arranged over: the scheme's name, its realms with their domains, the survival claim, and the leadership pair that orders the row (one row, key `scheme`) |
 | `34` | `BALANCER` | the load-balancing policy the store line's leader runs a placement move under: the margin as hundredths of one, the measurement window, the spacing, and the leadership pair that orders the row (one row, key `policy`, beside the failover policy's row) |
 | `35` | `POOLS` | the workload pools a namespace admits work under: the limit, the classifier (database, user, kinds), one row per pool keyed `namespace:name` |
+| `36` | `AI_PROVIDERS` | the AI providers a namespace declares: URL, model, budget, timeout and the NAME of the vault secret the key lives in (never the key), one row per provider keyed `namespace:name` |
 
 ## 10. Format versions
 
@@ -1296,6 +1298,8 @@ and is rewritten at open only where the row below says so.
 | `16` | the catalog keeps a namespace's workload pools in system table `35` — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `35` | opened as is and keeps its stamp; `DEFINE POOL` is refused (`FormatNotFinalized`) until the store is finalized |
 | `17` | a vector index may be partitioned (ADR-0141): key kinds `0x49` (a partitioned index's trained centroids and codebooks) and `0x4a` (one record's product-quantized codes, by partition) — entries a build before it neither reads nor clears, so a store holding them is one it must not open | opened as is and keeps its stamp; a partitioned vector index is refused (`FormatNotFinalized`) until the store is finalized |
 | `18` | a search index keeps a monotonic term bloom, key kind `0x4b` (ADR-0147) — a value a build before it neither reads nor writes, so a store holding it is one it must not open | opened as is and keeps its stamp; nothing a pre-18 build does changes or is changed by the bloom, and a store below keeps reading through its postings as before |
+| `19` | the value codec carries a fold's state, tag `0x12` (G102 S11) — a value a build before it refuses as an unknown tag, so a store holding one is one it must not open | opened as is and keeps its stamp; `TYPE fold_state` is refused (`FormatNotFinalized`) until the store is finalized |
+| `20` | the catalog keeps a namespace's AI providers in system table `36` (G102 C8) — a system-table addition: a build before it never reads the row, but its key grammar cannot place a key naming table `36` | opened as is and keeps its stamp; `DEFINE AI PROVIDER` is refused (`FormatNotFinalized`) until the store is finalized |
 
 **The stamp is the format the store holds, and it lags this build** (ADR-0118,
 from `0.31.0-beta`). A build opens an older store and keeps its stamp, so the
