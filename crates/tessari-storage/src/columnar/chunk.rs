@@ -112,6 +112,7 @@ const ROW_CEILING: usize = 1 << 24;
 /// scan's report can say it instead of guessing.
 ///
 /// The members are read by SG3's pruning scan (`columnar/scan.rs`).
+#[derive(Debug, Clone)]
 pub(crate) struct ChunkStats {
     /// The least non-null value under the store's one declared order.
     pub(crate) min: Option<Value>,

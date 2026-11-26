@@ -228,6 +228,12 @@ pub struct Store {
     /// nowhere, so a follower holding every byte of the leader's log holds
     /// nothing that opens a secret.
     vault: Arc<crate::vault::OpenVault>,
+    /// The columnar chunk-head index: sealed chunks' ranges, held in memory
+    /// so a pruned read consults memory instead of seeking every head
+    /// (ADR-0135). Derived, never durable — the heads are the truth, and a
+    /// lane the index cannot vouch for is walked the way every read walked
+    /// before it existed.
+    heads: Arc<crate::columnar::heads::HeadIndex>,
     /// How many times each name has lately missed signing in here.
     ///
     /// Shared with every handle for the vault keyring's reason — a reconnect

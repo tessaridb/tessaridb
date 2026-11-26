@@ -531,6 +531,10 @@ async fn project_table(
     // batch.
     let mut batch = batch;
     for (seq, family, bytes) in cows {
+        // A rewritten sealed chunk keeps its seq and changes its range, so
+        // the head index can no longer vouch for its lane; dropping is
+        // sound (the next read walks and reinstalls), keeping would not be.
+        store.heads().drop_family(table, &family);
         batch = batch.put(
             ChunkKey::keyspace(),
             ChunkKey::new(namespace, database, table, family, seq, version).encode(),
@@ -546,21 +550,24 @@ async fn project_table(
         // record: the scan consults the open chunk every time).
         let open_local = writer.seq();
         let finished = writer.finish();
-        let contributions: Vec<SealedStat> = finished
+        let decoded: Vec<(u64, super::chunk::ChunkStats)> = finished
             .iter()
             .filter(|sealed| sealed.seq != open_local)
-            .map(|sealed| {
-                let stat = super::chunk::decode_head(&sealed.bytes)?.1;
+            .map(|sealed| Ok((sealed.seq, super::chunk::decode_head(&sealed.bytes)?.1)))
+            .collect::<Result<Vec<_>>>()?;
+        let contributions: Vec<SealedStat> = decoded
+            .iter()
+            .map(|(_, stat)| {
                 if stat.range_disabled {
-                    Ok(SealedStat::Disabled)
+                    SealedStat::Disabled
                 } else {
-                    Ok(match stat.min.zip(stat.max) {
+                    match stat.min.clone().zip(stat.max.clone()) {
                         Some((min, max)) => SealedStat::Ranged(min, max),
                         None => SealedStat::Empty,
-                    })
+                    }
                 }
             })
-            .collect::<Result<Vec<_>>>()?;
+            .collect();
         let held = lanes.entry(family.clone()).or_default();
         // A lane upgrades from absence only while its sealed history is
         // fully known: it was born under this wave and no NaN has disabled
@@ -592,6 +599,33 @@ async fn project_table(
                 Value::from(sealed.bytes),
             );
         }
+        // The head index extends by exactly the transition that preserves
+        // its completeness claim: the chunks this commit sealed, appended to
+        // a lane whose base open it still names. Updating here — before the
+        // batch lands — is sound in every outcome: a failed commit leaves
+        // the pointer behind the bumped open, which reads as stale, and
+        // stale is a walk and a reinstall.
+        let base_open = held.get(&partition).map_or(0, |lane| lane.open);
+        store.heads().sealed(
+            &super::heads::LaneKey {
+                table,
+                family: family.clone(),
+                partition,
+            },
+            base_open,
+            open_seq,
+            decoded
+                .iter()
+                .map(|(local, stats)| {
+                    (
+                        *local,
+                        super::heads::HeadEntry {
+                            stats: stats.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        );
         held.insert(
             partition,
             LanePointer {

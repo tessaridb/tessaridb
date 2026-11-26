@@ -465,3 +465,105 @@ fn a_sorted_columnar_table_answers_exactly_what_the_mirror_does() {
          unsorted {unsorted_note:?}"
     );
 }
+
+/// The head index (ADR-0135 S13-B): the first read of a lane walks every
+/// chunk head and remembers them; the second seeks only what can match; and
+/// a copy-on-write rewrite — the one change that can make a remembered range
+/// lie — drops what was remembered, so the answers never depend on it.
+#[test]
+fn a_remembered_lane_seeks_only_what_can_match_and_forgets_on_cow() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now("DEFINE NAMESPACE p; USE NAMESPACE p; DEFINE DATABASE a; USE DATABASE a;")
+        .unwrap();
+    session
+        .run_now("DEFINE TABLE s (seq int) STORE COLUMN SORT BY seq;")
+        .unwrap();
+    let id = {
+        let mut transaction = store.begin().now().unwrap();
+        let catalog = Catalog::new(&mut transaction);
+        let namespace = catalog.namespace_id("p").now().unwrap().unwrap();
+        let database = catalog.database_id(namespace, "a").now().unwrap().unwrap();
+        let table = catalog
+            .table_id(namespace, database, "s")
+            .now()
+            .unwrap()
+            .unwrap();
+        transaction.rollback();
+        (namespace, database, table)
+    };
+    // Enough rows that chunks seal at the row boundary: 82 000 rows are ten
+    // sealed chunks and an open one.
+    const ROWS: i64 = 82_000;
+    let mut transaction = store.begin().now().unwrap();
+    for position in 0..ROWS {
+        let payload = encode_payload(&Value::Object(BTreeMap::from([(
+            "seq".to_owned(),
+            Value::Number(Number::Integer(position)),
+        )])))
+        .into_bytes();
+        transaction.put(
+            RecordAddress::new(
+                NamespaceId::new(id.0.get()),
+                DatabaseId::new(id.1.get()),
+                TableId::new(id.2.get()),
+                RecordId::Int(position),
+            ),
+            payload,
+        );
+    }
+    transaction.commit().now().unwrap();
+
+    let read = "SELECT seq FROM s WHERE seq = 40050;";
+    let figures = |session: &mut Session<'_>| {
+        let outcomes = session.run_now(read).unwrap();
+        let last = outcomes.last().unwrap();
+        let rows = last.records().unwrap().len();
+        let note = last
+            .notes()
+            .iter()
+            .find_map(|note| match note {
+                tessari_session::Note::Columnar {
+                    chunks_examined,
+                    chunks_skipped,
+                    ..
+                } => Some((*chunks_examined, *chunks_skipped)),
+                _ => None,
+            })
+            .expect("no columnar note");
+        (rows, note)
+    };
+    let first = figures(&mut session);
+    assert_eq!(first.0, 1);
+    let second = figures(&mut session);
+    assert_eq!(second.0, 1, "the remembered read answered differently");
+    // The exit benchmark in miniature: eleven chunks exist (ten sealed and
+    // the open one) and the first read sought every head; the remembered
+    // read seeks exactly the one sealed chunk whose remembered range can
+    // match, and the open one no statistic ever covers.
+    assert_eq!(
+        first.1.0, 11,
+        "the first read did not walk every head: {first:?}"
+    );
+    assert_eq!(
+        second.1.0, 2,
+        "the remembered read sought more than the match and the open chunk: \
+         first {first:?} second {second:?}"
+    );
+
+    // A copy-on-write rewrite of a sealed chunk — the row moves out of the
+    // chunk the index remembers it in. The lane is dropped, so the next read
+    // walks every head again and still answers what the row authority says.
+    session.run_now("UPDATE s:100 = { seq: 81500 };").unwrap();
+    let after_cow = figures(&mut session);
+    assert_eq!(after_cow.0, 1, "the probe row vanished with the rewrite");
+    assert_eq!(
+        after_cow.1.0, 11,
+        "a rewritten lane was trusted instead of walked: {after_cow:?}"
+    );
+    // And the lane heals: the read after the walk is remembered again.
+    let healed = figures(&mut session);
+    assert_eq!(healed.0, 1);
+    assert_eq!(healed.1, second.1, "the lane did not heal: {healed:?}");
+}

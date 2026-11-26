@@ -277,8 +277,56 @@ async fn scan_family(
         } else {
             0
         };
-        let mut local = start;
-        while local <= open_local {
+        // The head index (ADR-0135 S13-B): when the lane's entries are
+        // complete against this open seq, the chunks the predicate cannot
+        // match are told apart in memory and only the rest are seeked. The
+        // open chunk is outside the index and joins every visit, by the same
+        // rule the lane statistics keep. A lane the index cannot vouch for
+        // walks every head — the same loop, over every local — and installs
+        // what it walked, so the next read of an unchanged lane seeks only
+        // what can match.
+        let key = super::heads::LaneKey {
+            table,
+            family: predicate.family.clone(),
+            partition,
+        };
+        let current = if prune {
+            store.heads().current(&key, open)
+        } else {
+            None
+        };
+        let mut walked: Option<super::heads::LaneHeads> = None;
+        let visit: Vec<u64> = match &current {
+            Some(heads) => {
+                let mut visit: Vec<u64> = Vec::new();
+                for (local, entry) in &heads.entries {
+                    if stats_deny(predicate, &entry.stats) {
+                        report.chunks_skipped = report.chunks_skipped.saturating_add(1);
+                    } else {
+                        visit.push(*local);
+                    }
+                }
+                visit.push(open_local);
+                visit
+            }
+            None => {
+                // A walk installs what it walked — and only a walk that saw
+                // every sealed chunk may claim completeness. A lane the lane
+                // statistics already denied starts at the open chunk, so its
+                // walk saw none of the sealed heads and installs nothing:
+                // an empty set claiming to be the whole would have the next
+                // read skip chunks that can match, which is the one failure
+                // this index must never produce.
+                if start == 0 {
+                    walked = Some(super::heads::LaneHeads {
+                        open_at: open,
+                        entries: std::collections::BTreeMap::new(),
+                    });
+                }
+                (start..=open_local).collect()
+            }
+        };
+        for local in visit {
             let seq = super::chunk::split_seq(partition, local);
             if let Some((_, bytes)) = newest_under(
                 store,
@@ -293,6 +341,14 @@ async fn scan_family(
             .await?
             {
                 report.chunks_examined = report.chunks_examined.saturating_add(1);
+                if let Some(collected) = walked.as_mut()
+                    && local < open_local
+                    && let Ok((_, stats)) = decode_head(&bytes)
+                {
+                    collected
+                        .entries
+                        .insert(local, super::heads::HeadEntry { stats });
+                }
                 if prune && pruned_by_head(predicate, &bytes)? {
                     report.chunks_skipped = report.chunks_skipped.saturating_add(1);
                 } else {
@@ -318,7 +374,9 @@ async fn scan_family(
                     }
                 }
             }
-            local = local.saturating_add(1);
+        }
+        if let Some(collected) = walked {
+            store.heads().install(key, collected);
         }
     }
     Ok(hits)
@@ -413,39 +471,45 @@ fn insert_sorted_hits(
 /// Whether the head statistics prove no row of this chunk can match.
 fn pruned_by_head(predicate: &ColumnarPredicate, bytes: &[u8]) -> Result<bool> {
     let (_, stats) = decode_head(bytes)?;
+    Ok(stats_deny(predicate, &stats))
+}
+
+/// The head test over statistics already in hand — the one test both the
+/// head read and the in-memory head index apply, so the two cannot drift.
+fn stats_deny(predicate: &ColumnarPredicate, stats: &super::chunk::ChunkStats) -> bool {
     match &predicate.test {
         ColumnarTest::Compare { compare, value } => {
             if is_null(value) {
-                return Ok(false);
+                return false;
             }
             match compare {
-                ColumnarCompare::NotEqual => Ok(false),
+                ColumnarCompare::NotEqual => false,
                 ColumnarCompare::Equal => {
                     if let Some(bloom) = &stats.bloom {
-                        return Ok(!bloom.might_contain(&encode_payload(value).into_bytes()));
+                        return !bloom.might_contain(&encode_payload(value).into_bytes());
                     }
-                    Ok(outside(&stats, value))
+                    outside(stats, value)
                 }
-                ColumnarCompare::Less => Ok(stats.min.as_ref().is_some_and(|min| min >= value)),
-                ColumnarCompare::LessOrEqual => {
-                    Ok(stats.min.as_ref().is_some_and(|min| min > value))
-                }
-                ColumnarCompare::Greater => Ok(stats.max.as_ref().is_some_and(|max| max <= value)),
+                ColumnarCompare::Less => stats.min.as_ref().is_some_and(|min| min >= value),
+                ColumnarCompare::LessOrEqual => stats.min.as_ref().is_some_and(|min| min > value),
+                ColumnarCompare::Greater => stats.max.as_ref().is_some_and(|max| max <= value),
                 ColumnarCompare::GreaterOrEqual => {
-                    Ok(stats.max.as_ref().is_some_and(|max| max < value))
+                    stats.max.as_ref().is_some_and(|max| max < value)
                 }
             }
         }
         // A list is denied only when every member is: outside the [min, max]
         // range AND denied by the bloom, each on its own.
-        ColumnarTest::In { values } => Ok(!values.is_empty()
-            && values.iter().all(|value| {
-                is_null(value)
-                    || (outside(&stats, value)
-                        && stats.bloom.as_ref().is_some_and(|bloom| {
-                            !bloom.might_contain(&encode_payload(value).into_bytes())
-                        }))
-            })),
+        ColumnarTest::In { values } => {
+            !values.is_empty()
+                && values.iter().all(|value| {
+                    is_null(value)
+                        || (outside(stats, value)
+                            && stats.bloom.as_ref().is_some_and(|bloom| {
+                                !bloom.might_contain(&encode_payload(value).into_bytes())
+                            }))
+                })
+        }
     }
 }
 
