@@ -231,7 +231,7 @@ fn double_delta_roundtrips_edges_and_short_runs() {
 }
 
 #[test]
-fn gorilla_roundtrips_float_bits_exactly() {
+fn xor_window_roundtrips_float_bits_exactly() {
     // Slowly-moving measures, where the XOR windows are narrow.
     let mut held = 21.5_f64;
     let mut run = Vec::new();
@@ -239,7 +239,7 @@ fn gorilla_roundtrips_float_bits_exactly() {
         held += f64::from(step % 5) * 0.01;
         run.push(held);
     }
-    roundtrip(Encoding::Gorilla, &floats(&run));
+    roundtrip(Encoding::XorWindow, &floats(&run));
     // Bit patterns that are not numbers at all still round-trip: the encoding
     // moves bits, it never interprets them.
     let odd = vec![
@@ -250,8 +250,8 @@ fn gorilla_roundtrips_float_bits_exactly() {
         0.0,
         f64::MIN_POSITIVE,
     ];
-    roundtrip(Encoding::Gorilla, &floats(&odd));
-    roundtrip(Encoding::Gorilla, &floats(&[3.5]));
+    roundtrip(Encoding::XorWindow, &floats(&odd));
+    roundtrip(Encoding::XorWindow, &floats(&[3.5]));
 }
 
 #[test]

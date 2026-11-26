@@ -539,7 +539,17 @@ const TABLES: &[Table] = &[
         // leader only after `INFO FOR TOPIC` ran as that caller.
         // Re-classification trigger: `member`'s — an answer to a caller who
         // was not signed in.
-        expected: 43,
+        //
+        // 44 since the remote-write on-ramp: `Db::series_time` reads one
+        // declared table's `TIME` field name so a sample's instant lands where
+        // the series mints identities from it. Classified **exempt on
+        // `is_series`' ground**: a catalog read disclosing a field NAME of a
+        // table the caller must already name, no record, user or grant — and
+        // the route asks it only after `is_series` answered, behind the same
+        // session the write itself runs in.
+        // Re-classification trigger: the field name reaching a caller the
+        // write itself would refuse.
+        expected: 44,
         count: |text| public_functions(&every_block(text, "impl Db")),
     },
     Table {
@@ -1302,7 +1312,16 @@ const TABLES: &[Table] = &[
         // `Session::vault` in the caller's own session from `session_for`, so
         // who may do it is the statement's decision and not the route's. The
         // body is a passphrase and never script text; no refusal quotes it.
-        expected: 13,
+        //
+        // 14 since `POST /series/{ns}/{db}/{series}/remote-write`. Classified
+        // **enforced** on the append route's ground: the batch runs as
+        // `CREATE` statements through `session_for`, the caller's own
+        // session, so the grant, the tenancy and the series' own checks are
+        // the script route's; the three names are checked to be identifiers
+        // before they are interpolated, the samples are bound as parameters,
+        // and the protobuf walker and snappy frame refuse a malformed body
+        // whole before any statement runs.
+        expected: 14,
         count: |text| lines_beginning(text, "(Method::"),
     },
     Table {
@@ -1520,7 +1539,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     //
     // 186 since `Store::answering_log` — the link's one log, classified above
     // on `own_log` / `line_log`'s ground.
-    assert_eq!(total, 186, "the counted tables no longer sum to 186");
+    //
+    // 188 since the remote-write on-ramp: `Db::series_time`, exempt on
+    // `is_series`' ground, and the `remote-write` route, enforced on the
+    // append route's — both classified at their tables above.
+    assert_eq!(total, 188, "the counted tables no longer sum to 188");
 }
 
 /// Every `.rs` file under a directory.

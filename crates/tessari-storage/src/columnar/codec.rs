@@ -74,7 +74,7 @@ pub(crate) enum Encoding {
     /// Floats by XOR against the previous value: a leading/meaningful-bits
     /// window per value, so a slowly-moving measure stores only the bits
     /// that changed.
-    Gorilla = 6,
+    XorWindow = 6,
     /// Decimal floats as scaled integers: every value an exact multiple of
     /// `10^-k` for one `k`, stored as bit-packed offsets from the smallest.
     /// A run where one value does not scale exactly does not apply — the
@@ -92,7 +92,7 @@ impl Encoding {
             Self::FrameOfReference => 3,
             Self::Delta => 4,
             Self::DoubleDelta => 5,
-            Self::Gorilla => 6,
+            Self::XorWindow => 6,
             Self::ScaledDecimal => 7,
         }
     }
@@ -106,7 +106,7 @@ impl Encoding {
             3 => Ok(Self::FrameOfReference),
             4 => Ok(Self::Delta),
             5 => Ok(Self::DoubleDelta),
-            6 => Ok(Self::Gorilla),
+            6 => Ok(Self::XorWindow),
             7 => Ok(Self::ScaledDecimal),
             _ => Err(Error::ColumnarUnknownEncoding { found }),
         }
@@ -119,7 +119,7 @@ impl Encoding {
         Self::FrameOfReference,
         Self::Delta,
         Self::DoubleDelta,
-        Self::Gorilla,
+        Self::XorWindow,
         Self::ScaledDecimal,
         Self::Plain,
     ];
@@ -212,7 +212,7 @@ pub(crate) fn encode(encoding: Encoding, values: &[Value]) -> Option<Vec<u8>> {
         Encoding::FrameOfReference => encode_reference(values),
         Encoding::Delta => encode_delta(values),
         Encoding::DoubleDelta => encode_double_delta(values),
-        Encoding::Gorilla => encode_gorilla(values),
+        Encoding::XorWindow => encode_xor_window(values),
         Encoding::ScaledDecimal => encode_scaled(values),
     }
 }
@@ -238,7 +238,7 @@ pub(crate) fn decode(
         Encoding::FrameOfReference => decode_reference(cursor, count),
         Encoding::Delta => decode_delta(cursor, count),
         Encoding::DoubleDelta => decode_double_delta(cursor, count),
-        Encoding::Gorilla => decode_gorilla(cursor, count),
+        Encoding::XorWindow => decode_xor_window(cursor, count),
         Encoding::ScaledDecimal => decode_scaled(cursor, count),
     }
 }
@@ -840,7 +840,7 @@ impl<'c, 'a> BitReader<'c, 'a> {
 /// when nothing changed, or a `10`/`11` marker with the window of bits that
 /// did — the leading-zero count in 6 bits (clamped at 63) and the meaningful
 /// length in 6 bits (0 meaning 64).
-fn encode_gorilla(values: &[Value]) -> Option<Vec<u8>> {
+fn encode_xor_window(values: &[Value]) -> Option<Vec<u8>> {
     let floats = float_run(values)?;
     let first = *floats.first()?;
     let mut out = Vec::new();
@@ -880,7 +880,7 @@ fn encode_gorilla(values: &[Value]) -> Option<Vec<u8>> {
 }
 
 /// The run the XOR encoding wrote.
-fn decode_gorilla(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Value>> {
+fn decode_xor_window(cursor: &mut Cursor<'_>, count: usize) -> Result<Vec<Value>> {
     let first = cursor.u64()?;
     let mut values = Vec::with_capacity(count.min(1024));
     if count == 0 {

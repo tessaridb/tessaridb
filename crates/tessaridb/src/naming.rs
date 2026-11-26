@@ -100,6 +100,38 @@ impl Db {
         ))
     }
 
+    /// The `TIME` field a series declares, when it declares one — what the
+    /// remote-write route asks so a sample's instant lands in the field the
+    /// series mints its identities from. `None` covers both a table that is
+    /// no series and a series ordered by arrival time; the route tells the
+    /// two apart with [`Self::is_series`].
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the catalog cannot be read.
+    pub async fn series_time(
+        &self,
+        namespace: &str,
+        database: &str,
+        table: &str,
+    ) -> Result<Option<String>> {
+        let mut transaction = self.store.begin().await?;
+        let catalog = Catalog::new(&mut transaction);
+        let Some(namespace) = catalog.namespace_id(namespace).await? else {
+            return Ok(None);
+        };
+        let Some(database) = catalog.database_id(namespace, database).await? else {
+            return Ok(None);
+        };
+        let Some(table) = catalog.table_id(namespace, database, table).await? else {
+            return Ok(None);
+        };
+        Ok(match catalog.table(table).await?.map(|held| held.kind) {
+            Some(tessari_storage::TableKind::Series(declared)) => declared.time,
+            _ => None,
+        })
+    }
+
     /// Whether `namespace.database.table` names a space — what the HTTP
     /// key-value routes ask before they run (ADR-0090), so a route aimed at a
     /// table of another kind answers `404` rather than reading it as keys.

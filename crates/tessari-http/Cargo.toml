@@ -17,6 +17,7 @@ default = ["console"]
 console = []
 
 [dependencies]
+snap.workspace = true
 dashmap.workspace = true
 tessaridb.workspace = true
 tessari-constants.workspace = true

@@ -5539,6 +5539,15 @@ instant already past the floor, which would be written and never read
 `SeriesIdentityDerived`, and changing a record's `at` is `SeriesTimeFixed` —
 delete it and write it again.
 
+`POST /series/{ns}/{db}/{series}/remote-write` is the Prometheus on-ramp: the body is a
+snappy-compressed `WriteRequest`, each `__name__` label lands as the field `metric`, every other
+label as a field of its own name, the sample's value as `value` and its millisecond timestamp in
+the series' declared `TIME` field — so a Prometheus `remote_write` URL pointed here writes into a
+series you declared, under your own grants. A series ordered by arrival time is refused by name
+(its samples' instants are the data, and there is no field to land them in), a body that does not
+decompress is refused whole, and a label a strict series does not declare is refused by the
+series' own rule.
+
 `POST /series/{ns}/{db}/{series}` appends a batch of events over HTTP in one
 transaction, each through the caller's session as a `CREATE`; the protocol
 specification carries the route.

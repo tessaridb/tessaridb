@@ -2021,6 +2021,7 @@ dependencies = [
  "futures-util",
  "rcgen",
  "rustls",
+ "snap",
  "tessari-backup",
  "tessari-constants",
  "tessari-encoding",
