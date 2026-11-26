@@ -98,6 +98,14 @@ impl Session<'_> {
                 let (_, gated) = self.resolve_readable_table(transaction, table).await?;
                 self.refuse_reading_a_vault(transaction, gated, table)
                     .await?;
+                // A grouped read a kept view covers plans as the rewritten
+                // read it will run as — the same gate the read passes, so the
+                // plan reported is the plan taken — and says which view.
+                if let Some((onto, view)) = self.onto_a_kept_view(transaction, select).await? {
+                    let mut plan = Box::pin(self.plan_of(transaction, &onto)).await?;
+                    plan.answered_by_view = Some(view);
+                    return Ok(plan);
+                }
                 // A grouped read of a partitioned columnar table folds
                 // partition-locally when the read's gate qualifies it  — the same gate, so the plan reported is the plan
                 // taken.

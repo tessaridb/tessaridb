@@ -127,6 +127,7 @@ mod notes;
 mod null_order;
 mod on_conflict;
 mod one_plan;
+mod onto_view;
 mod opened;
 mod ordered_gathers;
 mod ordered_under_a_where;

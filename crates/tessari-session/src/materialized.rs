@@ -50,6 +50,10 @@ const FEED_PAGE: usize = 1_000;
 /// read of the view is cheaper than as many record reads.
 const RECOMPUTE_WHOLE_PAST: usize = 10_000;
 
+/// How many pages the currency check walks before answering "not current":
+/// a view this far behind is answered from its base table rather than walked.
+const CURRENCY_PAGES: usize = 4;
+
 /// How long an idle view's state may go unwritten before a batch advances its
 /// stated version anyway, so its reported lag measures change rather than
 /// silence. Milliseconds.
@@ -351,6 +355,42 @@ impl Session<'_> {
 
     fn row(&self, kept: &Kept, id: RecordId) -> RecordAddress {
         RecordAddress::new(kept.context.namespace, kept.context.database, kept.view, id)
+    }
+
+    /// Whether the view's rows still equal its read at `snapshot`: no change
+    /// to the source sits between the version the state names and the
+    /// snapshot, so a read at the snapshot may be answered from the rows.
+    ///
+    /// Asked by the read rewrite before it answers a grouped read from a kept
+    /// view. The walk is the maintenance loop's own, bounded to
+    /// [`CURRENCY_PAGES`] pages: a view further behind than that is not
+    /// current for this purpose, and the caller falls back to the base table
+    /// rather than paying the whole walk to find out.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the feed cannot be read.
+    pub(crate) async fn reflects(
+        &self,
+        kept: &Kept,
+        state: &ViewState,
+        snapshot: Sequence,
+    ) -> Result<bool> {
+        let positions = self
+            .positions_after(kept, state.version, &state.positions)
+            .await?;
+        let mut feed = Merged::new(positions, Watch::table(kept.source));
+        for _ in 0..CURRENCY_PAGES {
+            let before = feed.positions().to_vec();
+            let page = feed.poll_until(self.store, FEED_PAGE, snapshot).await?;
+            if !page.is_empty() {
+                return Ok(false);
+            }
+            if feed.positions() == before.as_slice() {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// The materialized view `view` names, resolved: its read understood and

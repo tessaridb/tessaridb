@@ -30,7 +30,14 @@ impl Session<'_> {
             Source::Where { table, condition } => (table, Some(&**condition)),
             _ => return Ok(None),
         };
-        let (_, id) = self.resolve_table(transaction, table).await?;
+        let (_, id) = self.resolve_readable_table(transaction, table).await?;
+        // A kept view's rows are this node's own — there is no leader to fold
+        // them on — so the leaders' fold declines and the ordinary path reads
+        // and groups them, the way every grouped read of a materialized view
+        // is answered.
+        if self.materialized_view(transaction, id).await?.is_some() {
+            return Ok(None);
+        }
         self.refuse_reading_a_vault(transaction, id, table).await?;
         reduce.visible = self.visible_in(transaction, id).await?;
         let Some((groups, note)) = self

@@ -8606,6 +8606,22 @@ value — it keeps a membership map beside its rows, written in the same commit.
 grouped view declared before `0.26.0-beta` is rebuilt this way on its first
 maintenance pass after the upgrade, which is when its row identities change.
 
+**A grouped view can answer the table's own reads.** From `0.55.0` a grouped
+read of the **source table** is answered from a grouped view's stored rows when
+the store can prove the answers are the same: the read groups by keys the view
+groups by (or by a subset of them, or by nothing at all — a whole-table
+aggregate), folds only `count`, `sum`, `min` and `max` over expressions the
+view folds verbatim — a `count` becomes the **sum** of the stored counts —
+its `WHERE` contains every conjunct the view's own `WHERE` has, and any extra
+conjunct is over the view's group keys, so it keeps and drops whole groups.
+The view must also be **current** at the read's snapshot and the caller's
+grant over the source must hide nothing — the rows were computed for
+everybody. Anything else reads the base table exactly as before, and the
+decision costs the read nothing it can notice. A read answered this way says
+so: its `notes` carry `answered-by-view` naming the view, and `EXPLAIN`
+reports `answered-by-view` in the plan, so the path an answer took is never
+folklore.
+
 **What it costs.** A per-record view recomputes one record per change, and a
 grouped view the groups its changes touched — 50 000 records in 500 groups, one
 change per batch, on disk: 51.5 → 5.1 ms per batch at the median, about one
@@ -10174,6 +10190,7 @@ The kinds include:
 | `estimated` | an `approx_distinct` or `approx_quantile` answered: `fold`, `method` (`hll-14` or `ddsketch`), the declared `bound`, and whether a quantile sketch `collapsed` (§5, *One answer per group*) |
 | `undeclared-field` | a read of a strict table named a field the table does not declare — a misspelling, or `id`, which is a record's address and not a field — so it found that field on no record; the message names the fields (from engine `0.40.0`) |
 | `answered-as-of` | a read that named a freshness bound was answered locally from a copy that is not the leader's own, and this is how old that copy was: the bound named is the guarantee, and this is the copy's actual age (§7b‴″′) |
+| `answered-by-view` | a grouped read was answered from a kept view's stored rows rather than from the base table — taken only when the store can prove the answers are the same, and naming the view (§6d, *A view that keeps its answer*) |
 
 **`fell-back` fires on an index that declined, never on a table that has none.**
 A bounded ordered read over an unindexed table is the most ordinary read in the

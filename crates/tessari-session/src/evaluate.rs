@@ -50,6 +50,7 @@ mod latest;
 mod lent;
 mod nearest;
 mod nearest_place;
+mod onto_view;
 mod ordered;
 mod partition;
 mod paths;

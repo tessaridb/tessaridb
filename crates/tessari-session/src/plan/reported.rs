@@ -148,6 +148,10 @@ pub struct Plan {
     /// hop, silent when no statistics exist. The written order is the
     /// executed order; these say what each hop is expected to expand.
     pub hops: Option<Box<[HopEstimate]>>,
+    /// The kept view whose stored rows answer the read, when the read was
+    /// rewritten onto one (G102 S12 v1) — the plan's own word for the
+    /// `answered-by-view` note a running read carries.
+    pub answered_by_view: Option<String>,
     /// Whether the records are provably the ones the question names.
     ///
     /// Derived from [`Self::access`] rather than set here, so that `EXPLAIN` and
@@ -176,6 +180,7 @@ impl Plan {
             right_rows: None,
             partitions: None,
             hops: None,
+            answered_by_view: None,
             exact: access.exactness(),
         }
     }
@@ -291,6 +296,9 @@ impl Plan {
         }
         if let Some(table) = &self.table {
             plan.insert("table".to_owned(), Value::from(table.as_str()));
+        }
+        if let Some(view) = &self.answered_by_view {
+            plan.insert("answered-by-view".to_owned(), Value::from(view.as_str()));
         }
         if let Some(index) = &self.index {
             plan.insert("index".to_owned(), Value::from(index.as_str()));

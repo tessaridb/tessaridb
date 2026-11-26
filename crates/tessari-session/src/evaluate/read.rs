@@ -46,6 +46,19 @@ impl Session<'_> {
         // it, and a note reported against the *next* answer is worse than no note
         // at all.
         let mut notes = Vec::new();
+        // A grouped read a kept view covers is answered from the view's stored
+        // rows — an access path like an index, taken only when every soundness
+        // condition holds and reported by the note (`onto_view`). The rewritten
+        // read runs through everything below exactly as a written one would.
+        let rewritten;
+        let select = match self.onto_a_kept_view(transaction, select).await? {
+            Some((onto, view)) => {
+                notes.push(Note::AnsweredByView { view });
+                rewritten = onto;
+                &rewritten
+            }
+            None => select,
+        };
         // Authority first, and staleness second, because the order is the one
         // that cannot contradict itself. A node holding `Roles::WRITABLE`
         // answers `current_as_of` as ZERO, so the leader satisfies every

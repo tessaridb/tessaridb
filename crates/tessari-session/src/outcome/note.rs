@@ -215,6 +215,20 @@ pub enum Note {
         /// The names it does not declare, in the order the store sorts them.
         fields: Vec<String>,
     },
+    /// The answer was folded from a kept view's stored rows rather than read
+    /// from the base table.
+    ///
+    /// The rewrite happens only when it is provably sound — the view's groups
+    /// re-fold into the read's, its condition is implied by the read's, and
+    /// its rows are current at the read's snapshot — so the records are the
+    /// ones the base table would have answered. What the note carries is the
+    /// fact itself: without it, an answer served from a view and one served
+    /// from the table are indistinguishable, and the access path a caller
+    /// believes in is folklore.
+    AnsweredByView {
+        /// The view whose rows answered.
+        view: String,
+    },
     /// The answer came from a copy that is not the leader's own, and this says
     /// how old that copy was.
     ///
@@ -257,6 +271,7 @@ impl Note {
             Self::Estimated { .. } => "estimated",
             Self::UndeclaredField { .. } => "undeclared-field",
             Self::AnsweredAsOf { .. } => "answered-as-of",
+            Self::AnsweredByView { .. } => "answered-by-view",
             Self::Columnar { .. } => "columnar",
         }
     }
@@ -381,6 +396,12 @@ impl Note {
                  so the answer may be that far behind; the bound the statement named is \
                  the guarantee, and this is the copy's actual age",
                 age.to_literal(),
+            ),
+            Self::AnsweredByView { view } => format!(
+                "this answer was folded from the kept view `{view}` rather than read \
+                 from the base table; the rewrite is taken only when the view's rows \
+                 provably answer the same records, and this note is how a caller \
+                 tells which path ran",
             ),
             Self::Columnar {
                 chunks_examined,
