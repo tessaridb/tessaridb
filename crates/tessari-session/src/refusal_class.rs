@@ -39,6 +39,8 @@ impl Error {
             Self::SignInThrottled | Self::PassphraseThrottled | Self::TopicRateExceeded { .. } => {
                 RefusalClass::Throttled
             }
+            Self::AiBudgetSpent { .. } => RefusalClass::Throttled,
+            Self::AiTimedOut { .. } => RefusalClass::Retry,
             Self::RoleForbids { .. }
             | Self::OutsideTenancy { .. }
             | Self::NotGranted { .. }
@@ -149,6 +151,9 @@ impl Error {
             | Self::UnclosedTransaction { .. }
             | Self::ViewIsNotATable { .. }
             | Self::AiKeyNotSealed { .. }
+            | Self::AiNoProvider { .. }
+            | Self::AiProviderRefused { .. }
+            | Self::AiAnswerTooLarge { .. }
             | Self::StateFoldMismatch { .. }
             | Self::StateExpected { .. }
             | Self::StateOfWhat { .. }

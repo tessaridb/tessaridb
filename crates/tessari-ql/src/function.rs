@@ -589,6 +589,12 @@ pub enum Function {
     /// where nothing is. What a client following a redirect checks on arrival
     /// and replays from where it left (G051 SG3).
     SessionContext,
+    /// `ai::generate(prompt)` — one call to the namespace's declared AI
+    /// provider, answered with the reply text. The call leaves the store: a
+    /// token-bucket budget bounds it, a stated timeout ends it, and the
+    /// provider's key is read from its vault at call time and never stored
+    /// or answered (G102 C8).
+    AiGenerate,
 }
 
 impl fmt::Display for Function {

@@ -70,6 +70,9 @@ impl Detached {
     #[must_use]
     pub fn attach(self, store: &Store) -> Session<'_> {
         Session {
+            // A detached body runs with the public roots: the test seam is a
+            // session's own, and no test lends it across a hop.
+            ai_roots: None,
             store,
             namespace: self.namespace,
             database: self.database,

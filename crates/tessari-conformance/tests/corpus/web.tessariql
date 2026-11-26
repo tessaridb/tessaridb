@@ -136,3 +136,11 @@ DROP AI PROVIDER anthropic;
 --- case: dropping what is gone refuses
 DROP AI PROVIDER anthropic;
 --- expect: error Unknown
+
+# ai::generate (G102 C8 sub-wave B): the call is refused by name when the
+# namespace declares no provider — the one ai:: answer a corpus can pin,
+# since a live provider is a network the runner does not have.
+
+--- case: a generate call with no provider declared refuses
+RETURN ai::generate('hello');
+--- expect: error AiNoProvider

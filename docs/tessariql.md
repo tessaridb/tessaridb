@@ -11584,6 +11584,46 @@ plaintext key waiting to be written somewhere else. Declaring one also
 needs the store's format finalized past the version that added the row
 (`FormatNotFinalized` below it), like every catalog addition before it.
 
+**The call is `ai::generate(prompt)`** — one request to the declared
+provider, answered with the reply text:
+
+```
+RETURN ai::generate('Summarise this ticket in one line: ' + title);
+SELECT ai::generate('Classify: ' + body) AS label FROM tickets LIMIT 10;
+```
+
+The provider speaks the chat-completions shape — the one shape every hosted
+and local provider already serves — and the answer is the text of
+`choices[0].message.content`. The call is **asked again for every record**,
+like `rand::uuid()`: a prompt built from the record differs per row, the
+budget counts each call, and the provider need not answer twice alike, so
+folding it above the records would silently answer every row with one row's
+reply.
+
+What bounds the call is declared, and each bound refuses rather than
+degrades:
+
+- **The budget** is a token bucket per provider, per node, in memory:
+  `BUDGET n PER span` refills `n` calls every span, a call spends one, and
+  an empty bucket refuses `AiBudgetSpent` — a queued provider call inside a
+  read is a stalled read, so the caller's retry is the honest queue.
+- **The timeout** ends a call the provider does not answer in time
+  (`AiTimedOut`); there is no retry — the caller decides.
+- **The answer** is capped at a mebibyte (`AiAnswerTooLarge`), and a
+  non-2xx status refuses with the status CLASS alone (`AiProviderRefused`) —
+  never the body, because a provider's error page can echo the request, and
+  the request carried the key.
+- **No provider to go to** refuses by name (`AiNoProvider`): the namespace
+  declares none, or declares several and the call cannot choose. One
+  declared provider is the provider; naming one of several is a later
+  clause, not a guess the store makes.
+
+At call time the key is read from its vault under the engine's own
+authority, held in a buffer that zeroizes on drop, sent in the
+`authorization` header, and never logged, stored or answered; a sealed
+vault or a missing secret refuses the call (`AiKeyNotSealed`) rather than
+sending anything unsealed.
+
 ### The layout a cluster is arranged over
 
 A `REGION` on a member row is a free-text label — an acknowledge level counts

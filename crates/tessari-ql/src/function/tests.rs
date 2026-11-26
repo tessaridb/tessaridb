@@ -47,7 +47,8 @@ fn the_functions_the_fold_may_not_touch_are_exactly_the_one_that_generates() {
             "search::ranks",
             "search::table_name",
             "search::snippet",
-            "rand::uuid7"
+            "rand::uuid7",
+            "ai::generate"
         ]
     );
 }
@@ -62,7 +63,8 @@ fn every_function_is_classified_and_only_the_clock_and_the_generator_are_not_pur
             | Function::SearchRanks
             | Function::SearchScore
             | Function::SearchTable
-            | Function::SearchSnippet => Purity::PerCall,
+            | Function::SearchSnippet
+            | Function::AiGenerate => Purity::PerCall,
             _ => Purity::Pure,
         };
         assert_eq!(function.purity(), expected, "{function} is misclassified");

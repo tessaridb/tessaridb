@@ -234,6 +234,9 @@ pub struct Store {
     /// lane the index cannot vouch for is walked the way every read walked
     /// before it existed.
     heads: Arc<crate::columnar::heads::HeadIndex>,
+    /// The `ai::` call budgets: one token bucket per provider, per node, in
+    /// memory — a live fact like `running`, never a persisted one.
+    ai_budgets: Arc<crate::ai_budgets::AiBudgets>,
     /// How many times each name has lately missed signing in here.
     ///
     /// Shared with every handle for the vault keyring's reason — a reconnect

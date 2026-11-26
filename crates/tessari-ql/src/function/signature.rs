@@ -49,6 +49,7 @@ impl Function {
             | Self::SearchSnippet
             | Self::SessionContext => 0,
             Self::StringLen
+            | Self::AiGenerate
             | Self::StringLower
             | Self::StringUpper
             | Self::StringTrim
@@ -231,6 +232,11 @@ impl Function {
             // it *look* constant, and a `SELECT rand::uuid() AS id` evaluated
             // once above the records hands every row the same id.
             Self::RandUuid | Self::RandUuid7 => Purity::PerCall,
+            // A provider call is spent per call — the budget counts it, the
+            // provider need not answer twice alike, and a prompt built from
+            // the record differs per row. Folded above the records, one row's
+            // reply would silently answer for every row.
+            Self::AiGenerate => Purity::PerCall,
             // A record's ranks are the fusion's, not a function of anything the
             // call is given: folded above the records it would answer one row's
             // ranks for every row.

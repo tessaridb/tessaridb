@@ -85,6 +85,7 @@ impl Store {
             // secrets for whoever restarted it.
             vault: Arc::new(crate::vault::OpenVault::sealed()),
             heads: Arc::new(crate::columnar::heads::HeadIndex::default()),
+            ai_budgets: Arc::new(crate::ai_budgets::AiBudgets::default()),
             attempts: Arc::new(crate::attempts::Attempts::new()),
             audit: Arc::new(crate::audit::AuditTrail::default()),
             series: Arc::new(crate::series::SeriesRegistry::default()),

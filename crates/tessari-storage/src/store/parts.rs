@@ -155,6 +155,13 @@ impl Store {
         &self.log_holds
     }
 
+    /// The `ai::` call budgets (G102 C8): one token bucket per provider,
+    /// per node, in memory.
+    #[must_use]
+    pub fn ai_budgets(&self) -> &Arc<crate::ai_budgets::AiBudgets> {
+        &self.ai_budgets
+    }
+
     /// The columnar chunk-head index (ADR-0135): sealed chunks' ranges held
     /// in memory, derived and never durable — a lane it cannot vouch for is
     /// walked the way every read walked before it existed.

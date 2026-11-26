@@ -1,9 +1,14 @@
 //! `DEFINE AI PROVIDER` (G102 C8 sub-wave A): the provider as a catalog
-//! object whose key is named as a vault secret and never written.
+//! object whose key is named as a vault secret and never written — and
+//! `ai::generate` (sub-wave B) against a stub provider: one HTTPS call, the
+//! sealed key in its one header, the budget spent before the wire.
 
 #![allow(clippy::panic, clippy::unwrap_used)]
 
-use tessari_session::{RunNow, Session};
+use std::sync::Arc;
+
+use tessari_session::{Outcome, RunNow, Session};
+use tessari_types::Value;
 
 use super::materialized_views::store;
 
@@ -79,5 +84,198 @@ fn the_sealing_rules_hold_at_declare_time() {
             )
             .is_err(),
         "a provider with no TIMEOUT was accepted"
+    );
+}
+
+// ── C8-B: ai::generate against a stub provider ──────────────────────────────
+
+fn value(session: &mut Session<'_>, statement: &str) -> Value {
+    match session.run_now(statement).unwrap().pop().unwrap() {
+        Outcome::Value(value) => value,
+        other => panic!("expected a value, got {other:?}"),
+    }
+}
+
+struct Stub {
+    port: u16,
+    roots: Arc<rustls::RootCertStore>,
+}
+
+/// A one-endpoint HTTPS provider with a certificate of its own authority.
+///
+/// The server runs on a thread of its own because `run_now` drives the
+/// session's runtime on the calling thread, and a server sharing it could
+/// never be polled while the call that reaches it is in flight. It answers
+/// `connections` calls and holds the sealed key to the one header that may
+/// carry it: a request without it fails the test inside the server.
+fn stub(status: &'static str, body: &'static str, connections: usize) -> Stub {
+    let mut ca_params = rcgen::CertificateParams::new(Vec::new()).unwrap();
+    ca_params.is_ca = rcgen::IsCa::Ca(rcgen::BasicConstraints::Unconstrained);
+    let ca_key = rcgen::KeyPair::generate().unwrap();
+    let ca = ca_params.self_signed(&ca_key).unwrap();
+    let leaf_params = rcgen::CertificateParams::new(vec!["localhost".to_owned()]).unwrap();
+    let leaf_key = rcgen::KeyPair::generate().unwrap();
+    let leaf = leaf_params.signed_by(&leaf_key, &ca, &ca_key).unwrap();
+
+    let mut roots = rustls::RootCertStore::empty();
+    roots.add(ca.der().clone()).unwrap();
+    let config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(
+            vec![leaf.der().clone()],
+            rustls::pki_types::PrivatePkcs8KeyDer::from(leaf_key.serialize_der()).into(),
+        )
+        .unwrap();
+    let acceptor = tokio_rustls::TlsAcceptor::from(Arc::new(config));
+
+    let (port_tx, port_rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        runtime.block_on(async move {
+            let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            port_tx.send(listener.local_addr().unwrap().port()).unwrap();
+            for _ in 0..connections {
+                let (tcp, _) = listener.accept().await.unwrap();
+                let mut stream = acceptor.accept(tcp).await.unwrap();
+                let request = read_request(&mut stream).await;
+                assert!(
+                    request.contains("authorization: Bearer sk-stub-key"),
+                    "the sealed key did not reach the provider: {request}"
+                );
+                let answer = format!(
+                    "HTTP/1.1 {status}\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n{body}",
+                    body.len(),
+                );
+                use tokio::io::AsyncWriteExt;
+                stream.write_all(answer.as_bytes()).await.unwrap();
+                // `shutdown` sends the TLS close_notify; a bare drop would
+                // close the TCP stream under the client's feet.
+                stream.shutdown().await.unwrap();
+            }
+        });
+    });
+    Stub {
+        port: port_rx.recv().unwrap(),
+        roots: Arc::new(roots),
+    }
+}
+
+async fn read_request(
+    stream: &mut tokio_rustls::server::TlsStream<tokio::net::TcpStream>,
+) -> String {
+    use tokio::io::AsyncReadExt;
+    let mut received = Vec::new();
+    let mut buffer = [0_u8; 4096];
+    let head_end = loop {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0, "the caller closed before the request was whole");
+        received.extend_from_slice(buffer.get(..read).unwrap_or_default());
+        if let Some(at) = received.windows(4).position(|window| window == b"\r\n\r\n") {
+            break at.saturating_add(4);
+        }
+    };
+    let head = String::from_utf8_lossy(received.get(..head_end).unwrap_or_default()).to_string();
+    let length: usize = head
+        .lines()
+        .find_map(|line| line.strip_prefix("content-length: "))
+        .and_then(|held| held.trim().parse().ok())
+        .unwrap_or(0);
+    while received.len() < head_end.saturating_add(length) {
+        let read = stream.read(&mut buffer).await.unwrap();
+        assert!(read > 0, "the caller closed inside the body");
+        received.extend_from_slice(buffer.get(..read).unwrap_or_default());
+    }
+    String::from_utf8_lossy(&received).to_string()
+}
+
+/// The vault holds the key, the provider names it, and the session trusts
+/// the stub's own authority in place of the public roots.
+fn declared<'a>(store: &'a tessari_storage::Store, stub: &Stub, budget: &str) -> Session<'a> {
+    let mut session = ready(store).trusting_ai_roots(stub.roots.clone());
+    session
+        .run_now(&format!(
+            "DEFINE FIELD token ON secrets TYPE string SECRET;
+             CREATE secrets:'anthropic_key' = {{ token: 'sk-stub-key' }};
+             DEFINE AI PROVIDER stub URL 'https://localhost:{}/v1/messages' MODEL 'a-model' \
+                 KEY VAULT secrets FIELD anthropic_key BUDGET {budget} PER 1h TIMEOUT 10s;",
+            stub.port,
+        ))
+        .unwrap();
+    session
+}
+
+#[test]
+fn a_generate_call_asks_the_provider_and_answers_its_text() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"stub says hello\"}}]}",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1000");
+    let answer = value(&mut session, "RETURN ai::generate('say hello');");
+    assert_eq!(answer, Value::String("stub says hello".to_owned()));
+}
+
+#[test]
+fn a_call_beyond_the_budget_refuses_without_reaching_the_provider() {
+    let store = store();
+    let stub = stub(
+        "200 OK",
+        "{\"choices\":[{\"message\":{\"content\":\"one\"}}]}",
+        1,
+    );
+    let mut session = declared(&store, &stub, "1");
+    session.run_now("RETURN ai::generate('first');").unwrap();
+    // The stub serves exactly one call: a second that reached the wire
+    // would hang, so the named refusal is also the proof it never left.
+    let refused = session
+        .run_now("RETURN ai::generate('second');")
+        .unwrap_err();
+    assert!(
+        refused.to_string().contains("spent its budget"),
+        "the refusal did not name the budget: {refused}"
+    );
+}
+
+#[test]
+fn a_provider_refusal_answers_with_the_class_and_never_the_body() {
+    let store = store();
+    let stub = stub("500 Internal Server Error", "an error page", 1);
+    let mut session = declared(&store, &stub, "1000");
+    let refused = session
+        .run_now("RETURN ai::generate('hello');")
+        .unwrap_err();
+    let text = refused.to_string();
+    assert!(
+        text.contains("refused the call (5xx)"),
+        "the refusal did not carry the status class: {text}"
+    );
+    // The provider's page can echo the request, and the request carried the
+    // key — so the refusal carries the class and nothing of the body.
+    assert!(
+        !text.contains("an error page"),
+        "the refusal leaked the provider's body: {text}"
+    );
+}
+
+#[test]
+fn a_call_with_no_provider_declared_refuses_by_name() {
+    let store = store();
+    let mut session = ready(&store);
+    let refused = session
+        .run_now("RETURN ai::generate('hello');")
+        .unwrap_err();
+    assert!(
+        refused
+            .to_string()
+            .contains("no AI provider answers this call"),
+        "the refusal did not name the missing provider: {refused}"
     );
 }

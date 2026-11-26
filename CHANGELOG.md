@@ -52,7 +52,7 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   name; `url::encode` / `decode` are the percent codec; `ip::is_v4` / `is_v6` are the
   predicates and `ip::in_range(ip, cidr)` the one range test, refused on input that does
   not parse.
-- **1855 conformance cases** define the language and run in the build.
+- **1856 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 

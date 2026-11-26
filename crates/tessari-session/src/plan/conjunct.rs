@@ -353,6 +353,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ScoresUnion
         | Function::ScoresIntersect
         | Function::SessionContext
+        | Function::AiGenerate
         | Function::SearchHighlight => None,
     }
 }

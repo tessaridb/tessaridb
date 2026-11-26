@@ -119,6 +119,11 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 # the other provider.
 tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["std", "ring"] }
+# The public root set for the one surface that calls OUT to a public API: the
+# `ai::` provider transport (G102 C8). Every other TLS surface trusts explicit
+# operator authorities; a public provider is the case the Mozilla roots exist
+# for, and the crate is the rustls project's own, with no dependencies.
+webpki-roots = { version = "1", default-features = false }
 # The only way a chain reaches the process. `Credential.chain` is a chain, and
 # DER has no container for one — a DER-only reader would force one file per
 # certificate and a flag that takes a list. From the rustls project, already

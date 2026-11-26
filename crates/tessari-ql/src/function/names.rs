@@ -198,6 +198,7 @@ impl Function {
         ScoresUnion => "scores::union",
         ScoresIntersect => "scores::intersect",
         SessionContext => "session::context",
+        AiGenerate => "ai::generate",
     }
 
     /// Whether this function has an answer for an argument that holds nothing.

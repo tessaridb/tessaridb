@@ -19,6 +19,27 @@ use tessari_ql::Span;
 use crate::call::wrong_type;
 use crate::error::Result;
 
+/// A URL's parts, owned — the `ai::` transport's reading of its provider's
+/// endpoint (G102 C8).
+pub(crate) struct UrlParts {
+    /// The host, when the URL names one.
+    pub(crate) host: Option<String>,
+    /// The port, when the URL names one.
+    pub(crate) port: Option<u16>,
+    /// The path, empty when the URL names none.
+    pub(crate) path: String,
+}
+
+/// The URL `text` spells, as owned parts, or `None` when it spells none.
+pub(crate) fn url_parts(text: &str) -> Option<UrlParts> {
+    let split = parts(text)?;
+    Some(UrlParts {
+        host: split.host.map(str::to_owned),
+        port: split.port,
+        path: split.path.to_owned(),
+    })
+}
+
 /// One URL, split where RFC 3986 splits it.
 struct Parts<'a> {
     scheme: String,

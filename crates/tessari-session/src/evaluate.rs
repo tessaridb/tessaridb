@@ -399,6 +399,11 @@ impl Session<'_> {
         if *function == Function::SessionContext {
             return self.session_context().await;
         }
+        // A provider call needs the catalog, the vault and the budget,
+        // none of which is a value — answered here where the session is.
+        if *function == Function::AiGenerate {
+            return self.ai_generate(transaction, arguments, scope, *span).await;
+        }
         // One clock per statement (DB-21): the reading `step` took as
         // the statement began, not a fresh one per call.
         if *function == Function::TimeNow {

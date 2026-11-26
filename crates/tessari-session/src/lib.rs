@@ -70,6 +70,7 @@ mod plan;
 mod pool;
 mod presented;
 pub use presented::{Certificates, ClientTransport, Listener, Presented};
+mod ai;
 mod pushdown;
 mod queue;
 mod rank;

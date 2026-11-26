@@ -25,6 +25,8 @@
 
 #[cfg(test)]
 mod across_model;
+mod ai_budgets;
+pub use ai_budgets::AiBudgets;
 mod adjacency;
 mod attempts;
 mod audit;

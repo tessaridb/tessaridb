@@ -1230,7 +1230,23 @@ const TABLES: &[Table] = &[
         // is the statement's) or the link serve, which is driven by catalog
         // rows the statement wrote; none lets a caller name a home the
         // session has not already resolved.
-        expected: 95,
+        //
+        // 96 since the AI provider call (G102 C8): `Store::ai_budgets` hands
+        // out the per-node token buckets the `ai::` calls spend from.
+        // Classified **not a data path, on `pool_take`'s ground** (the 94
+        // row above): it reads and writes no record, catalog entry or grant
+        // — what it holds is a count per provider name in process memory,
+        // never persisted and never read back by any query. The authority
+        // question was answered where the provider row was written
+        // (`DEFINE AI PROVIDER`, whose statement authority governs), and
+        // this handle is how a call is counted against the budget that row
+        // declared. Its one caller is `Session::ai_generate`, which resolves
+        // the provider through the catalog before it asks, and `spend`
+        // answers a bool — it discloses nothing.
+        // Re-classification trigger: a caller that could refill or reset a
+        // bucket outside the spend path would be a declared budget nothing
+        // enforces.
+        expected: 96,
         count: |text| public_functions(&every_block(text, "impl Store")),
     },
     Table {
@@ -1543,7 +1559,11 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 188 since the remote-write on-ramp: `Db::series_time`, exempt on
     // `is_series`' ground, and the `remote-write` route, enforced on the
     // append route's — both classified at their tables above.
-    assert_eq!(total, 188, "the counted tables no longer sum to 188");
+    //
+    // 189 since the AI provider call: `Store::ai_budgets` — the token
+    // buckets the `ai::` calls spend from, classified above on
+    // `pool_take`'s ground.
+    assert_eq!(total, 189, "the counted tables no longer sum to 189");
 }
 
 /// Every `.rs` file under a directory.
