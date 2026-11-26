@@ -105,3 +105,34 @@ RETURN ip::in_range('ten dot one', '10.0.0.0/8');
 --- case: a range that is no CIDR refuses
 RETURN ip::in_range('10.0.0.1', 'ten');
 --- expect: error WrongArgument
+
+# AI providers (G102 C8): a provider is a catalog object whose key is named
+# as a vault secret and never written; every clause is required.
+
+--- case: an unsealed store, so a vault can exist
+UNSEAL VAULT WITH 'a passphrase';
+DEFINE VAULT secrets;
+--- expect: ok
+
+--- case: a provider declares with its key named as a sealed secret
+DEFINE AI PROVIDER anthropic URL 'https://api.example.test/v1/messages' MODEL 'a-model'
+    KEY VAULT secrets FIELD anthropic_key BUDGET 1000 PER 1h TIMEOUT 10s;
+--- expect: ok
+
+--- case: a repeat declaration refuses
+DEFINE AI PROVIDER anthropic URL 'https://api.example.test/v1/messages' MODEL 'a-model'
+    KEY VAULT secrets FIELD anthropic_key BUDGET 1000 PER 1h TIMEOUT 10s;
+--- expect: error NameTaken
+
+--- case: a vault the database does not hold refuses — the key has nowhere sealed to live
+DEFINE AI PROVIDER ghost URL 'https://api.example.test/v1' MODEL 'm'
+    KEY VAULT nowhere FIELD key BUDGET 10 PER 1h TIMEOUT 5s;
+--- expect: error AiKeyNotSealed
+
+--- case: the provider drops whole
+DROP AI PROVIDER anthropic;
+--- expect: ok
+
+--- case: dropping what is gone refuses
+DROP AI PROVIDER anthropic;
+--- expect: error Unknown

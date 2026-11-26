@@ -382,6 +382,60 @@ impl Parser<'_> {
     /// relations a misshapen classifier breaks (a limit of zero refuses
     /// everything the classifier names) are checked here, where the words
     /// are, the way the balancer's margin is.
+    /// `AI PROVIDER <name> URL '<u>' MODEL '<m>' KEY VAULT <v> FIELD <f>
+    /// BUDGET <n> PER <span> TIMEOUT <span>` — every clause required, none
+    /// defaulted, each refused by the name of what is missing (G102 C8).
+    pub(super) fn define_ai_provider(&mut self) -> Result<StatementKind> {
+        self.expect_word("provider", "`PROVIDER` after `AI`")?;
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        self.expect_word("url", "`URL` and the provider's endpoint")?;
+        let Some(Token::Str(url)) = self.peek() else {
+            return Err(self.error_here("the provider's endpoint, an `https://` URL in quotes"));
+        };
+        let url = url.clone();
+        if !url.starts_with("https://") {
+            return Err(self.error_here("an `https://` URL — a key never crosses plaintext"));
+        }
+        self.advance();
+        self.expect_word("model", "`MODEL` and the model the provider is asked for")?;
+        let Some(Token::Str(model)) = self.peek() else {
+            return Err(self.error_here("the model's name, in quotes"));
+        };
+        let model = model.clone();
+        self.advance();
+        self.expect_word(
+            "key",
+            "`KEY VAULT <vault> FIELD <secret>` — where the key is sealed",
+        )?;
+        self.expect_word("vault", "`VAULT` and the vault the key is sealed in")?;
+        let vault = self.name()?;
+        // `FIELD` is reserved (`DEFINE FIELD`), so it is eaten as the
+        // keyword it arrives as — `period`'s note on `COLLECTION` is this
+        // same collision, one clause earlier.
+        if !self.eat_keyword(crate::token::Keyword::Field) {
+            return Err(self.error_here("`FIELD` and the secret's name in that vault"));
+        }
+        let secret = self.name()?;
+        self.expect_word("budget", "`BUDGET` and how many calls a span admits")?;
+        let budget = self.pool_limit()?;
+        self.expect_word("per", "`PER` and the span the budget counts over")?;
+        let budget_span = self.length("budget")?;
+        self.expect_word("timeout", "`TIMEOUT` and how long one call may take")?;
+        let timeout = self.length("timeout")?;
+        Ok(crate::ast::StatementKind::DefineAiProvider {
+            name,
+            url,
+            model,
+            vault,
+            secret,
+            budget,
+            budget_span,
+            timeout,
+            if_not_exists,
+        })
+    }
+
     pub(super) fn define_pool(&mut self) -> Result<StatementKind> {
         let name = self.name()?;
         self.expect_word(

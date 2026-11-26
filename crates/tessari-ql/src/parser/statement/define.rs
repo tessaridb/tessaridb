@@ -359,6 +359,9 @@ impl Parser<'_> {
             // And a sixth, on the same reasoning: `pool` is a name data
             // already uses, and nothing but a subject can stand after `DEFINE`.
             _ if self.eat_word("pool") => self.define_pool(),
+            // Contextual, as `pool` is: `AI` reserves nothing, and only
+            // `PROVIDER` can follow it here.
+            _ if self.eat_word("ai") => self.define_ai_provider(),
             // `KAFKA` qualifies the word rather than replacing it, and it is
             // contextual like every other subject here — special after `DEFINE`
             // and an ordinary identifier everywhere else, so a table called

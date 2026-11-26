@@ -135,6 +135,8 @@ fn write_statement(out: &mut String, statement: &Statement) -> Result<()> {
         StatementKind::DropBalancer => Err(unrenderable("DROP BALANCER", span)),
         StatementKind::DefinePool { .. } => Err(unrenderable("DEFINE POOL", span)),
         StatementKind::DropPool { .. } => Err(unrenderable("DROP POOL", span)),
+        StatementKind::DefineAiProvider { .. } => Err(unrenderable("DEFINE AI PROVIDER", span)),
+        StatementKind::DropAiProvider { .. } => Err(unrenderable("DROP AI PROVIDER", span)),
         StatementKind::RevokeCertificate { .. } => Err(unrenderable("REVOKE CERTIFICATE", span)),
         StatementKind::CreateJoinToken { .. } => Err(unrenderable("CREATE JOIN TOKEN", span)),
         StatementKind::DefineReplica { .. } => Err(unrenderable("DEFINE REPLICA", span)),

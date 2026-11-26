@@ -265,6 +265,8 @@ impl Needs {
             // A pool bounds whose work may run: administering, the way a
             // grant is — it names no table and writes a namespace row.
             | StatementKind::DefinePool { .. }
+            | StatementKind::DefineAiProvider { .. }
+            | StatementKind::DropAiProvider { .. }
             | StatementKind::DropPool { .. } => Self::OPERATE_STORE,
             // Declaring a consumer is administering, not writing — the same
             // reasoning that puts `DEFINE USER` here. It hands a broker address

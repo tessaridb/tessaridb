@@ -98,14 +98,14 @@ mod vault;
 mod views;
 
 pub use catalog::{
-    AnalyzerDefinition, Authority, AutoSplit, AutoSplitSetting, BalancerDefinition,
-    CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog, ConsumerDefinition, DatabaseDefinition,
-    EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder, EngineField, EngineMember,
-    EventDeclaration, Eviction, FailoverDefinition, FailoverStamp, Feed, FeedDeclaration,
-    FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition, GraphDefinition,
-    Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning, Held, InFlight,
-    IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped, MemberHolds,
-    MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
+    AiProviderDefinition, AnalyzerDefinition, Authority, AutoSplit, AutoSplitSetting,
+    BalancerDefinition, CLAIMED_BY_CONSUMER, CLAIMED_BY_INSTANCE, Catalog, ConsumerDefinition,
+    DatabaseDefinition, EDGE_IN, EDGE_OUT, EdgeDeclaration, EdgeKindDefinition, EdgeOrder,
+    EngineField, EngineMember, EventDeclaration, Eviction, FailoverDefinition, FailoverStamp, Feed,
+    FeedDeclaration, FieldDefinition, FieldReference, FieldShape, GEO_FIELD, GrantDefinition,
+    GraphDefinition, Greeter, GroupDeclaration, GroupMemberState, GroupState, HashPartitioning,
+    Held, InFlight, IndexDefinition, IndexShape, JoinTicket, Kind, LeadershipDefinition, Mapped,
+    MemberHolds, MemberView, NamespaceDefinition, NamespaceView, OnDelete, OnFailure, Partitioning,
     PoolDefinition, PublicAppend, QUEUE_ATTEMPTS, QUEUE_CLAIMED_BY, QUEUE_CLAIMED_UNTIL,
     QueueDeclaration, RECORD_LEVEL, Reach, ReplicaDefinition, ReplicationDefinition,
     ReplicationState, Role, RollupCompute, RollupDeclaration, RollupFold, SYSTEM_DATABASE,

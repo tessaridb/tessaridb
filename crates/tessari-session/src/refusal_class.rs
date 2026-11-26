@@ -148,6 +148,7 @@ impl Error {
             | Self::VersionInsideTransaction { .. }
             | Self::UnclosedTransaction { .. }
             | Self::ViewIsNotATable { .. }
+            | Self::AiKeyNotSealed { .. }
             | Self::StateFoldMismatch { .. }
             | Self::StateExpected { .. }
             | Self::StateOfWhat { .. }

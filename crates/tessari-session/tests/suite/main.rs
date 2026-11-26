@@ -17,6 +17,7 @@ mod across;
 mod across_indexes;
 mod administration_audit;
 mod advice;
+mod ai_providers;
 mod alone;
 mod alter_user;
 mod analyzer_named_by_a_field;

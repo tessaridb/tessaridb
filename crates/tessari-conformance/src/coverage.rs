@@ -111,6 +111,8 @@ forms! {
     DropBalancer => "DROP BALANCER",
     DefinePool => "DEFINE POOL",
     DropPool => "DROP POOL",
+    DefineAiProvider => "DEFINE AI PROVIDER",
+    DropAiProvider => "DROP AI PROVIDER",
     AlterTopology => "ALTER TOPOLOGY",
     DropTopology => "DROP TOPOLOGY",
     RevokeCertificate => "REVOKE CERTIFICATE",
@@ -336,6 +338,11 @@ mod tests {
              DROP BALANCER;\
              DEFINE POOL web WITH MAX CONCURRENT 10 FOR READS;\
              DROP POOL web;\
+             UNSEAL VAULT WITH 'a passphrase';\
+             DEFINE VAULT secrets;\
+             DEFINE AI PROVIDER p URL 'https://api.example.test/v1' MODEL 'm'\
+                 KEY VAULT secrets FIELD k BUDGET 10 PER 1h TIMEOUT 5s;\
+             DROP AI PROVIDER p;\
              ALTER STORE FINALIZE FORMAT;\
              REVOKE CERTIFICATE '0f1e2d3c4b5a69788796a5b4c3d2e1f00f1e2d3c4b5a69788796a5b4c3d2e1f0';\
              CREATE JOIN TOKEN FOR REPLICA second EXPIRES 10m;\

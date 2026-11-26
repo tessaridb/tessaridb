@@ -856,6 +856,18 @@ pub enum Error {
         /// Where it was written.
         span: Span,
     },
+    /// `DEFINE AI PROVIDER` named a vault the database does not hold, or the
+    /// call time found the key's vault sealed or the secret missing (G102
+    /// C8): a provider's key lives sealed or the provider does not exist.
+    #[error("the AI provider `{provider}` has no sealed key: it {reason} (at {span})")]
+    AiKeyNotSealed {
+        /// The provider.
+        provider: String,
+        /// What is missing.
+        reason: &'static str,
+        /// Where the statement sits.
+        span: Span,
+    },
     /// `state::merge` was offered a state of a fold other than the one its
     /// group is merging, or a state this build cannot read (G102 S11).
     ///

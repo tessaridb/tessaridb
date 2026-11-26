@@ -11556,6 +11556,33 @@ carries the same two counts per pool as `tessari_pool_running` and
 because an always-empty series trains whoever watches it to ignore the one
 reading that matters.
 
+### A provider the `ai::` calls go to — `DEFINE AI PROVIDER`
+
+```tessariql
+DEFINE AI PROVIDER anthropic
+    URL 'https://api.example.test/v1/messages' MODEL 'a-model'
+    KEY VAULT secrets FIELD anthropic_key
+    BUDGET 1000 PER 1h TIMEOUT 10s;
+DROP AI PROVIDER anthropic;
+```
+
+A provider is a catalog object — replicated, versioned, dropped like any
+definition — naming where the namespace's `ai::` calls go and how they are
+bounded. **Every clause is required and none has a default**, on the
+`DEFINE` rule that a value the store guessed would decide behaviour nobody
+chose: the endpoint (`https` only — a key never crosses plaintext), the
+model, where the key lives, how many calls a span admits, and how long one
+call may take.
+
+**The key is named, never written.** `KEY VAULT secrets FIELD anthropic_key`
+says which vault secret the key lives in; the catalog row carries the NAME,
+the key itself never travels in the log, never replicates and never appears
+in a backup of the catalog — each node reads its own vault at call time. A
+vault the database does not hold refuses the declaration
+(`AiKeyNotSealed`): a provider whose key has nowhere sealed to live is a
+plaintext key waiting to be written somewhere else. Declaring one also
+needs the store's format finalized past the version that added the row
+(`FormatNotFinalized` below it), like every catalog addition before it.
 
 ### The layout a cluster is arranged over
 

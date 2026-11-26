@@ -127,7 +127,17 @@ impl FormatVersion {
     /// an unknown tag, so a store holding one is one it must not open. A
     /// store below keeps its stamp, and `TYPE fold_state` refuses
     /// (`FormatNotFinalized`) until the store is finalized.
-    pub const CURRENT: Self = Self(19);
+    ///
+    /// Format 20 is the version-13 shape once more: the catalog keeps a
+    /// namespace's AI providers in system table `36` (G102 C8) — a build
+    /// before it never reads the row, but its key grammar cannot place a key
+    /// naming table `36`. A store below keeps its stamp, and
+    /// `DEFINE AI PROVIDER` refuses (`FormatNotFinalized`) until finalized.
+    pub const CURRENT: Self = Self(20);
+
+    /// The first format whose catalog keeps AI providers (system table
+    /// `36`). Named for the reason [`Self::HOMED_LOG`] is.
+    pub const AI_PROVIDERS: Self = Self(20);
 
     /// The first format whose value codec carries a fold's state (tag
     /// `0x12`). Named for the reason [`Self::HOMED_LOG`] is.
@@ -241,6 +251,7 @@ impl FormatVersion {
             17 => (0, 52),
             18 => (0, 54),
             19 => (0, 55),
+            20 => (0, 55),
             _ => return None,
         };
         Some(crate::NodeVersion {

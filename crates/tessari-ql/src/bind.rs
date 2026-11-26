@@ -684,6 +684,8 @@ fn bind_statement(kind: &mut StatementKind, binding: &Binding<'_>) -> Result<()>
         // value would be a limit arranged by whatever the caller happened to
         // supply.
         | StatementKind::DefinePool { .. }
+        | StatementKind::DefineAiProvider { .. }
+        | StatementKind::DropAiProvider { .. }
         | StatementKind::DropPool { .. }
         // A fingerprint is written where it stands: a revocation aimed by a
         // parameter would refuse whichever peer the caller happened to name.

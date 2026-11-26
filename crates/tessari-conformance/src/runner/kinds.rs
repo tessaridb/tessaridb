@@ -147,6 +147,7 @@ pub(crate) fn kind_name(error: &Error) -> &'static str {
         Error::TransactionVerbInAtomic { .. } => "TransactionVerbInAtomic",
         Error::InvalidPosition { .. } => "InvalidPosition",
         Error::ViewIsNotATable { .. } => "ViewIsNotATable",
+        Error::AiKeyNotSealed { .. } => "AiKeyNotSealed",
         Error::StateFoldMismatch { .. } => "StateFoldMismatch",
         Error::StateExpected { .. } => "StateExpected",
         Error::StateOfWhat { .. } => "StateOfWhat",
