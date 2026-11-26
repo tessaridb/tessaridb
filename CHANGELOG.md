@@ -16,7 +16,7 @@ catalog, not the history: `VERSION` reads and change-feed positions from before 
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
-## 0.55.0 — 2026-11-26 (in progress)
+## 0.55.0 — 2026-11-27
 
 - **Calendar readings.** `time::day_of_week`, `time::day_of_year`, `time::week`
   (ISO-8601, a week belonging to the year holding its Thursday), `time::quarter`,
@@ -25,6 +25,13 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 - **Series readings.** `series::outliers_tukey` (the indices outside the Tukey
   fences), `series::period_detect` (the dominant period in samples) and
   `series::decompose_stl` (`{ trend, seasonal, residual }`) over a numeric array.
+- **New columnar encodings.** A second-order delta for near-linear numeric
+  lanes, an XOR codec for floats whose neighbours share bits, and a
+  scaled-decimal encoding for decimal lanes — each chosen per chunk by the
+  same sampling cascade as before, and each exactly reversible.
+- **Prometheus remote-write on-ramp.** `--http` accepts the remote-write
+  protocol into a declared series table, so an existing collector can push
+  into the store without a bridge.
 - **Eight new folds.** `resets`, `deriv` and `predict_linear` join the counter
   family, ordered by the instant each sample was observed at; `downsample`
   keeps at most `n` samples by the largest-triangle rule, the ends always
@@ -52,6 +59,23 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
   name; `url::encode` / `decode` are the percent codec; `ip::is_v4` / `is_v6` are the
   predicates and `ip::in_range(ip, cidr)` the one range test, refused on input that does
   not parse.
+- **`SORT BY` on columnar tables.** `DEFINE TABLE … STORE COLUMN SORT BY g` lays each
+  commit batch's chunks out in `g` order, and a chunk-head index remembers every sealed
+  chunk's statistics so a pruned read seeks only the chunks that can match — a selective
+  read over 82 000 rows seeks 2 chunk heads instead of 11, with the answers proven equal
+  against the unsorted twin. A rewritten chunk updates its remembered head in place.
+- **AI providers and the `ai::` calls.** `DEFINE AI PROVIDER` declares where the
+  namespace's `ai::` calls go — the endpoint (`https` only), the model, the key named as
+  a vault secret and never written, a required call budget and a required timeout.
+  `ai::generate(prompt)` is one budgeted provider call answered with the reply text;
+  `ai::summarize` / `classify` / `extract` / `translate` are the same call with the
+  instruction written for you, `classify` answering the one declared label the reply
+  names or `NONE`. Every call is spent per record, the budget refuses rather than
+  queues, and a refusal carries the status class and never the provider's body.
+  `EXPLAIN` reports `ai-calls: n` — what one record's projection will spend.
+- **Format 20** (fold states at 19, the AI providers table at 20). A store written by
+  `0.54.0` opens as is and keeps its stamp until its first `fold_state` value or AI
+  provider row; a pre-`0.55.0` build refuses such a store at open.
 - **1860 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
