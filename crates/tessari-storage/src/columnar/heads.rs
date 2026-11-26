@@ -110,12 +110,20 @@ impl HeadIndex {
         }
     }
 
-    /// Drop every lane of one family: a copy-on-write rewrite names its
-    /// chunk by a seq whose partition is the caller's to know, and dropping
-    /// wider than needed costs one walk-all read per lane, where dropping
-    /// narrower than needed would cost a wrong answer.
-    pub(crate) fn drop_family(&self, table: TableId, family: &ColumnFamily) {
-        self.lanes
-            .retain(|key, _| key.table != table || &key.family != family);
+    /// A copy-on-write rewrite replaced a sealed chunk: its entry takes the
+    /// rewritten chunk's own statistics, so the lane stays complete and the
+    /// next read still seeks by memory.
+    ///
+    /// Updating ahead of the batch landing is sound by the store's own
+    /// fail-stop rule: the one outcome that could leave the entry narrower
+    /// than the stored chunk is a failed batch write, and a failed sync
+    /// stops the store rather than serving another read. A lane not held is
+    /// left alone — the next read walks and reinstalls.
+    pub(crate) fn rewritten(&self, key: &LaneKey, local: u64, stats: ChunkStats) {
+        if let Some(mut held) = self.lanes.get_mut(key)
+            && held.entries.contains_key(&local)
+        {
+            held.entries.insert(local, HeadEntry { stats });
+        }
     }
 }

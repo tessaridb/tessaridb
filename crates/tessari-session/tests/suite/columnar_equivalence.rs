@@ -553,17 +553,25 @@ fn a_remembered_lane_seeks_only_what_can_match_and_forgets_on_cow() {
     );
 
     // A copy-on-write rewrite of a sealed chunk — the row moves out of the
-    // chunk the index remembers it in. The lane is dropped, so the next read
-    // walks every head again and still answers what the row authority says.
-    session.run_now("UPDATE s:100 = { seq: 81500 };").unwrap();
+    // chunk the index remembers it in, and the entry takes the rewritten
+    // chunk's own statistics, so the lane stays complete: the read still
+    // seeks two heads, and the moved row answers at its new home.
+    session.run_now("UPDATE s:100 = { seq: 90000 };").unwrap();
     let after_cow = figures(&mut session);
     assert_eq!(after_cow.0, 1, "the probe row vanished with the rewrite");
     assert_eq!(
-        after_cow.1.0, 11,
-        "a rewritten lane was trusted instead of walked: {after_cow:?}"
+        after_cow.1, second.1,
+        "the rewritten chunk's entry was not updated in place: \
+         second {second:?} after {after_cow:?}"
     );
-    // And the lane heals: the read after the walk is remembered again.
-    let healed = figures(&mut session);
-    assert_eq!(healed.0, 1);
-    assert_eq!(healed.1, second.1, "the lane did not heal: {healed:?}");
+    let moved = session
+        .run_now("SELECT seq FROM s WHERE seq = 90000;")
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(
+        moved.records().unwrap().len(),
+        1,
+        "the moved row did not answer at its new value"
+    );
 }

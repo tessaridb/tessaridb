@@ -531,10 +531,20 @@ async fn project_table(
     // batch.
     let mut batch = batch;
     for (seq, family, bytes) in cows {
-        // A rewritten sealed chunk keeps its seq and changes its range, so
-        // the head index can no longer vouch for its lane; dropping is
-        // sound (the next read walks and reinstalls), keeping would not be.
-        store.heads().drop_family(table, &family);
+        // A rewritten sealed chunk keeps its seq and narrows its range:
+        // the head index takes the rewritten chunk's own statistics, so the
+        // lane stays complete and no read pays a walk for the rewrite.
+        if let Ok((_, stats)) = super::chunk::decode_head(&bytes) {
+            store.heads().rewritten(
+                &super::heads::LaneKey {
+                    table,
+                    family: family.clone(),
+                    partition: seq >> super::chunk::PARTITION_BITS,
+                },
+                super::chunk::local_of_seq(seq),
+                stats,
+            );
+        }
         batch = batch.put(
             ChunkKey::keyspace(),
             ChunkKey::new(namespace, database, table, family, seq, version).encode(),
