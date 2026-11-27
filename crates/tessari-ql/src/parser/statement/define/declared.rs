@@ -149,41 +149,43 @@ impl Parser<'_> {
                 break;
             }
         }
+        // `KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE …` — contextual words, for
+        // the reason the rest of the clause list is.
+        let keep_raw = if self.eat_word("keep") {
+            self.expect_word("raw", "`RAW` after `KEEP`")?;
+            self.expect_word("for", "`FOR` and how long a raw point stands")?;
+            let raw_for = self.positive_duration(
+                "a duration above zero, like `7d` — how long a raw point stands",
+            )?;
+            self.expect_word("roll", "`ROLL UP BY` and the width of a rolled window")?;
+            self.expect_word("up", "`ROLL UP BY` and the width of a rolled window")?;
+            self.expect_word("by", "`ROLL UP BY` and the width of a rolled window")?;
+            let window = self.positive_duration(
+                "a duration above zero, like `1h` — the width of a rolled window",
+            )?;
+            let computes = self.compute_list()?;
+            Some(crate::ast::KeepRaw {
+                raw_for,
+                window,
+                computes,
+            })
+        } else {
+            None
+        };
         Ok(StatementKind::DefineSeries {
             name,
             retain,
             time,
             store,
             partitions,
+            keep_raw,
             if_not_exists,
         })
     }
 
-    /// `DEFINE ROLLUP hourly FROM readings WINDOW 1h [BY sensor] COMPUTE
-    /// count(*) AS n, sum(v) AS total RETAIN 365d`
-    ///
-    /// Read in a fixed order, as `DEFINE VECTOR`'s clauses are. Which folds a
-    /// rollup keeps is the session's to judge, where the refusal can say why.
-    pub(crate) fn define_rollup(&mut self) -> Result<StatementKind> {
-        let if_not_exists = self.eat_if_not_exists()?;
-        let name = self.name()?;
-        if !self.eat_keyword(Keyword::From) {
-            return Err(self.error_here("`FROM` and the series it folds"));
-        }
-        let source = self.name()?;
-        if !self.eat_word("window") {
-            return Err(self.error_here("`WINDOW` and how wide each window is"));
-        }
-        let Some(Token::Duration(window)) = self.peek() else {
-            return Err(self.error_here("a duration, like `1h`"));
-        };
-        let window = *window;
-        self.advance();
-        let by = if self.eat_word("by") {
-            Some(self.name()?)
-        } else {
-            None
-        };
+    /// `COMPUTE count(*) AS n, sum(v) AS total, …` — the list a rollup and a
+    /// series' keep-raw both write, read once here so the two cannot drift.
+    fn compute_list(&mut self) -> Result<Vec<RollupCompute>> {
         if !self.eat_word("compute") {
             return Err(self.error_here("`COMPUTE` and what each window keeps"));
         }
@@ -221,6 +223,35 @@ impl Parser<'_> {
                 break;
             }
         }
+        Ok(computes)
+    }
+
+    /// `DEFINE ROLLUP hourly FROM readings WINDOW 1h [BY sensor] COMPUTE
+    /// count(*) AS n, sum(v) AS total RETAIN 365d`
+    ///
+    /// Read in a fixed order, as `DEFINE VECTOR`'s clauses are. Which folds a
+    /// rollup keeps is the session's to judge, where the refusal can say why.
+    pub(crate) fn define_rollup(&mut self) -> Result<StatementKind> {
+        let if_not_exists = self.eat_if_not_exists()?;
+        let name = self.name()?;
+        if !self.eat_keyword(Keyword::From) {
+            return Err(self.error_here("`FROM` and the series it folds"));
+        }
+        let source = self.name()?;
+        if !self.eat_word("window") {
+            return Err(self.error_here("`WINDOW` and how wide each window is"));
+        }
+        let Some(Token::Duration(window)) = self.peek() else {
+            return Err(self.error_here("a duration, like `1h`"));
+        };
+        let window = *window;
+        self.advance();
+        let by = if self.eat_word("by") {
+            Some(self.name()?)
+        } else {
+            None
+        };
+        let computes = self.compute_list()?;
         if !self.eat_word("retain") {
             return Err(self.error_here("`RETAIN` and how far back the rollup answers"));
         }

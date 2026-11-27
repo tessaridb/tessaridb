@@ -199,6 +199,7 @@ fn a_series_table_does_not_answer_with_a_record_past_its_floor() {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );
@@ -220,6 +221,7 @@ fn a_point_read_below_the_floor_answers_nothing() {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );
@@ -251,6 +253,7 @@ fn a_batched_read_below_the_floor_answers_nothing() {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );
@@ -277,6 +280,7 @@ fn a_record_written_below_the_floor_in_this_transaction_is_not_answered_either()
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );
@@ -320,6 +324,7 @@ fn the_pass_removes_what_the_floor_had_already_hidden_and_changes_no_answer() {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );
@@ -359,6 +364,7 @@ fn a_second_pass_removes_nothing() {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     );

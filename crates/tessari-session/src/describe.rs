@@ -293,9 +293,35 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
                 .map_or_else(String::new, |partitioning| {
                     format!(" PARTITIONS {} BY {}", partitioning.count, partitioning.by)
                 });
+        // `KEEP RAW`, spelled back with the same compute-list rendering
+        // `DEFINE ROLLUP` uses, so a restored series rolls the same windows.
+        let keep_raw = declared.keep_raw.as_ref().map_or_else(String::new, |kept| {
+            let computes = kept
+                .computes
+                .iter()
+                .map(|compute| {
+                    let of = compute.of.as_ref().map_or("*".to_owned(), |of| of.clone());
+                    let rank = compute
+                        .rank
+                        .as_ref()
+                        .map_or_else(String::new, |rank| format!(", {rank:?}"));
+                    format!(
+                        "{}({of}{rank}) AS {}",
+                        compute.fold.spelling(),
+                        compute.name
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!(
+                " KEEP RAW FOR {} ROLL UP BY {} COMPUTE {computes}",
+                kept.raw_for.to_literal(),
+                kept.window.to_literal()
+            )
+        });
         let _ = writeln!(
             script,
-            "DEFINE SERIES {name} RETAIN {}{time}{layout};",
+            "DEFINE SERIES {name} RETAIN {}{time}{layout}{keep_raw};",
             declared.retain.to_literal()
         );
         return Ok(());

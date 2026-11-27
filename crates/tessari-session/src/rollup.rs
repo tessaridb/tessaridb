@@ -18,6 +18,7 @@
 //! a raw write landing on a row it also writes makes one of them retry, and a
 //! window empty at its snapshot is created by the raw write alone.
 
+pub(crate) mod age;
 mod maintain;
 mod merging;
 
@@ -88,6 +89,7 @@ impl Session<'_> {
                     time: Some(WINDOW_FIELD.to_owned()),
                     rollups: Vec::new(),
                     rollup_of: Some(source),
+                    keep_raw: None,
                 }),
                 identity: IdentityKind::Uuid,
                 graph: None,
@@ -245,7 +247,7 @@ impl Session<'_> {
 }
 
 /// The written `COMPUTE` list, checked against the folds a rollup keeps.
-fn computes_of(written: &[tessari_ql::RollupCompute]) -> Result<Vec<RollupCompute>> {
+pub(crate) fn computes_of(written: &[tessari_ql::RollupCompute]) -> Result<Vec<RollupCompute>> {
     let mut computes = Vec::with_capacity(written.len());
     let mut names: BTreeMap<&str, ()> = BTreeMap::new();
     for tessari_ql::RollupCompute {

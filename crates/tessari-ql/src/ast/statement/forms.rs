@@ -16,6 +16,18 @@ pub enum BackupForm {
     Script,
 }
 
+/// `KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE …` on a series: how long raw points
+/// stand, how wide a rolled window is, and what each rolled row keeps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeepRaw {
+    /// How long a raw point stands before its window is rolled.
+    pub raw_for: tessari_types::Duration,
+    /// The width of a rolled window.
+    pub window: tessari_types::Duration,
+    /// What each rolled row computes, in the order written.
+    pub computes: Vec<RollupCompute>,
+}
+
 /// One `COMPUTE fold(field) AS name` of a `DEFINE ROLLUP`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollupCompute {

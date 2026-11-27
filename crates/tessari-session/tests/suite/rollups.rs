@@ -295,3 +295,144 @@ fn dropping_a_rollup_takes_its_exact_sums() {
     session.run_now("DROP ROLLUP hourly;").unwrap();
     assert_eq!(kept(&store), None);
 }
+
+/// `KEEP RAW FOR … ROLL UP BY …` — the age-triggered pass replaces each
+/// finished aged window's raw points with one rolled row, idempotently.
+#[test]
+fn keep_raw_rolls_aged_windows_and_a_rerun_changes_nothing() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now(
+            "DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d; \
+             DEFINE SERIES readings RETAIN 36500d TIME at \
+             KEEP RAW FOR 1s ROLL UP BY 1m COMPUTE count(*) AS n, sum(v) AS total;",
+        )
+        .unwrap();
+    // Two finished windows far past the one-second raw horizon.
+    session
+        .run_now(
+            "CREATE readings = { at: datetime '2026-11-01T10:00:10Z', v: 1 };\n\
+             CREATE readings = { at: datetime '2026-11-01T10:00:20Z', v: 2 };\n\
+             CREATE readings = { at: datetime '2026-11-01T10:00:30Z', v: 3 };\n\
+             CREATE readings = { at: datetime '2026-11-01T10:01:10Z', v: 10 };",
+        )
+        .unwrap();
+    let rolled = tessari_session::roll_up_aged_series(&store).now().unwrap();
+    assert_eq!(rolled.windows, 2, "{rolled:?}");
+    assert_eq!(rolled.points, 4, "{rolled:?}");
+    // The raw points are gone; each window answers as one rolled row.
+    let all = |session: &mut Session<'_>| -> Vec<BTreeMap<String, Value>> {
+        let Outcome::Records { records, .. } = session
+            .run_now("SELECT at, n, total, rolled FROM readings;")
+            .unwrap()
+            .pop()
+            .unwrap()
+        else {
+            panic!("a read answers with records");
+        };
+        let mut held: Vec<BTreeMap<String, Value>> = records
+            .into_iter()
+            .map(|(_, row)| match row {
+                Value::Object(fields) => fields,
+                other => panic!("a row is an object, got {other:?}"),
+            })
+            .collect();
+        held.sort_by_key(|fields| format!("{:?}", fields.get("at")));
+        held
+    };
+    let answered = all(&mut session);
+    assert_eq!(answered.len(), 2, "{answered:?}");
+    let first = answered.first().unwrap_or_else(|| panic!("a rolled row"));
+    assert_eq!(
+        first.get("n"),
+        Some(&Value::Number(tessari_types::Number::Integer(3)))
+    );
+    assert_eq!(
+        first.get("total"),
+        Some(&Value::Number(tessari_types::Number::Integer(6)))
+    );
+    assert_eq!(first.get("rolled"), Some(&Value::Bool(true)));
+    // A re-run finds nothing raw and changes nothing.
+    let again = tessari_session::roll_up_aged_series(&store).now().unwrap();
+    assert_eq!(again.windows, 0, "{again:?}");
+    assert_eq!(all(&mut session), answered, "a re-run changed the table");
+}
+
+#[test]
+fn what_keep_raw_cannot_say_is_refused_where_it_is_written() {
+    let store = store();
+    let mut session = Session::new(&store);
+    session
+        .run_now("DEFINE NAMESPACE t; USE NAMESPACE t; DEFINE DATABASE d; USE DATABASE d;")
+        .unwrap();
+    for statement in [
+        // No TIME: a window is measured on the event's own instant.
+        "DEFINE SERIES a RETAIN 30d KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE count(*) AS n;",
+        // The marker name is the pass's own.
+        "DEFINE SERIES b RETAIN 30d TIME at KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE count(*) AS rolled;",
+        // A window of no width.
+        "DEFINE SERIES c RETAIN 30d TIME at KEEP RAW FOR 7d ROLL UP BY 0s COMPUTE count(*) AS n;",
+    ] {
+        let refused = session.run_now(statement);
+        assert!(refused.is_err(), "{statement} ran: {refused:?}");
+    }
+}
+
+/// The cluster drill for `KEEP RAW`: the pass rolls where the range is led,
+/// a node that may not write refuses at the commit with the class the
+/// housekeeping reads as "kept where the range is led", and a follower that
+/// collects afterwards answers what the leader answered — the pass's writes
+/// are ordinary committed transactions, so convergence is replication's own.
+#[test]
+fn keep_raw_rolls_on_the_leader_and_a_follower_converges() {
+    use crate::gathered_reads::{follower_of_the_database, leader, signed_in};
+    let leader = leader();
+    signed_in(&leader, "root")
+        .run_now(
+            "USE NAMESPACE prod; USE DATABASE shop; \
+             DEFINE SERIES readings RETAIN 36500d TIME at \
+             KEEP RAW FOR 1s ROLL UP BY 1m COMPUTE count(*) AS n, sum(v) AS total; \
+             CREATE readings = { at: datetime '2026-11-01T10:00:10Z', v: 1 }; \
+             CREATE readings = { at: datetime '2026-11-01T10:00:20Z', v: 2 };",
+        )
+        .unwrap();
+    let rolled = tessari_session::roll_up_aged_series(&leader).now().unwrap();
+    assert_eq!(rolled.windows, 1, "{rolled:?}");
+    // A follower of the whole database, collecting after the rollup, answers
+    // the rolled row and no raw point — the pass's writes replicate like any
+    // committed write's.
+    let follower = follower_of_the_database(&leader);
+    let mut reading = signed_in(&follower, "root");
+    reading
+        .run_now("USE NAMESPACE prod; USE DATABASE shop;")
+        .unwrap();
+    let Outcome::Records { records, .. } = reading
+        .run_now("SELECT n, total, rolled FROM readings;")
+        .unwrap()
+        .pop()
+        .unwrap()
+    else {
+        panic!("a read answers with records");
+    };
+    let rolled_rows: Vec<_> = records
+        .iter()
+        .filter(|(_, row)| format!("{row:?}").contains("rolled"))
+        .collect();
+    assert!(
+        !rolled_rows.is_empty(),
+        "the follower did not converge: {records:?}"
+    );
+    // The follower may not write, so the pass refuses there with the class
+    // the housekeeping stays quiet about — never a partial local write.
+    let refused = tessari_session::roll_up_aged_series(&follower).now();
+    match refused {
+        Err(tessari_session::Error::Store(
+            tessari_storage::Error::LeaseSpent { .. }
+            | tessari_storage::Error::NoLeadershipYet
+            | tessari_storage::Error::WriteIsElsewhere { .. },
+        ))
+        | Ok(_) => {}
+        Err(other) => panic!("an unclassified refusal: {other:?}"),
+    }
+}

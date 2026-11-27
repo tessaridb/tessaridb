@@ -20,6 +20,7 @@ fn series() -> Fixture {
             time: None,
             rollups: Vec::new(),
             rollup_of: None,
+            keep_raw: None,
         }),
         IdentityKind::Uuid,
     )

@@ -174,7 +174,7 @@ pub(crate) fn row_identity(window: i64, key: &Value) -> RecordId {
 }
 
 /// The smallest identity an event-time series holds at or after `second`.
-fn first_identity(second: i64) -> RecordId {
+pub(crate) fn first_identity(second: i64) -> RecordId {
     let millis = u64::try_from(second)
         .ok()
         .and_then(|seconds| seconds.checked_mul(1_000))

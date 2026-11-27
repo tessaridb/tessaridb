@@ -5611,6 +5611,28 @@ series, bit for bit. Any other fold over the column reads the estimates as numbe
 - A reader who may not see the column merges nothing from beside its rows.
 - On a store an earlier build wrote, declaring such a rollup waits for `ALTER STORE FINALIZE FORMAT` (format 7).
 
+### Rolling aged raw points away
+
+`KEEP RAW FOR <d> ROLL UP BY <span> COMPUTE …` on a series replaces each
+finished window's raw points with **one rolled row** once the window is `d`
+old — the same folds a `DEFINE ROLLUP` keeps, written into the series itself
+at the window's place in time order, marked `rolled: true`:
+
+```
+DEFINE SERIES readings RETAIN 365d TIME at
+  KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE count(*) AS n, sum(v) AS total;
+```
+
+The pass runs with housekeeping, **where the range is led**, each window as
+one ordinary committed transaction — so a failover mid-pass leaves either the
+raw window or the rolled row, never half of one, a follower converges by
+replication like any write, and a re-run finds nothing raw in a rolled window
+and changes nothing. A window still collecting points is never rolled, a
+series must declare `TIME` (a window is measured on the event's own instant),
+and a `COMPUTE` named `rolled` is refused because that name is the pass's own
+marker. Reads simply see the rolled rows: a query past the raw horizon
+aggregates rows that are already aggregates, which is the point.
+
 ### Counting per window
 
 `GROUP BY` takes an **expression**, so a window is a key like any other:

@@ -19,7 +19,7 @@ mod search;
 mod values;
 
 pub use conflict::{ConflictAction, ConflictUpdate, OnConflict};
-pub use forms::{BackupForm, RollupCompute, RowGuard};
+pub use forms::{BackupForm, KeepRaw, RollupCompute, RowGuard};
 pub use search::{SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator};
 pub use values::{Ratio, VaultKey};
 
@@ -1505,6 +1505,11 @@ pub enum StatementKind {
         /// projection , beside `STORE COLUMN`. Immutable after
         /// define, as the storage kind is.
         partitions: Option<(u64, String)>,
+        /// `KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE …` — past the raw horizon a
+        /// housekeeping pass replaces each finished window's raw points with
+        /// one rolled row, where the range is led. `None` keeps raw points
+        /// until `RETAIN` hides them.
+        keep_raw: Option<KeepRaw>,
         /// Whether re-defining an existing name is accepted.
         if_not_exists: bool,
     },
