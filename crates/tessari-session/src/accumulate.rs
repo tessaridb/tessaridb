@@ -169,6 +169,19 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// `DISTINCT` before a fold's value: every value already seen, by the
+    /// store's own `=`, and the fold only the first sighting reaches. The
+    /// set is what makes the fold's memory grow, which is why a distinct
+    /// fold is refused the constant-space exemption `count(DISTINCT …)`
+    /// keeps no exemption from either.
+    Distinctly {
+        /// Every value already offered.
+        seen: std::collections::BTreeSet<Value>,
+        /// The fold the first sighting reaches.
+        inner: Box<Accumulator>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// The keyed folds' pairs — each present value with the key it is folded
     /// under — held whole and grouped at the finish, where each key's own
     /// accumulator answers exactly what the plain fold would.
@@ -350,10 +363,24 @@ impl Accumulator {
     /// producer of occurrences yields folds; anything else would still occupy
     /// its position, which is the property that matters.
     pub(crate) fn of(kind: &ExprKind) -> Self {
-        let ExprKind::Fold { fold, span, .. } = kind else {
+        let ExprKind::Fold {
+            fold,
+            distinct,
+            span,
+            ..
+        } = kind
+        else {
             return Self::Count { seen: 0 };
         };
-        Self::for_aggregate(*fold, *span)
+        let inner = Self::for_aggregate(*fold, *span);
+        if *distinct {
+            return Self::Distinctly {
+                seen: std::collections::BTreeSet::new(),
+                inner: Box::new(inner),
+                span: *span,
+            };
+        }
+        inner
     }
 
     /// The accumulator for one aggregate.
@@ -517,6 +544,28 @@ impl Accumulator {
     /// that is present and is not a number.
     pub(crate) fn offer(&mut self, value: &Value) -> Result<()> {
         match self {
+            // The dedupe key is the value itself, or the value half of the
+            // packed pair a fold with a second argument is offered — the
+            // rank or separator is the statement's, not the record's, and
+            // deduplicating on it would deduplicate nothing.
+            Self::Distinctly { seen, inner, span } => {
+                let key = match (inner.second_argument(), value) {
+                    (true, Value::Array(pair)) => pair.first().cloned().unwrap_or(Value::None),
+                    _ => value.clone(),
+                };
+                if !present(&key) {
+                    return inner.offer(value);
+                }
+                if seen.insert(key) {
+                    if seen.len() > COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                    return inner.offer(value);
+                }
+            }
             Self::Count { seen } => {
                 if present(value) {
                     *seen = seen.saturating_add(1);
@@ -993,6 +1042,23 @@ impl Accumulator {
         Ok(())
     }
 
+    /// Whether this accumulator's fold is offered a packed pair — the value
+    /// with its second argument beside it.
+    fn second_argument(&self) -> bool {
+        match self {
+            Self::Counter { fold, .. } => fold.second().is_some(),
+            Self::Paired { .. }
+            | Self::Quantile { .. }
+            | Self::Quantiles { .. }
+            | Self::ExactQuantiles { .. }
+            | Self::Common { .. }
+            | Self::Binned { .. }
+            | Self::Joined { .. }
+            | Self::Keyed { .. } => true,
+            _ => false,
+        }
+    }
+
     /// What this fold answers for its group.
     ///
     /// Borrows rather than consumes so the caller can walk its accumulators by
@@ -1005,6 +1071,7 @@ impl Accumulator {
     /// discarded unread.
     pub(crate) fn finish(&self) -> Result<Value> {
         match self {
+            Self::Distinctly { inner, .. } => inner.finish(),
             Self::Count { seen } => Ok(Value::Number(Number::Integer(
                 i64::try_from(*seen).unwrap_or(i64::MAX),
             ))),
@@ -1325,6 +1392,7 @@ impl Accumulator {
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Distinctly { seen, inner, .. } => seen.len().saturating_add(inner.held()),
             Self::Keyed { held, .. } => held.len(),
             Self::Events { held, .. } => held.len(),
             Self::Joined { held, .. } => held.len(),

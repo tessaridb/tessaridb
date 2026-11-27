@@ -261,3 +261,27 @@ fn a_median_over_more_records_than_a_gather_holds_answers_and_a_collect_is_refus
         other => panic!("expected GatheredTooMuch, got {other:?}"),
     }
 }
+
+/// A filtered or distinct fold is not a leader's to fold — the read gathers
+/// records instead (the whitelist's designed fallback) — and the gathered
+/// answer is still the whole node's.
+#[test]
+fn a_filtered_or_distinct_fold_gathers_records_and_answers_the_whole_node() {
+    let pair = readings();
+    let mut follower = pair.on_the_follower("reader");
+    let mut whole = pair.on_the_leader("reader");
+    for read in [
+        "SELECT meter, sum(n) FILTER (WHERE n > 2) AS up FROM readings GROUP BY meter;",
+        "SELECT sum(DISTINCT n) AS held FROM readings;",
+        "SELECT count(*) FILTER (WHERE meter = 'm3') AS held FROM readings;",
+    ] {
+        let (expected, _) = answer(&mut whole, read);
+        assert!(!expected.is_empty(), "{read}: the control answered nothing");
+        let (gathered, notes) = answer(&mut follower, read);
+        assert_eq!(gathered, expected, "{read}");
+        assert!(
+            notes.iter().any(|note| note.kind() == "gathered"),
+            "{read}: {notes:?}"
+        );
+    }
+}

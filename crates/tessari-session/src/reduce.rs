@@ -287,9 +287,23 @@ pub(crate) fn reduce_of(select: &tessari_ql::Select) -> Option<Reduce> {
         .into_iter()
         .flatten()
     {
-        let ExprKind::Fold { fold, over, at, .. } = &held.kind else {
+        // A filtered or distinct fold is not one a leader can fold from the
+        // portable parts alone, so the read gathers records instead — the
+        // whitelist's whole point.
+        let ExprKind::Fold {
+            fold,
+            over,
+            at,
+            distinct,
+            filter,
+            ..
+        } = &held.kind
+        else {
             return None;
         };
+        if *distinct || filter.is_some() {
+            return None;
+        }
         let over = match over {
             Some(over) => Some(tessari_ql::portable(over)?),
             None => None,

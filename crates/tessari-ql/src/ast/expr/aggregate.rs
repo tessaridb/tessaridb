@@ -586,6 +586,30 @@ impl Aggregate {
         }
     }
 
+    /// Whether `DISTINCT` is a question this fold asks — `sum(DISTINCT x)`
+    /// folds each value once, and the folds that read an instant, a rank or
+    /// a horizon beside their value refuse it by name rather than guess
+    /// which argument it was about.
+    #[must_use]
+    pub const fn takes_distinct(self) -> bool {
+        matches!(
+            self,
+            Self::Sum
+                | Self::Mean
+                | Self::Min
+                | Self::Max
+                | Self::Median
+                | Self::Variance
+                | Self::Stddev
+                | Self::Collect
+                | Self::Mad
+                | Self::Skewness
+                | Self::Kurtosis
+                | Self::Gini
+                | Self::StringAgg
+        )
+    }
+
     /// Whether the fold's answer is an estimate rather than exact.
     #[must_use]
     pub const fn estimates(self) -> bool {

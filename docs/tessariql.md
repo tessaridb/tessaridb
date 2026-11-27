@@ -5756,6 +5756,23 @@ SELECT page, approx_distinct(visitor) AS users, approx_quantile(ms, 0.99) AS p99
   shards and the node merges the sketches, and the merged state is the one a single node reading every record
   reaches. A rollup merges them the same way.
 
+**Any fold takes `FILTER (WHERE …)` and most take `DISTINCT`.** The filter is
+evaluated per record before the fold sees it — only `true` offers, by `WHERE`'s
+own rule — and `DISTINCT` folds each value once, by the store's own `=` (so `3`
+and `3.0` are one), under the same 1 000 000-distinct ceiling as
+`count(DISTINCT …)`. The two compose:
+
+```
+SELECT sum(amount) FILTER (WHERE status = 'paid') AS paid FROM orders;
+SELECT sum(DISTINCT amount) AS distinct_total FROM orders;
+SELECT sum(DISTINCT amount) FILTER (WHERE status = 'paid') AS paid_distinct FROM orders;
+```
+
+`DISTINCT` is refused on a fold that reads more than its value — the counter
+family, the quantiles, `top_k`, the keyed and sequence folds — because which
+argument the word was about would be a guess. `FILTER` is accepted by every
+fold, `count(*)` included.
+
 **`variance` and `stddev` are the sample forms**, dividing by `n − 1`, because a
 table's rows are usually a sample of something — the same reason the SQL
 standard's bare `VARIANCE` is `VAR_SAMP`. There is one name rather than two

@@ -186,3 +186,16 @@ RETURN geo::cell_level(geo::cell(geometry { type: 'Point', coordinates: [10, 20]
 --- case: a cell's level is a whole number of none or more
 RETURN geo::cell_level(geo::cell(geometry { type: 'Point', coordinates: [10, 20] }, 0));
 --- expect: value 0
+
+--- case: a fold filtered by a condition, offered only what it keeps
+DEFINE TABLE takings SCHEMALESS;
+CREATE takings = { amount: 10, status: 'paid' };
+CREATE takings = { amount: 5, status: 'open' };
+CREATE takings = { amount: 7, status: 'paid' };
+RETURN (SELECT sum(amount) FILTER (WHERE status = 'paid') AS held FROM takings)[0].held;
+--- expect: value 17
+
+--- case: a distinct fold folds each value once
+CREATE takings = { amount: 10, status: 'paid' };
+RETURN (SELECT sum(DISTINCT amount) AS held FROM takings)[0].held;
+--- expect: value 22

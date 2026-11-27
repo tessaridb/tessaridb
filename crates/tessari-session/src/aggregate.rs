@@ -49,8 +49,10 @@ pub(crate) fn retains_its_group(wanted: &[Projected]) -> Option<&'static str> {
 
 /// The first whole-group fold anywhere inside this expression.
 fn growing_fold(expr: &Expr) -> Option<&'static str> {
-    if let ExprKind::Fold { fold, .. } = expr.kind
-        && fold.retention() == Retention::WholeGroup
+    // A `DISTINCT` fold holds every value it has seen whatever its fold's
+    // own retention, so it grows with its group by the same rule.
+    if let ExprKind::Fold { fold, distinct, .. } = expr.kind
+        && (fold.retention() == Retention::WholeGroup || distinct)
     {
         return Some(fold.spelling());
     }
@@ -234,12 +236,25 @@ impl Session<'_> {
                         over,
                         at,
                         ahead,
+                        filter,
                         span,
                         ..
                     } = &fold.kind
                     else {
                         continue;
                     };
+                    // `FILTER (WHERE …)`: only `true` offers, by `WHERE`'s
+                    // own rule — a condition that could not be decided
+                    // removes the record from this fold, and the accumulator
+                    // never sees it.
+                    if let Some(filter) = filter {
+                        let held = self
+                            .evaluate_in(transaction, filter, Scope::of(&record))
+                            .await?;
+                        if held != Value::Bool(true) {
+                            continue;
+                        }
+                    }
                     // A sketch fold over a rollup's sketch column merges the
                     // state kept beside the row (ADR-0122 C5).
                     if let Some((merging, column)) =

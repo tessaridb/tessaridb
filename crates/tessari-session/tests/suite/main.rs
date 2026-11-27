@@ -46,6 +46,7 @@ mod columnar_equivalence;
 mod columnar_grouped;
 mod columnar_scan;
 mod columnar_series;
+mod combinators;
 mod combined_reads;
 mod composite_index;
 mod composite_order;
