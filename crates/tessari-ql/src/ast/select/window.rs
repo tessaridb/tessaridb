@@ -49,6 +49,19 @@ pub enum WindowFunction {
     FirstValue(Box<Expr>),
     /// `last_value(value)` — `value` of the frame's last record.
     LastValue(Box<Expr>),
+    /// `nth_value(value, n)` — `value` of the frame's `n`-th record, counted
+    /// from 1; `NONE` when the frame is shorter.
+    NthValue(Box<Expr>, u64),
+    /// `ntile(n)` — which of `n` buckets the record falls in, the first
+    /// `count mod n` buckets one record larger, exactly as SQL spreads them.
+    Ntile(u64),
+    /// `percent_rank()` — the record's rank beside `rank()`, scaled to 0
+    /// through 1: `(rank − 1) / (count − 1)`, and 0 for a partition of one.
+    PercentRank,
+    /// `cume_dist()` — the share of the partition up to and including the
+    /// record's own ties: how many records sort no later than it, over how
+    /// many there are.
+    CumeDist,
     /// `count`, `sum`, `mean`, `min` or `max` over the frame; `over` is absent
     /// for `count(*)`.
     Fold {
@@ -76,13 +89,18 @@ impl WindowFunction {
     #[must_use]
     pub fn expressions(&self) -> Vec<&Expr> {
         match self {
-            Self::RowNumber | Self::Rank | Self::DenseRank => Vec::new(),
+            Self::RowNumber | Self::Rank | Self::DenseRank | Self::PercentRank | Self::CumeDist => {
+                Vec::new()
+            }
+            Self::Ntile(_) => Vec::new(),
             Self::Lag(neighbour) | Self::Lead(neighbour) => {
                 let mut found = vec![neighbour.value.as_ref()];
                 found.extend(neighbour.default.as_deref());
                 found
             }
-            Self::FirstValue(value) | Self::LastValue(value) => vec![value.as_ref()],
+            Self::FirstValue(value) | Self::LastValue(value) | Self::NthValue(value, _) => {
+                vec![value.as_ref()]
+            }
             Self::Fold { over, .. } => over.as_deref().into_iter().collect(),
         }
     }
@@ -90,13 +108,18 @@ impl WindowFunction {
     /// Every expression the function evaluates, to rewrite in place.
     pub fn expressions_mut(&mut self) -> Vec<&mut Expr> {
         match self {
-            Self::RowNumber | Self::Rank | Self::DenseRank => Vec::new(),
+            Self::RowNumber | Self::Rank | Self::DenseRank | Self::PercentRank | Self::CumeDist => {
+                Vec::new()
+            }
+            Self::Ntile(_) => Vec::new(),
             Self::Lag(neighbour) | Self::Lead(neighbour) => {
                 let mut found = vec![neighbour.value.as_mut()];
                 found.extend(neighbour.default.as_deref_mut());
                 found
             }
-            Self::FirstValue(value) | Self::LastValue(value) => vec![value.as_mut()],
+            Self::FirstValue(value) | Self::LastValue(value) | Self::NthValue(value, _) => {
+                vec![value.as_mut()]
+            }
             Self::Fold { over, .. } => over.as_deref_mut().into_iter().collect(),
         }
     }

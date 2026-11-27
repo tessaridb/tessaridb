@@ -5949,6 +5949,10 @@ partition is walked in, ties broken by identity as a read's own order is.
 | `lead(v [, n [, default]])` | the same, after |
 | `first_value(v)` | `v` of the first record of the frame |
 | `last_value(v)` | `v` of the last record of the frame |
+| `nth_value(v, n)` | `v` of the frame's `n`-th record, counted from 1; `NONE` when the frame is shorter |
+| `ntile(n)` | which of `n` buckets the record falls in, the first `count mod n` buckets one record larger |
+| `percent_rank()` | `(rank − 1) / (count − 1)`, 0 through 1; a partition of one answers 0 |
+| `cume_dist()` | the share of the partition sorting no later than the record's own ties |
 | `count`, `sum`, `mean`, `min`, `max` | the fold over the frame, with the fold's own rules — `count(*)` counts records |
 
 **The frame** runs from the partition's first record to the current one when the

@@ -264,3 +264,101 @@ fn a_bound_never_shortens_what_a_window_counts() {
         assert_eq!(field(&found[0].1, "every"), int(5), "{read}");
     }
 }
+
+#[test]
+fn ntile_spreads_the_partition_the_way_sql_does() {
+    let store = store();
+    let mut session = ready(&store);
+
+    // North by amount: 10, 20, 20 — two buckets of two and one; south: one
+    // each.
+    let found = rows(
+        &mut session,
+        "SELECT ntile(2) OVER (PARTITION BY region ORDER BY amount) AS b FROM sales;",
+    );
+    assert_eq!(
+        by_record(&found, "b"),
+        [int(1), int(1), int(2), int(1), int(2)]
+    );
+
+    // More buckets than records: each record its own bucket from 1.
+    let found = rows(
+        &mut session,
+        "SELECT ntile(5) OVER (PARTITION BY region ORDER BY day) AS b FROM sales;",
+    );
+    assert_eq!(
+        by_record(&found, "b"),
+        [int(1), int(2), int(3), int(1), int(2)]
+    );
+}
+
+#[test]
+fn percent_rank_and_cume_dist_read_the_tie_groups() {
+    let store = store();
+    let mut session = ready(&store);
+
+    // North by amount: one record, then a tie of two — percent_rank 0, 0.5,
+    // 0.5 and cume_dist 1/3, 1, 1; south has no ties.
+    let found = rows(
+        &mut session,
+        "SELECT percent_rank() OVER (PARTITION BY region ORDER BY amount) AS p, \
+         cume_dist() OVER (PARTITION BY region ORDER BY amount) AS c FROM sales;",
+    );
+    let floats = |name: &str| -> Vec<f64> {
+        by_record(&found, name)
+            .iter()
+            .map(|value| match value {
+                Value::Number(Number::Float(held)) => *held,
+                other => panic!("a float, got {other:?}"),
+            })
+            .collect()
+    };
+    let near = |held: Vec<f64>, expected: &[f64]| {
+        assert_eq!(held.len(), expected.len());
+        for (one, other) in held.iter().zip(expected) {
+            assert!((one - other).abs() < 1e-9, "{held:?} vs {expected:?}");
+        }
+    };
+    near(floats("p"), &[0.0, 0.5, 0.5, 0.0, 1.0]);
+    near(floats("c"), &[1.0 / 3.0, 1.0, 1.0, 0.5, 1.0]);
+}
+
+#[test]
+fn nth_value_reads_the_frames_nth_record_or_nothing() {
+    let store = store();
+    let mut session = ready(&store);
+
+    // Ordered, the frame runs to the current record: the second record's
+    // amount is absent for the first of each region.
+    let found = rows(
+        &mut session,
+        "SELECT nth_value(amount, 2) OVER (PARTITION BY region ORDER BY day) AS v FROM sales;",
+    );
+    assert_eq!(
+        by_record(&found, "v"),
+        [Value::None, int(20), int(20), Value::None, int(7)]
+    );
+
+    // Unordered, the frame is the whole partition.
+    let found = rows(
+        &mut session,
+        "SELECT nth_value(amount, 1) OVER (PARTITION BY region) AS v FROM sales;",
+    );
+    assert_eq!(
+        by_record(&found, "v"),
+        [int(10), int(10), int(10), int(5), int(5)]
+    );
+}
+
+#[test]
+fn a_bucket_count_or_position_below_one_is_refused_where_it_is_written() {
+    let store = store();
+    let mut session = ready(&store);
+    for statement in [
+        "SELECT ntile(0) OVER (ORDER BY day) AS b FROM sales;",
+        "SELECT nth_value(amount, 0) OVER (ORDER BY day) AS v FROM sales;",
+    ] {
+        let refused = session.run_now(statement);
+        assert!(refused.is_err(), "{statement} ran: {refused:?}");
+    }
+}

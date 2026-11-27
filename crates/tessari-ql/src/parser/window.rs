@@ -12,7 +12,7 @@ use tessari_types::Number;
 
 /// The functions that exist only over a window, read before the expression
 /// grammar sees their name: none of them is a function of one record.
-const OWN: [&str; 7] = [
+const OWN: [&str; 11] = [
     "row_number",
     "rank",
     "dense_rank",
@@ -20,6 +20,10 @@ const OWN: [&str; 7] = [
     "lead",
     "first_value",
     "last_value",
+    "nth_value",
+    "ntile",
+    "percent_rank",
+    "cume_dist",
 ];
 
 impl Parser<'_> {
@@ -45,7 +49,15 @@ impl Parser<'_> {
             "lag" => WindowFunction::Lag(self.neighbour()?),
             "lead" => WindowFunction::Lead(self.neighbour()?),
             "first_value" => WindowFunction::FirstValue(Box::new(self.condition()?)),
-            _ => WindowFunction::LastValue(Box::new(self.condition()?)),
+            "last_value" => WindowFunction::LastValue(Box::new(self.condition()?)),
+            "nth_value" => {
+                let value = Box::new(self.condition()?);
+                self.expect_punct(Punct::Comma, "`,` and which record of the frame to read")?;
+                WindowFunction::NthValue(value, self.count_from_one()?)
+            }
+            "ntile" => WindowFunction::Ntile(self.count_from_one()?),
+            "percent_rank" => WindowFunction::PercentRank,
+            _ => WindowFunction::CumeDist,
         };
         self.expect_punct(Punct::ParenClose, "`)` after the function's arguments")?;
         if !self.peek_word("over") {
@@ -117,6 +129,22 @@ impl Parser<'_> {
             name: self.name()?,
             span,
         })
+    }
+
+    /// A whole number written in the statement, one or more — the bucket
+    /// count of `ntile` and the position of `nth_value`.
+    fn count_from_one(&mut self) -> Result<u64> {
+        let Some(Token::Number(Number::Integer(held))) = self.peek() else {
+            return Err(self.error_here("a whole number, at least one"));
+        };
+        let Ok(count) = u64::try_from(*held) else {
+            return Err(self.error_here("a whole number, at least one"));
+        };
+        if count == 0 {
+            return Err(self.error_here("a whole number, at least one"));
+        }
+        self.advance();
+        Ok(count)
     }
 
     /// `value [, offset [, default]]` for `lag` and `lead`.
