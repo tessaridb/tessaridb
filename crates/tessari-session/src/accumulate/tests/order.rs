@@ -134,6 +134,8 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
                     integer(held),
                     Value::Array(vec![float(0.5), float(0.9)]),
                 ])
+            } else if matches!(aggregate, Aggregate::StringAgg) {
+                Value::Array(vec![Value::from("x"), Value::from(",")])
             } else if !aggregate.takes_an_instant() && aggregate.second().is_some() {
                 Value::Array(vec![integer(held), integer(2)])
             } else if aggregate.takes_an_instant() {

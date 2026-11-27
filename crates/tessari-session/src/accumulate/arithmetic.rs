@@ -358,29 +358,69 @@ pub(crate) fn middle(
         let entry = counted.entry(exact(value, span)?).or_insert(0);
         *entry = entry.saturating_add(1);
     }
+    // Nothing to be in the middle of answers `NONE`, and zero would be a
+    // claim — the rule `mean` already follows over an empty group.
+    Ok(middle_of(&counted, span)?.map_or(Value::None, |held| exactly(&held)))
+}
+
+/// The middle of a settled multiset as an exact decimal; `None` for an empty
+/// one. The shared half of `median` and `mad` — the same definition both
+/// times, so the deviation is measured from exactly the middle `median`
+/// answers.
+fn middle_of(
+    counted: &std::collections::BTreeMap<Decimal, u64>,
+    span: Span,
+) -> Result<Option<Decimal>> {
     let size: u64 = counted
         .values()
         .fold(0, |size, many| size.saturating_add(*many));
     if size == 0 {
-        // Nothing to be in the middle of, and zero would be a claim — the rule
-        // `mean` already follows over an empty group.
-        return Ok(Value::None);
+        return Ok(None);
     }
     let at = size / 2;
-    let upper = ranked(&counted, at);
+    let upper = ranked(counted, at);
     if size % 2 == 1 {
-        return Ok(upper.map_or(Value::None, exactly));
+        return Ok(upper.copied());
     }
-    let (Some(lower), Some(upper)) = (ranked(&counted, at.saturating_sub(1)), upper) else {
-        return Ok(Value::None);
+    let (Some(lower), Some(upper)) = (ranked(counted, at.saturating_sub(1)), upper) else {
+        return Ok(None);
     };
     let pair = lower
         .checked_add(*upper)
         .ok_or_else(|| failed("median", "a total outside the exact range", span))?;
-    let averaged = pair
-        .checked_div(Decimal::from(2))
-        .ok_or_else(|| failed("median", "a group of no size", span))?;
-    Ok(exactly(&averaged))
+    pair.checked_div(Decimal::from(2))
+        .ok_or_else(|| failed("median", "a group of no size", span))
+        .map(Some)
+}
+
+/// The median absolute deviation of the multiset: the median of the
+/// distances from the median, exactly as `median` answers — no root is
+/// taken, so nothing leaves the exact range that the values were inside.
+/// Over nothing, `NONE` by `mean`'s rule; one value answers zero, the
+/// complete truth — a group of one is exactly its own middle.
+pub(crate) fn deviation(
+    held: &[Value],
+    runs: &std::collections::BTreeMap<Decimal, u64>,
+    span: Span,
+) -> Result<Value> {
+    let mut counted = runs.clone();
+    for value in held {
+        let entry = counted.entry(exact(value, span)?).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    let Some(middle) = middle_of(&counted, span)? else {
+        return Ok(Value::None);
+    };
+    let mut distances: std::collections::BTreeMap<Decimal, u64> = std::collections::BTreeMap::new();
+    for (value, many) in &counted {
+        let distance = value
+            .checked_sub(middle)
+            .map(|held| held.abs())
+            .ok_or_else(|| failed("mad", "a distance outside the exact range", span))?;
+        let entry = distances.entry(distance).or_insert(0);
+        *entry = entry.saturating_add(*many);
+    }
+    Ok(middle_of(&distances, span)?.map_or(Value::None, |held| exactly(&held)))
 }
 
 /// The values at several ranks of the same multiset, exactly — the value at
@@ -409,7 +449,13 @@ pub(crate) fn exact_ranks(
     let last = count(size.saturating_sub(1));
     let mut answered = Vec::with_capacity(ranks.len());
     for rank in ranks {
-        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        // The rank is settled to 0..=1 and `last` is a count, so the product
+        // is finite and in range; the floor makes it whole.
+        #[allow(
+            clippy::as_conversions,
+            clippy::cast_sign_loss,
+            clippy::cast_possible_truncation
+        )]
         let at = (rank * last).floor().max(0.0) as u64;
         let held = ranked(&counted, at.min(size.saturating_sub(1))).map_or(Value::None, exactly);
         answered.push(held);
@@ -501,7 +547,13 @@ pub(crate) fn histogram(held: &[f64], bins: u64) -> Value {
     let mut counted = vec![0_u64; bins];
     for value in held {
         let at = if width > 0.0 {
-            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            // The value lies between `low` and `high`, so the share is
+            // finite and in range; the floor makes it whole.
+            #[allow(
+                clippy::as_conversions,
+                clippy::cast_sign_loss,
+                clippy::cast_possible_truncation
+            )]
             let at = ((value - low) / width).floor().max(0.0) as usize;
             at.min(bins.saturating_sub(1))
         } else {
@@ -514,7 +566,7 @@ pub(crate) fn histogram(held: &[f64], bins: u64) -> Value {
         .enumerate()
         .map(|(at, many)| {
             let from = low + width * count(u64::try_from(at).unwrap_or(u64::MAX));
-            let to = if at + 1 == bins {
+            let to = if at.saturating_add(1) == bins {
                 high
             } else {
                 low + width * count(u64::try_from(at).unwrap_or(u64::MAX).saturating_add(1))

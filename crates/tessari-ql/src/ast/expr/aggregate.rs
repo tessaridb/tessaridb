@@ -186,6 +186,58 @@ pub enum Aggregate {
     /// `{ from, to, count }` with the last bin holding its top edge. Over
     /// nothing, `NONE` — no bins can be named without an extent.
     Histogram,
+    /// `changes(<value>, <instant>)` — how many times the samples, ordered by
+    /// the instant, differ from the sample before them.
+    ///
+    /// A window of one sample saw no changes, and zero is the complete truth
+    /// there — by `resets`' rule, unlike a rise, which is genuinely unknown.
+    Changes,
+    /// `irate(<value>, <instant>)` — the rise between the last two samples
+    /// over the seconds between them, a fall counting from zero as
+    /// `increase` counts it: the rate at the window's edge rather than across
+    /// it. `NONE` under two samples, or when the two share an instant.
+    Irate,
+    /// `idelta(<value>, <instant>)` — the last sample minus the one before
+    /// it, with no reset handling: `delta` read at the window's edge. `NONE`
+    /// under two samples.
+    Idelta,
+    /// `ts_of_first(<value>, <instant>)` — the instant of the earliest
+    /// sample. One sample answers its own instant.
+    TsOfFirst,
+    /// `ts_of_last(<value>, <instant>)` — the instant of the latest sample.
+    TsOfLast,
+    /// `ts_of_max(<value>, <instant>)` — the instant of the largest sample;
+    /// of equals, the earliest.
+    TsOfMax,
+    /// `ts_of_min(<value>, <instant>)` — the instant of the smallest sample;
+    /// of equals, the earliest.
+    TsOfMin,
+    /// `mad(<expr>)` — the median absolute deviation: the median of the
+    /// distances from the median, exactly as `median` answers, and for the
+    /// same reason — no root is taken, so no float is needed.
+    ///
+    /// Over nothing, `NONE` by `mean`'s rule; one value answers zero, which
+    /// is the complete truth: a group of one is exactly its own middle.
+    Mad,
+    /// `moving_sum(<value>, <instant>, <k>)` — the sum of the `k` most
+    /// recent samples in instant order: the moving total at the end of the
+    /// window. Fewer than `k` samples answer over all of them — a window
+    /// shorter than `k` is the whole window. Exact by `sum`'s rule, integer
+    /// when every sample is.
+    MovingSum,
+    /// `moving_mean(<value>, <instant>, <k>)` — the mean of the `k` most
+    /// recent samples, by `moving_sum`'s rule and `mean`'s: the total over
+    /// how many samples there actually were. Over nothing, `NONE`.
+    MovingMean,
+    /// `string_agg(<expr>, <sep>)` — the group's present strings joined by
+    /// `<sep>`, in the order the records arrived, as `collect` holds them.
+    ///
+    /// A present value that is not a string is refused rather than rendered;
+    /// the separator settles once and one that differs between records is
+    /// refused, by `top_k`'s rule. Over nothing, `""` — the empty join, by
+    /// `collect`'s rule that an answer every caller must patch is the wrong
+    /// answer.
+    StringAgg,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -254,6 +306,17 @@ impl Aggregate {
         Self::Entropy,
         Self::Gini,
         Self::Histogram,
+        Self::Changes,
+        Self::Irate,
+        Self::Idelta,
+        Self::TsOfFirst,
+        Self::TsOfLast,
+        Self::TsOfMax,
+        Self::TsOfMin,
+        Self::Mad,
+        Self::MovingSum,
+        Self::MovingMean,
+        Self::StringAgg,
     ];
 
     /// How the fold is written.
@@ -301,6 +364,17 @@ impl Aggregate {
             Self::Entropy => "entropy",
             Self::Gini => "gini",
             Self::Histogram => "histogram",
+            Self::Changes => "changes",
+            Self::Irate => "irate",
+            Self::Idelta => "idelta",
+            Self::TsOfFirst => "ts_of_first",
+            Self::TsOfLast => "ts_of_last",
+            Self::TsOfMax => "ts_of_max",
+            Self::TsOfMin => "ts_of_min",
+            Self::Mad => "mad",
+            Self::MovingSum => "moving_sum",
+            Self::MovingMean => "moving_mean",
+            Self::StringAgg => "string_agg",
         }
     }
 
@@ -344,7 +418,18 @@ impl Aggregate {
             | Self::DecayedCount
             | Self::TopK
             | Self::Collect
-            | Self::CountDistinct => Retention::WholeGroup,
+            | Self::CountDistinct
+            | Self::Changes
+            | Self::Irate
+            | Self::Idelta
+            | Self::TsOfFirst
+            | Self::TsOfLast
+            | Self::TsOfMax
+            | Self::TsOfMin
+            | Self::Mad
+            | Self::MovingSum
+            | Self::MovingMean
+            | Self::StringAgg => Retention::WholeGroup,
         }
     }
 
@@ -364,6 +449,15 @@ impl Aggregate {
                 | Self::DecayedMean
                 | Self::DecayedMax
                 | Self::DecayedCount
+                | Self::Changes
+                | Self::Irate
+                | Self::Idelta
+                | Self::TsOfFirst
+                | Self::TsOfLast
+                | Self::TsOfMax
+                | Self::TsOfMin
+                | Self::MovingSum
+                | Self::MovingMean
         )
     }
 
@@ -379,6 +473,8 @@ impl Aggregate {
                 | Self::DecayedMean
                 | Self::DecayedMax
                 | Self::DecayedCount
+                | Self::MovingSum
+                | Self::MovingMean
         )
     }
 
@@ -397,7 +493,16 @@ impl Aggregate {
             | Self::DecayedSum
             | Self::DecayedMean
             | Self::DecayedMax
-            | Self::DecayedCount => Some("`,` and the instant each value was observed at"),
+            | Self::DecayedCount
+            | Self::Changes
+            | Self::Irate
+            | Self::Idelta
+            | Self::TsOfFirst
+            | Self::TsOfLast
+            | Self::TsOfMax
+            | Self::TsOfMin
+            | Self::MovingSum
+            | Self::MovingMean => Some("`,` and the instant each value was observed at"),
             Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
             Self::TopK => Some("`,` and how many of the most common values to answer"),
             Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
@@ -407,6 +512,7 @@ impl Aggregate {
                 Some("`,` and the ranks, an array of numbers from 0 to 1")
             }
             Self::Histogram => Some("`,` and how many bins to answer"),
+            Self::StringAgg => Some("`,` and the separator to join the values with"),
             _ => None,
         }
     }

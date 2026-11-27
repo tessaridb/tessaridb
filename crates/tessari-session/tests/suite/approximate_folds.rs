@@ -325,7 +325,7 @@ fn the_quantile_folds_answer_at_statement_level() {
         };
         held.iter()
             .map(|value| match value {
-                Value::Number(Number::Integer(held)) => *held as f64,
+                Value::Number(Number::Integer(held)) => Number::Integer(*held).as_float().unwrap(),
                 Value::Number(Number::Float(held)) => *held,
                 other => other.to_string().parse::<f64>().unwrap(),
             })

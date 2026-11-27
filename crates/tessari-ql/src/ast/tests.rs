@@ -45,7 +45,18 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "exact_quantiles",
             "entropy",
             "gini",
-            "histogram"
+            "histogram",
+            "changes",
+            "irate",
+            "idelta",
+            "ts_of_first",
+            "ts_of_last",
+            "ts_of_max",
+            "ts_of_min",
+            "mad",
+            "moving_sum",
+            "moving_mean",
+            "string_agg"
         ]
     );
 }

@@ -30,7 +30,7 @@ impl Accumulator {
     /// form failed with no float to answer instead).
     pub(super) fn holding_state(&self) -> Option<Value> {
         match self {
-            Self::Middle { held, runs, span } => {
+            Self::Middle { held, runs, span } | Self::Deviation { held, runs, span } => {
                 let mut counted = runs.clone();
                 for value in held {
                     let entry = counted.entry(exact(value, *span).ok()?).or_insert(0);
@@ -46,6 +46,15 @@ impl Accumulator {
                 Some(Value::Array(sent))
             }
             Self::Every { held } => Some(Value::Array(held.clone())),
+            Self::Joined { held, sep, .. } => Some(Value::Array(vec![
+                sep.as_ref()
+                    .map_or(Value::None, |sep| Value::String(sep.clone())),
+                Value::Array(
+                    held.iter()
+                        .map(|text| Value::String(text.clone()))
+                        .collect(),
+                ),
+            ])),
             Self::Counter {
                 fold, held, parts, ..
             } if parts.is_empty() && !super::counter::reads_samples_only(*fold) => {
@@ -127,11 +136,13 @@ impl Accumulator {
             | Self::Shaped { .. }
             | Self::Merging { .. } => 0,
             Self::Middle { held, runs, .. }
+            | Self::Deviation { held, runs, .. }
             | Self::ExactQuantiles { held, runs, .. }
             | Self::Gini { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => parts
@@ -148,18 +159,45 @@ impl Accumulator {
     /// `Some(false)` for a state of another shape.
     pub(super) fn merge_holding(&mut self, state: &Value) -> Option<bool> {
         match self {
-            Self::Middle { runs, .. } => Some(runs_of(state).is_some_and(|more| {
-                for (value, many) in more {
-                    let entry = runs.entry(value).or_insert(0);
-                    *entry = entry.saturating_add(many);
-                }
-                true
-            })),
+            Self::Middle { runs, .. } | Self::Deviation { runs, .. } => {
+                Some(runs_of(state).is_some_and(|more| {
+                    for (value, many) in more {
+                        let entry = runs.entry(value).or_insert(0);
+                        *entry = entry.saturating_add(many);
+                    }
+                    true
+                }))
+            }
             Self::Every { held } => Some(match state {
                 Value::Array(more) => {
                     held.extend_from_slice(more);
                     true
                 }
+                _ => false,
+            }),
+            Self::Joined { held, sep, .. } => Some(match state {
+                Value::Array(pair) => match pair.as_slice() {
+                    [sent_sep, Value::Array(more)] => {
+                        match sent_sep {
+                            Value::String(sent) if sep.as_ref() != Some(sent) => {
+                                if sep.is_some() {
+                                    return Some(false);
+                                }
+                                *sep = Some(sent.clone());
+                            }
+                            Value::String(_) | Value::None => {}
+                            _ => return Some(false),
+                        }
+                        for value in more {
+                            let Value::String(text) = value else {
+                                return Some(false);
+                            };
+                            held.push(text.clone());
+                        }
+                        true
+                    }
+                    _ => false,
+                },
                 _ => false,
             }),
             Self::Counter {
@@ -195,9 +233,10 @@ impl Accumulator {
 }
 
 /// A summary as it travels: `["summary", how many, [first], [last], exact,
-/// float, saw a float, all integers]`; `None` when its exact form failed and
-/// no float decides the answer, which the walk must then refuse in its own
-/// words.
+/// float, saw a float, all integers, resets, the four regression sums, the
+/// sample before the last, the peak, the floor, changes]`; `None` when its
+/// exact form failed and no float decides the answer, which the walk must
+/// then refuse in its own words.
 fn summary_state(summary: &Summary) -> Option<Value> {
     let exact = match &summary.exact {
         Ok(total) => Value::Number(Number::Decimal(*total)),
@@ -221,6 +260,10 @@ fn summary_state(summary: &Summary) -> Option<Value> {
         Value::Number(Number::float(summary.regression.sum_xx)),
         Value::Number(Number::float(summary.regression.sum_y)),
         Value::Number(Number::float(summary.regression.sum_xy)),
+        summary.prev.as_ref().map_or(Value::None, sample),
+        sample(&summary.peak),
+        sample(&summary.floor),
+        Value::Number(Number::Integer(i64::try_from(summary.changes).ok()?)),
     ]))
 }
 
@@ -304,6 +347,10 @@ fn part_of(state: &Value) -> Option<Option<Part>> {
             Value::Number(sum_xx),
             Value::Number(sum_y),
             Value::Number(sum_xy),
+            prev,
+            peak,
+            floor,
+            Value::Number(Number::Integer(changes)),
         ] if tag == SUMMARY => {
             let exact = match exact {
                 Value::Number(Number::Decimal(total)) => Ok(*total),
@@ -311,12 +358,21 @@ fn part_of(state: &Value) -> Option<Option<Part>> {
                 Value::None if *saw_float => Err(INEXACT),
                 _ => return None,
             };
-            Some(Some(Part::Summary(Summary {
+            let first = sample_of(first)?;
+            let last = sample_of(last)?;
+            Some(Some(Part::Summary(Box::new(Summary {
                 counted: u64::try_from(*counted)
                     .ok()
                     .filter(|counted| *counted > 0)?,
-                first: sample_of(first)?,
-                last: sample_of(last)?,
+                prev: match prev {
+                    Value::None => None,
+                    held => Some(sample_of(held)?),
+                },
+                peak: sample_of(peak)?,
+                floor: sample_of(floor)?,
+                changes: u64::try_from(*changes).ok()?,
+                first,
+                last,
                 exact,
                 float: ExactSum::from_state(float)?,
                 saw_float: *saw_float,
@@ -328,7 +384,57 @@ fn part_of(state: &Value) -> Option<Option<Part>> {
                     sum_y: crate::aggregate::approximate(sum_y)?,
                     sum_xy: crate::aggregate::approximate(sum_xy)?,
                 },
-            })))
+            }))))
+        }
+        // A leader of the previous build sends thirteen elements, without the
+        // edge and extreme samples: it can only have folded a fold that build
+        // knows, so the fields they feed are never read from its part. The
+        // first sample stands in — an honest placeholder for a slot that
+        // cannot be asked for.
+        [
+            Value::String(tag),
+            Value::Number(Number::Integer(counted)),
+            first,
+            last,
+            exact,
+            float,
+            Value::Bool(saw_float),
+            Value::Bool(all_integer),
+            Value::Number(Number::Integer(resets)),
+            Value::Number(sum_x),
+            Value::Number(sum_xx),
+            Value::Number(sum_y),
+            Value::Number(sum_xy),
+        ] if tag == SUMMARY => {
+            let exact = match exact {
+                Value::Number(Number::Decimal(total)) => Ok(*total),
+                Value::None if *saw_float => Err(INEXACT),
+                _ => return None,
+            };
+            let first = sample_of(first)?;
+            let last = sample_of(last)?;
+            Some(Some(Part::Summary(Box::new(Summary {
+                counted: u64::try_from(*counted)
+                    .ok()
+                    .filter(|counted| *counted > 0)?,
+                prev: None,
+                peak: first.clone(),
+                floor: first.clone(),
+                changes: 0,
+                first,
+                last,
+                exact,
+                float: ExactSum::from_state(float)?,
+                saw_float: *saw_float,
+                all_integer: *all_integer,
+                resets: u64::try_from(*resets).ok()?,
+                regression: super::counter::Regression {
+                    sum_x: crate::aggregate::approximate(sum_x)?,
+                    sum_xx: crate::aggregate::approximate(sum_xx)?,
+                    sum_y: crate::aggregate::approximate(sum_y)?,
+                    sum_xy: crate::aggregate::approximate(sum_xy)?,
+                },
+            }))))
         }
         _ => None,
     }

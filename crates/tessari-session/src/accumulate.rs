@@ -158,6 +158,26 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// `mad`'s numbers — `median`'s holding, read twice at the finish: once
+    /// for the middle, once for the middle of the distances from it.
+    Deviation {
+        /// The numbers so far, unsorted, as `median` holds them.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `string_agg`'s strings and the separator they join with — `collect`'s
+    /// holding, rendered once at the finish.
+    Joined {
+        /// The strings so far, in arrival order.
+        held: Vec<String>,
+        /// The separator, once a record has offered it.
+        sep: Option<String>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// The counter folds: every sample and the instant it was observed at,
     /// ordered by the instant when the group finishes (ADR-0088 §5).
     Counter {
@@ -418,11 +438,30 @@ impl Accumulator {
             | Aggregate::DecayedSum
             | Aggregate::DecayedMean
             | Aggregate::DecayedMax
-            | Aggregate::DecayedCount => Self::Counter {
+            | Aggregate::DecayedCount
+            | Aggregate::Changes
+            | Aggregate::Irate
+            | Aggregate::Idelta
+            | Aggregate::TsOfFirst
+            | Aggregate::TsOfLast
+            | Aggregate::TsOfMax
+            | Aggregate::TsOfMin
+            | Aggregate::MovingSum
+            | Aggregate::MovingMean => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
                 parts: Vec::new(),
                 ahead: None,
+                span,
+            },
+            Aggregate::Mad => Self::Deviation {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::StringAgg => Self::Joined {
+                held: Vec::new(),
+                sep: None,
                 span,
             },
         }
@@ -507,6 +546,48 @@ impl Accumulator {
             Self::Middle { held, span, .. } => {
                 if summable(value, "median", *span)?.is_some() {
                     held.push(value.clone());
+                }
+            }
+            Self::Deviation { held, span, .. } => {
+                if summable(value, "mad", *span)?.is_some() {
+                    held.push(value.clone());
+                }
+            }
+            // Offered `[value, sep]`: the separator is the fold's second
+            // argument, settled once like `top_k`'s k; an absent value is
+            // passed over by `collect`'s rule, and a present one that is not
+            // a string is refused rather than rendered.
+            Self::Joined { held, sep, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(offered)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                let Value::String(offered) = offered else {
+                    return Err(failed(
+                        "string_agg",
+                        "a separator that is not a string",
+                        *span,
+                    ));
+                };
+                match sep {
+                    Some(kept) if kept != offered => {
+                        return Err(failed(
+                            "string_agg",
+                            "a separator that differs between records",
+                            *span,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => *sep = Some(offered.clone()),
+                }
+                match sample {
+                    Value::String(text) => held.push(text.clone()),
+                    held_value if present(held_value) => {
+                        return Err(failed("string_agg", held_value.type_name(), *span));
+                    }
+                    _ => {}
                 }
             }
             // Offered `[value, instant]`: a sample without a number is not a
@@ -866,10 +947,17 @@ impl Accumulator {
                 Ok(Value::Number(Number::float(answer)))
             }
             Self::Middle { held, runs, span } => middle(held, runs, *span),
+            Self::Deviation { held, runs, span } => arithmetic::deviation(held, runs, *span),
             // Over nothing this is the empty array, deliberately, and for the
             // reason `sum` answers zero: an answer every caller has to write
             // `?? []` after is the wrong answer.
             Self::Every { held } => Ok(Value::Array(held.clone())),
+            // Over nothing this is the empty string, by `collect`'s rule: the
+            // empty join is the join's identity, and an answer every caller
+            // has to write `?? ''` after is the wrong answer.
+            Self::Joined { held, sep, .. } => {
+                Ok(Value::String(held.join(sep.as_deref().unwrap_or_default())))
+            }
             Self::Unique { held, .. } => Ok(Value::Number(Number::Integer(
                 i64::try_from(held.len()).unwrap_or(i64::MAX),
             ))),
@@ -1028,11 +1116,13 @@ impl Accumulator {
             | Self::Shaped { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
             Self::Middle { held, runs, .. }
+            | Self::Deviation { held, runs, .. }
             | Self::ExactQuantiles { held, runs, .. }
             | Self::Gini { held, runs, .. } => held.len().saturating_add(runs.len()),
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),

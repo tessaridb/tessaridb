@@ -60,6 +60,17 @@ const EVERY: &[Aggregate] = &[
     Aggregate::Entropy,
     Aggregate::Gini,
     Aggregate::Histogram,
+    Aggregate::Changes,
+    Aggregate::Irate,
+    Aggregate::Idelta,
+    Aggregate::TsOfFirst,
+    Aggregate::TsOfLast,
+    Aggregate::TsOfMax,
+    Aggregate::TsOfMin,
+    Aggregate::Mad,
+    Aggregate::MovingSum,
+    Aggregate::MovingMean,
+    Aggregate::StringAgg,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real
