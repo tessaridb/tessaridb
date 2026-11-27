@@ -200,9 +200,14 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         // predicate for a box test to be a superset of; `geo::distance` is
         // served nearest-first instead, which is a different access path
         // entirely.
-        Function::GeoDisjoint | Function::GeoDistance | Function::GeoArea | Function::GeoCell => {
-            None
-        }
+        Function::GeoDisjoint
+        | Function::GeoDistance
+        | Function::GeoArea
+        | Function::GeoCell
+        | Function::GeoCellParent
+        | Function::GeoCellChildren
+        | Function::GeoCellNeighbours
+        | Function::GeoCellLevel => None,
         // Nothing else is a predicate over two shapes.
         Function::StringLen
         | Function::StringLower
@@ -275,6 +280,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ArrayRange
         | Function::RandUuid7
         | Function::UuidInstant
+        | Function::UuidVersion
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::DurationFromSecs
@@ -282,6 +288,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::CryptoSha256
         | Function::CryptoSha512
         | Function::TimeBucket
+        | Function::TimeFormat
         | Function::TypeOf
         | Function::StateOf
         | Function::StateFinish
@@ -305,6 +312,9 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorCosine
         | Function::VectorEuclidean
         | Function::VectorDot
+        | Function::VectorManhattan
+        | Function::VectorHamming
+        | Function::VectorJaccard
         | Function::SearchScore
         | Function::SearchExplain
         | Function::SearchRanks

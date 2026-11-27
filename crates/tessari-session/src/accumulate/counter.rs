@@ -44,8 +44,9 @@ pub(crate) type Sample = (Datetime, Number);
 pub(crate) enum Part {
     /// Samples held here or sent as they are.
     Samples(Vec<Sample>),
-    /// A leader's summary of its shard.
-    Summary(Summary),
+    /// A leader's summary of its shard, boxed: a summary is the size of a
+    /// dozen samples and this enum is held per part.
+    Summary(Box<Summary>),
 }
 
 /// A run of samples consecutive in time, as much of it as the answer needs.
@@ -68,6 +69,17 @@ pub(crate) struct Summary {
     /// How many falls between consecutive samples the run saw — the counter
     /// resets (`resets`, ADR-0088 §5's fall rule read as the answer itself).
     pub(crate) resets: u64,
+    /// The sample before the last, for the folds that read the window's edge
+    /// (`irate`, `idelta`); `None` for a run of one.
+    pub(crate) prev: Option<Sample>,
+    /// The sample holding the largest value, the earliest of equals
+    /// (`ts_of_max`).
+    pub(crate) peak: Sample,
+    /// The sample holding the smallest value, the earliest of equals
+    /// (`ts_of_min`).
+    pub(crate) floor: Sample,
+    /// How many consecutive samples differed — `changes`.
+    pub(crate) changes: u64,
     /// The least-squares sums, `x` in seconds since `first`'s instant
     /// (`deriv` / `predict_linear`). Floats by declaration, like every
     /// regression; they merge by origin-shifting, so parts answer what the
@@ -99,6 +111,10 @@ impl Summary {
             saw_float: matches!(sample.1, Number::Float(_)),
             all_integer: matches!(sample.1, Number::Integer(_)),
             resets: 0,
+            prev: None,
+            peak: sample.clone(),
+            floor: sample.clone(),
+            changes: 0,
             regression: Regression {
                 sum_x: 0.0,
                 sum_xx: 0.0,
@@ -138,6 +154,22 @@ impl Summary {
         if fell(before, after) {
             self.resets = self.resets.saturating_add(1);
         }
+        if !same(before, after) {
+            self.changes = self.changes.saturating_add(1);
+        }
+        self.changes = self.changes.saturating_add(next.changes);
+        // The sample before the joined run's last: the arriving run's own
+        // second-to-last when it has one, this run's last when it does not.
+        self.prev = match &next.prev {
+            Some(prev) => Some(prev.clone()),
+            None => Some(self.last.clone()),
+        };
+        if above(&next.peak.1, &self.peak.1) {
+            self.peak = next.peak.clone();
+        }
+        if above(&self.floor.1, &next.floor.1) {
+            self.floor = next.floor.clone();
+        }
         self.resets = self.resets.saturating_add(next.resets);
         let shift = elapsed_f64(self.first.0, next.first.0);
         let arriving = super::arithmetic::count(next.counted);
@@ -172,6 +204,24 @@ fn fell(before: &Number, after: &Number) -> bool {
     }
 }
 
+/// Whether one sample holds the same number as the other, under the same
+/// comparison `fell` makes — `changes` counts what this refuses.
+fn same(one: &Number, other: &Number) -> bool {
+    match (one.as_decimal(), other.as_decimal()) {
+        (Some(one), Some(other)) => one == other,
+        _ => approximate(one) == approximate(other),
+    }
+}
+
+/// Whether the first number is above the second, under the same comparison —
+/// the `ts_of_max` / `ts_of_min` tie rule keeps the earlier sample.
+fn above(one: &Number, other: &Number) -> bool {
+    match (one.as_decimal(), other.as_decimal()) {
+        (Some(one), Some(other)) => one > other,
+        _ => approximate(one).unwrap_or(f64::NAN) > approximate(other).unwrap_or(f64::NAN),
+    }
+}
+
 /// [`bridge_exact`] over the samples as floats.
 fn bridge_float(before: &Number, after: &Number) -> f64 {
     let before = approximate(before).unwrap_or(f64::NAN);
@@ -195,7 +245,7 @@ fn ordered(held: &[Sample], parts: &[Part]) -> Vec<Option<Summary>> {
         .iter()
         .map(|part| match part {
             Part::Samples(samples) => Summary::of(samples),
-            Part::Summary(summary) => Some(summary.clone()),
+            Part::Summary(summary) => Some(summary.as_ref().clone()),
         })
         .chain(std::iter::once(Summary::of(held)))
         .collect()
@@ -248,6 +298,10 @@ pub(crate) fn reads_samples_only(fold: Aggregate) -> bool {
             | Aggregate::DecayedMean
             | Aggregate::DecayedMax
             | Aggregate::DecayedCount
+            // The moving folds read the window's tail, which a summary does
+            // not carry.
+            | Aggregate::MovingSum
+            | Aggregate::MovingMean
     )
 }
 
@@ -298,6 +352,37 @@ pub(crate) fn finish(
             ));
         };
         return Ok(decayed(fold, &every, half_life));
+    }
+    if matches!(fold, Aggregate::MovingSum | Aggregate::MovingMean) {
+        if summarised(parts) {
+            return Err(failed(
+                name,
+                "parts sent as summaries rather than samples",
+                span,
+            ));
+        }
+        let mut every: Vec<Sample> = Vec::new();
+        for part in parts {
+            if let Part::Samples(samples) = part {
+                every.extend_from_slice(samples);
+            }
+        }
+        every.extend_from_slice(held);
+        every.sort_by_key(|(at, _)| *at);
+        if every.is_empty() {
+            return Ok(Value::None);
+        }
+        let Some(window) = ahead
+            .filter(|n| n.fract() == 0.0 && *n >= 1.0)
+            .and_then(|n| rust_decimal::prelude::ToPrimitive::to_usize(&n))
+        else {
+            return Err(failed(
+                name,
+                "a whole number of samples to move over, at least one",
+                span,
+            ));
+        };
+        return moving(fold, &every, window, span);
     }
     if fold == Aggregate::Downsample {
         if summarised(parts) {
@@ -370,8 +455,31 @@ fn answer(fold: Aggregate, summary: &Summary, ahead: Option<f64>, span: Span) ->
             i64::try_from(summary.resets).unwrap_or(i64::MAX),
         )));
     }
+    // `changes` for the same reason: one sample saw no changes.
+    if fold == Aggregate::Changes {
+        return Ok(Value::Number(Number::Integer(
+            i64::try_from(summary.changes).unwrap_or(i64::MAX),
+        )));
+    }
+    // The instant folds answer with one sample: every sample has an instant.
+    match fold {
+        Aggregate::TsOfFirst => return Ok(Value::Datetime(summary.first.0)),
+        Aggregate::TsOfLast => return Ok(Value::Datetime(summary.last.0)),
+        Aggregate::TsOfMax => return Ok(Value::Datetime(summary.peak.0)),
+        Aggregate::TsOfMin => return Ok(Value::Datetime(summary.floor.0)),
+        _ => {}
+    }
     if summary.counted < 2 {
         return Ok(Value::None);
+    }
+    // The edge folds read the last two samples alone; their kind decides the
+    // answer's kind, not the whole run's — an old float sample does not make
+    // an exact pair inexact.
+    if matches!(fold, Aggregate::Irate | Aggregate::Idelta) {
+        let Some(prev) = &summary.prev else {
+            return Ok(Value::None);
+        };
+        return edge(fold, prev, &summary.last, span);
     }
     if matches!(fold, Aggregate::Deriv | Aggregate::PredictLinear) {
         let counted = elapsed_count(summary.counted);
@@ -452,6 +560,121 @@ fn answer(fold: Aggregate, summary: &Summary, ahead: Option<f64>, span: Span) ->
         return Ok(Value::Number(Number::Integer(whole)));
     }
     Ok(Value::Number(Number::Decimal(answer.normalize())))
+}
+
+/// The moving answer over the sorted samples' last `window`: their sum, or
+/// their mean over how many there actually are. Exact by `sum`'s rule — a
+/// float sample turns it to floats, summed exactly and rounded once; an
+/// integer window answers an integer sum, as `sum` does.
+fn moving(fold: Aggregate, ordered: &[Sample], window: usize, span: Span) -> Result<Value> {
+    let name = fold.spelling();
+    let tail = &ordered[ordered.len().saturating_sub(window)..];
+    let mut exact: Running<Decimal> = Ok(Decimal::ZERO);
+    let mut float = ExactSum::default();
+    let mut saw_float = false;
+    let mut all_integer = true;
+    for (_, value) in tail {
+        if matches!(value, Number::Float(_)) {
+            saw_float = true;
+        }
+        if !matches!(value, Number::Integer(_)) {
+            all_integer = false;
+        }
+        if let (Ok(total), Some(held)) = (&mut exact, value.as_decimal()) {
+            *total = total
+                .checked_add(held)
+                .ok_or_else(|| failed(name, "a total outside the exact range", span))?;
+        }
+        float.add(approximate(value).unwrap_or(f64::NAN));
+    }
+    let taken = i64::try_from(tail.len()).unwrap_or(i64::MAX);
+    if saw_float {
+        let total = float.total().map_err(|why| failed(name, why, span))?;
+        let answered = if fold == Aggregate::MovingMean {
+            total / super::arithmetic::count(u64::try_from(tail.len()).unwrap_or(u64::MAX))
+        } else {
+            total
+        };
+        return Ok(Value::Number(Number::float(answered)));
+    }
+    let total = exact.map_err(|why| failed(name, why, span))?;
+    if fold == Aggregate::MovingMean {
+        let mean = total
+            .checked_div(Decimal::from(taken))
+            .ok_or_else(|| failed(name, "a window of no size", span))?;
+        return Ok(Value::Number(Number::Decimal(mean.normalize())));
+    }
+    if all_integer && let Ok(whole) = i64::try_from(total) {
+        return Ok(Value::Number(Number::Integer(whole)));
+    }
+    Ok(Value::Number(Number::Decimal(total.normalize())))
+}
+
+/// What `irate` / `idelta` answer over the window's last two samples: the
+/// rise — a fall counting from zero for `irate`, taken as it stands for
+/// `idelta` — and for `irate` the seconds between them under it. Exact when
+/// both samples are exact kinds, a float when either is not, by `delta`'s
+/// rule read at the edge.
+fn edge(fold: Aggregate, prev: &Sample, last: &Sample, span: Span) -> Result<Value> {
+    let name = fold.spelling();
+    // A float at the edge answers a float, by `delta`'s rule read at the
+    // edge: `as_decimal` would hold the float's exact expansion, and an
+    // exact-looking answer computed from a float is the kind crossing the
+    // value system refuses to make silently.
+    let exact_kinds = !matches!(prev.1, Number::Float(_)) && !matches!(last.1, Number::Float(_));
+    if exact_kinds && let (Some(before), Some(after)) = (prev.1.as_decimal(), last.1.as_decimal()) {
+        let rise = if fold == Aggregate::Irate && after < before {
+            after
+        } else {
+            after
+                .checked_sub(before)
+                .ok_or_else(|| failed(name, "a difference outside the exact range", span))?
+        };
+        // An integer answer only when both samples were integers — `sum`'s
+        // rule, so a decimal pair's whole difference still answers a decimal.
+        let whole = matches!(prev.1, Number::Integer(_)) && matches!(last.1, Number::Integer(_));
+        if fold == Aggregate::Idelta {
+            return Ok(number_of(rise, whole));
+        }
+        let Some(per) = elapsed(prev.0, last.0).filter(|per| *per > Decimal::ZERO) else {
+            return Ok(Value::None);
+        };
+        // A rate answers a decimal, as `rate` does: a per-second figure is
+        // not a count, whatever its value.
+        return rise.checked_div(per).map_or_else(
+            || Err(failed(name, "a rate outside the exact range", span)),
+            |rate| Ok(Value::Number(Number::Decimal(rate.normalize()))),
+        );
+    }
+    let (before, after) = (
+        approximate(&prev.1).unwrap_or(f64::NAN),
+        approximate(&last.1).unwrap_or(f64::NAN),
+    );
+    let rise = if fold == Aggregate::Irate && after < before {
+        after
+    } else {
+        after - before
+    };
+    if fold == Aggregate::Idelta {
+        return Ok(Value::Number(Number::float(rise)));
+    }
+    let Some(per) = elapsed(prev.0, last.0)
+        .and_then(|held| approximate(&Number::Decimal(held)))
+        .filter(|per| *per > 0.0)
+    else {
+        return Ok(Value::None);
+    };
+    Ok(Value::Number(Number::float(rise / per)))
+}
+
+/// An exact edge answer as the value system holds it: an integer when both
+/// samples were integers and the difference fits, a normalized decimal
+/// otherwise — `delta`'s rule.
+fn number_of(held: Decimal, whole: bool) -> Value {
+    if whole && let Ok(fits) = i64::try_from(held) {
+        return Value::Number(Number::Integer(fits));
+    }
+    Value::Number(Number::Decimal(held.normalize()))
 }
 
 /// A count as the float the regression arithmetic runs in.

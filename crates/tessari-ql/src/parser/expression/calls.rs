@@ -52,6 +52,8 @@ impl Parser<'_> {
                     over,
                     at: None,
                     ahead: None,
+                    distinct: false,
+                    filter: None,
                     span,
                 },
                 span,
@@ -84,6 +86,24 @@ impl Parser<'_> {
         } else {
             fold
         };
+        // `sum(DISTINCT x)`: each value folded once. `count` took its own
+        // path above; a fold that reads more than its value refuses the word
+        // rather than guess which argument it was about. A field named
+        // `distinct` alone, `sum(distinct)`, is still folded.
+        let distinct = if fold != Aggregate::Count
+            && self.peek_word("distinct")
+            && !self.follows_with(1, &Token::Punct(Punct::ParenClose))
+        {
+            if !fold.takes_distinct() {
+                return Err(self.error_here(
+                    "no `DISTINCT` here — this fold reads more than its value, and which                      argument the word was about would be a guess",
+                ));
+            }
+            self.advance();
+            true
+        } else {
+            false
+        };
         // `count(*)` folds over the records themselves; every other fold, and
         // `count(<expr>)`, folds over a value in each of them.
         let over = if self.eat_punct(Punct::Star) {
@@ -99,19 +119,36 @@ impl Parser<'_> {
         } else {
             None
         };
-        let ahead = if fold.takes_ahead() {
-            self.expect_punct(Punct::Comma, "`,` and the horizon in seconds")?;
+        let ahead = if let Some(third) = fold.third() {
+            self.expect_punct(Punct::Comma, third)?;
             Some(Box::new(self.condition()?))
         } else {
             None
         };
-        let end = self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
+        let mut end = self.expect_punct(Punct::ParenClose, "`)` after what is folded")?;
         if over.is_none() && fold != Aggregate::Count {
             return Err(Error::StarIsOnlyForCount {
                 fold: fold.spelling(),
                 span: start.to(end),
             });
         }
+        // `sum(x) FILTER (WHERE paid = true)`: the fold is offered only the
+        // records the condition holds for. `FILTER` is a name everywhere
+        // else, so only its name followed by `(` is taken here.
+        let filter = if self.peek_word("filter")
+            && self.follows_with(1, &Token::Punct(Punct::ParenOpen))
+        {
+            self.advance();
+            self.advance();
+            if !self.eat_keyword(crate::token::Keyword::Where) {
+                return Err(self.error_here("`WHERE` and the condition the fold is filtered by"));
+            }
+            let condition = Box::new(self.condition()?);
+            end = self.expect_punct(Punct::ParenClose, "`)` after the condition")?;
+            Some(condition)
+        } else {
+            None
+        };
         let span = start.to(end);
         Ok(Some(Expr {
             kind: ExprKind::Fold {
@@ -119,6 +156,8 @@ impl Parser<'_> {
                 over,
                 at,
                 ahead,
+                distinct,
+                filter,
                 span,
             },
             span,

@@ -31,8 +31,8 @@ use super::ShardMap;
 use crate::error::{Error, Result};
 pub use auto_split::{AutoSplit, AutoSplitSetting};
 pub use declarations::{
-    EdgeDeclaration, EdgeOrder, QueueDeclaration, SeriesDeclaration, VaultCustody,
-    VaultDeclaration, VectorDeclaration, ViewDeclaration,
+    EdgeDeclaration, EdgeOrder, KeepRawDeclaration, QueueDeclaration, SeriesDeclaration,
+    VaultCustody, VaultDeclaration, VectorDeclaration, ViewDeclaration,
 };
 pub use engine::{EngineField, EngineMember, UNIT_WEIGHT};
 pub use events::EventDeclaration;

@@ -112,14 +112,15 @@ impl Session<'_> {
             // the table used to give a new record.
             None => (
                 tessari_storage::TableExpiry {
-                    after: definition.expire.and_then(|held| held.after),
+                    after: definition.expire.clone().and_then(|held| held.after),
                     retired: true,
+                    condition: definition.expire.clone().and_then(|held| held.condition),
                 },
                 STILL_EXPIRE,
             ),
         };
         Catalog::new(transaction)
-            .set_expiry(table, declared)
+            .set_expiry(table, declared.clone())
             .await?;
         Ok(Outcome::Value(Value::Object(BTreeMap::from([
             ("expire".to_owned(), crate::info::described_expiry(declared)),
@@ -143,6 +144,7 @@ fn stored(expire: TableExpiry) -> tessari_storage::TableExpiry {
     tessari_storage::TableExpiry {
         after: expire.after,
         retired: false,
+        condition: expire.condition,
     }
 }
 
@@ -172,7 +174,7 @@ impl Session<'_> {
         let definition = Catalog::new(transaction).table(table).await?;
         if !definition
             .as_ref()
-            .and_then(|held| held.expire)
+            .and_then(|held| held.expire.clone())
             .is_some_and(|expire| !expire.retired)
         {
             return Err(Error::TableDoesNotExpire {

@@ -122,6 +122,153 @@ pub enum Aggregate {
     /// finishing it is `state::finish`'s job. A state of another fold is
     /// refused rather than mis-added.
     StateMerge,
+    /// `corr(<x>, <y>)` — the Pearson correlation of the pairs, as a float.
+    ///
+    /// Over fewer than two pairs, or where `x` never moves, `NONE`: a
+    /// correlation over one point, or over a constant, is not zero — it is
+    /// unasked, by `variance`'s rule.
+    Corr,
+    /// `covar(<x>, <y>)` — the **sample** covariance of the pairs, as a float,
+    /// dividing by `n − 1` for `variance`'s reason. The population form is
+    /// sayable: `covar(x, y) * (count(x) - 1) / count(x)`.
+    Covar,
+    /// `regr_slope(<x>, <y>)` — the least-squares slope of `y` over `x`, as a
+    /// float. `NONE` where `x` never moves: no line is named by a vertical
+    /// stack of points.
+    RegrSlope,
+    /// `regr_intercept(<x>, <y>)` — where that line crosses `x = 0`, as a
+    /// float. `NONE` wherever the slope is.
+    RegrIntercept,
+    /// `regr_r2(<x>, <y>)` — the coefficient of determination of that line,
+    /// the square of the correlation, as a float. `NONE` wherever the slope
+    /// is.
+    RegrR2,
+    /// `quantiles(<expr>, <ranks>)` — the values at several ranks in one
+    /// pass, each within [`Self::ApproxQuantile`]'s stated relative error,
+    /// as an array in the ranks' order.
+    ///
+    /// The ranks are one array argument — `[0.5, 0.9, 0.99]` — so one sketch
+    /// answers them all; a rank outside 0 to 1, or a second argument that is
+    /// not an array of numbers, is refused rather than guessed at. Over
+    /// nothing, `NONE`, by `approx_quantile`'s rule.
+    Quantiles,
+    /// `exact_quantiles(<expr>, <ranks>)` — the values at several ranks,
+    /// exactly: the value at index ⌊rank × (n − 1)⌋ of the sorted values,
+    /// the definition the sketch estimates.
+    ///
+    /// Exact means holding the group, by `median`'s rule and under the same
+    /// memory ceiling; `quantiles` is the fold whose space does not grow.
+    ExactQuantiles,
+    /// `skewness(<expr>)` — the adjusted Fisher–Pearson coefficient, the
+    /// sample form: √(n(n−1))/(n−2) · m₃/m₂^1.5, as a float. Symmetric data
+    /// answers near zero. `NONE` under three values, where the sample form
+    /// divides by zero — by `variance`'s rule that an answer the data cannot
+    /// give is not zero.
+    Skewness,
+    /// `kurtosis(<expr>)` — the sample **excess** kurtosis (Fisher's): a
+    /// normal shape answers near zero, a heavy-tailed one above it, a flat
+    /// one below. `NONE` under four values, by `skewness`'s rule.
+    Kurtosis,
+    /// `entropy(<expr>)` — the Shannon entropy of the group's values in
+    /// bits: how much a value drawn from the group says, `−Σ p·log₂ p` over
+    /// the distinct values' frequencies. One value throughout answers zero.
+    /// Holds every distinct value like `count(DISTINCT …)` and refuses past
+    /// the same ceiling. Over nothing, `NONE`.
+    Entropy,
+    /// `gini(<expr>)` — the Gini coefficient of the group's numbers: zero is
+    /// perfect equality, one is one value holding everything. Defined over
+    /// numbers of none or more — a negative is refused rather than folded
+    /// into a number that would mean nothing — and `NONE` over nothing or
+    /// when every value is zero, where equality has no denominator.
+    Gini,
+    /// `histogram(<expr>, <bins>)` — the group's numbers in `<bins>`
+    /// equal-width bins from the smallest to the largest, as an array of
+    /// `{ from, to, count }` with the last bin holding its top edge. Over
+    /// nothing, `NONE` — no bins can be named without an extent.
+    Histogram,
+    /// `changes(<value>, <instant>)` — how many times the samples, ordered by
+    /// the instant, differ from the sample before them.
+    ///
+    /// A window of one sample saw no changes, and zero is the complete truth
+    /// there — by `resets`' rule, unlike a rise, which is genuinely unknown.
+    Changes,
+    /// `irate(<value>, <instant>)` — the rise between the last two samples
+    /// over the seconds between them, a fall counting from zero as
+    /// `increase` counts it: the rate at the window's edge rather than across
+    /// it. `NONE` under two samples, or when the two share an instant.
+    Irate,
+    /// `idelta(<value>, <instant>)` — the last sample minus the one before
+    /// it, with no reset handling: `delta` read at the window's edge. `NONE`
+    /// under two samples.
+    Idelta,
+    /// `ts_of_first(<value>, <instant>)` — the instant of the earliest
+    /// sample. One sample answers its own instant.
+    TsOfFirst,
+    /// `ts_of_last(<value>, <instant>)` — the instant of the latest sample.
+    TsOfLast,
+    /// `ts_of_max(<value>, <instant>)` — the instant of the largest sample;
+    /// of equals, the earliest.
+    TsOfMax,
+    /// `ts_of_min(<value>, <instant>)` — the instant of the smallest sample;
+    /// of equals, the earliest.
+    TsOfMin,
+    /// `mad(<expr>)` — the median absolute deviation: the median of the
+    /// distances from the median, exactly as `median` answers, and for the
+    /// same reason — no root is taken, so no float is needed.
+    ///
+    /// Over nothing, `NONE` by `mean`'s rule; one value answers zero, which
+    /// is the complete truth: a group of one is exactly its own middle.
+    Mad,
+    /// `moving_sum(<value>, <instant>, <k>)` — the sum of the `k` most
+    /// recent samples in instant order: the moving total at the end of the
+    /// window. Fewer than `k` samples answer over all of them — a window
+    /// shorter than `k` is the whole window. Exact by `sum`'s rule, integer
+    /// when every sample is.
+    MovingSum,
+    /// `moving_mean(<value>, <instant>, <k>)` — the mean of the `k` most
+    /// recent samples, by `moving_sum`'s rule and `mean`'s: the total over
+    /// how many samples there actually were. Over nothing, `NONE`.
+    MovingMean,
+    /// `string_agg(<expr>, <sep>)` — the group's present strings joined by
+    /// `<sep>`, in the order the records arrived, as `collect` holds them.
+    ///
+    /// A present value that is not a string is refused rather than rendered;
+    /// the separator settles once and one that differs between records is
+    /// refused, by `top_k`'s rule. Over nothing, `""` — the empty join, by
+    /// `collect`'s rule that an answer every caller must patch is the wrong
+    /// answer.
+    StringAgg,
+    /// `window_funnel(<instant>, <window>, <conditions>)` — the longest
+    /// prefix of the conditions a chain of the group's events meets in order,
+    /// the whole chain inside `<window>` seconds of its first event. The
+    /// conditions are one array argument, each a boolean over the record;
+    /// the answer is a whole number from 0 to the conditions' count.
+    WindowFunnel,
+    /// `sequence_match(<instant>, <pattern>, <conditions>)` — whether the
+    /// group holds a chain of events meeting the conditions in the pattern's
+    /// order, each gap between neighbours inside the pattern's bounds: `1`
+    /// or `0`. The pattern is text like `'(1)(<1800)(2)'` — condition 1,
+    /// then condition 2 no more than 1800 seconds later; `(>n)` asks for at
+    /// least `n` seconds. A chain with gaps is not writable as nested calls,
+    /// which is why the pattern is a mini-language and not more arguments.
+    SequenceMatch,
+    /// `sequence_count(<instant>, <pattern>, <conditions>)` — how many
+    /// non-overlapping chains the group holds, found earliest first.
+    SequenceCount,
+    /// `retention(<conditions>)` — per group, one `1` or `0` per condition:
+    /// whether the anchor (the first condition) was met at all, and for each
+    /// later condition whether it was met by a group the anchor was met in.
+    /// The answer is an array of integers the conditions' length.
+    Retention,
+    /// `sum_by(<value>, <key>)` — the sum of the values under each key, as
+    /// an object mapping every key the group wrote to its own `sum`. A key
+    /// is a string, refused otherwise; a record with no value writes no key.
+    SumBy,
+    /// `min_by(<value>, <key>)` — the smallest value under each key, as an
+    /// object, in the value system's order — `min`'s reading per key.
+    MinBy,
+    /// `max_by(<value>, <key>)` — the largest, on [`Self::MinBy`]'s terms.
+    MaxBy,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -178,6 +325,36 @@ impl Aggregate {
         Self::ApproxQuantile,
         Self::CountDistinct,
         Self::StateMerge,
+        Self::Corr,
+        Self::Covar,
+        Self::RegrSlope,
+        Self::RegrIntercept,
+        Self::RegrR2,
+        Self::Quantiles,
+        Self::ExactQuantiles,
+        Self::Skewness,
+        Self::Kurtosis,
+        Self::Entropy,
+        Self::Gini,
+        Self::Histogram,
+        Self::Changes,
+        Self::Irate,
+        Self::Idelta,
+        Self::TsOfFirst,
+        Self::TsOfLast,
+        Self::TsOfMax,
+        Self::TsOfMin,
+        Self::Mad,
+        Self::MovingSum,
+        Self::MovingMean,
+        Self::StringAgg,
+        Self::WindowFunnel,
+        Self::SequenceMatch,
+        Self::SequenceCount,
+        Self::Retention,
+        Self::SumBy,
+        Self::MinBy,
+        Self::MaxBy,
     ];
 
     /// How the fold is written.
@@ -213,6 +390,36 @@ impl Aggregate {
             // Namespaced like a function; the parser recognises the three
             // tokens rather than one word.
             Self::StateMerge => "state::merge",
+            Self::Corr => "corr",
+            Self::Covar => "covar",
+            Self::RegrSlope => "regr_slope",
+            Self::RegrIntercept => "regr_intercept",
+            Self::RegrR2 => "regr_r2",
+            Self::Quantiles => "quantiles",
+            Self::ExactQuantiles => "exact_quantiles",
+            Self::Skewness => "skewness",
+            Self::Kurtosis => "kurtosis",
+            Self::Entropy => "entropy",
+            Self::Gini => "gini",
+            Self::Histogram => "histogram",
+            Self::Changes => "changes",
+            Self::Irate => "irate",
+            Self::Idelta => "idelta",
+            Self::TsOfFirst => "ts_of_first",
+            Self::TsOfLast => "ts_of_last",
+            Self::TsOfMax => "ts_of_max",
+            Self::TsOfMin => "ts_of_min",
+            Self::Mad => "mad",
+            Self::MovingSum => "moving_sum",
+            Self::MovingMean => "moving_mean",
+            Self::StringAgg => "string_agg",
+            Self::WindowFunnel => "window_funnel",
+            Self::SequenceMatch => "sequence_match",
+            Self::SequenceCount => "sequence_count",
+            Self::Retention => "retention",
+            Self::SumBy => "sum_by",
+            Self::MinBy => "min_by",
+            Self::MaxBy => "max_by",
         }
     }
 
@@ -235,6 +442,13 @@ impl Aggregate {
             | Self::ApproxDistinct
             | Self::ApproxQuantile => Retention::Constant,
             Self::StateMerge => Retention::Constant,
+            Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
+                Retention::Constant
+            }
+            Self::Quantiles | Self::Skewness | Self::Kurtosis => Retention::Constant,
+            Self::ExactQuantiles | Self::Entropy | Self::Gini | Self::Histogram => {
+                Retention::WholeGroup
+            }
             Self::Median
             | Self::Increase
             | Self::Rate
@@ -249,7 +463,25 @@ impl Aggregate {
             | Self::DecayedCount
             | Self::TopK
             | Self::Collect
-            | Self::CountDistinct => Retention::WholeGroup,
+            | Self::CountDistinct
+            | Self::Changes
+            | Self::Irate
+            | Self::Idelta
+            | Self::TsOfFirst
+            | Self::TsOfLast
+            | Self::TsOfMax
+            | Self::TsOfMin
+            | Self::Mad
+            | Self::MovingSum
+            | Self::MovingMean
+            | Self::StringAgg
+            | Self::WindowFunnel
+            | Self::SequenceMatch
+            | Self::SequenceCount
+            | Self::Retention
+            | Self::SumBy
+            | Self::MinBy
+            | Self::MaxBy => Retention::WholeGroup,
         }
     }
 
@@ -269,22 +501,43 @@ impl Aggregate {
                 | Self::DecayedMean
                 | Self::DecayedMax
                 | Self::DecayedCount
+                | Self::Changes
+                | Self::Irate
+                | Self::Idelta
+                | Self::TsOfFirst
+                | Self::TsOfLast
+                | Self::TsOfMax
+                | Self::TsOfMin
+                | Self::MovingSum
+                | Self::MovingMean
         )
     }
 
-    /// Whether the fold takes a third argument: the horizon, in seconds past
-    /// the last sample, that `predict_linear` projects to.
+    /// What the fold's third argument is, for a fold that takes one — the
+    /// horizon a projection or a decay is asked at, or the conditions a
+    /// sequence fold reads; `None` for a fold with no third argument.
+    #[must_use]
+    pub const fn third(self) -> Option<&'static str> {
+        match self {
+            Self::PredictLinear
+            | Self::Downsample
+            | Self::DecayedSum
+            | Self::DecayedMean
+            | Self::DecayedMax
+            | Self::DecayedCount
+            | Self::MovingSum
+            | Self::MovingMean => Some("`,` and the horizon in seconds"),
+            Self::WindowFunnel | Self::SequenceMatch | Self::SequenceCount => {
+                Some("`,` and the conditions, an array of booleans")
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the fold takes a third argument — [`Self::third`] naming it.
     #[must_use]
     pub const fn takes_ahead(self) -> bool {
-        matches!(
-            self,
-            Self::PredictLinear
-                | Self::Downsample
-                | Self::DecayedSum
-                | Self::DecayedMean
-                | Self::DecayedMax
-                | Self::DecayedCount
-        )
+        self.third().is_some()
     }
 
     /// What the fold's second argument is, for a fold that takes one: the
@@ -302,17 +555,68 @@ impl Aggregate {
             | Self::DecayedSum
             | Self::DecayedMean
             | Self::DecayedMax
-            | Self::DecayedCount => Some("`,` and the instant each value was observed at"),
+            | Self::DecayedCount
+            | Self::Changes
+            | Self::Irate
+            | Self::Idelta
+            | Self::TsOfFirst
+            | Self::TsOfLast
+            | Self::TsOfMax
+            | Self::TsOfMin
+            | Self::MovingSum
+            | Self::MovingMean => Some("`,` and the instant each value was observed at"),
             Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
             Self::TopK => Some("`,` and how many of the most common values to answer"),
+            Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
+                Some("`,` and the value paired with it")
+            }
+            Self::Quantiles | Self::ExactQuantiles => {
+                Some("`,` and the ranks, an array of numbers from 0 to 1")
+            }
+            Self::Histogram => Some("`,` and how many bins to answer"),
+            Self::StringAgg => Some("`,` and the separator to join the values with"),
+            Self::WindowFunnel => Some("`,` and the window in seconds"),
+            Self::SumBy | Self::MinBy | Self::MaxBy => {
+                Some("`,` and the key each value is folded under")
+            }
+            Self::SequenceMatch | Self::SequenceCount => {
+                Some("`,` and the pattern, like '(1)(<1800)(2)'")
+            }
             _ => None,
         }
+    }
+
+    /// Whether `DISTINCT` is a question this fold asks — `sum(DISTINCT x)`
+    /// folds each value once, and the folds that read an instant, a rank or
+    /// a horizon beside their value refuse it by name rather than guess
+    /// which argument it was about.
+    #[must_use]
+    pub const fn takes_distinct(self) -> bool {
+        matches!(
+            self,
+            Self::Sum
+                | Self::Mean
+                | Self::Min
+                | Self::Max
+                | Self::Median
+                | Self::Variance
+                | Self::Stddev
+                | Self::Collect
+                | Self::Mad
+                | Self::Skewness
+                | Self::Kurtosis
+                | Self::Gini
+                | Self::StringAgg
+        )
     }
 
     /// Whether the fold's answer is an estimate rather than exact.
     #[must_use]
     pub const fn estimates(self) -> bool {
-        matches!(self, Self::ApproxDistinct | Self::ApproxQuantile)
+        matches!(
+            self,
+            Self::ApproxDistinct | Self::ApproxQuantile | Self::Quantiles
+        )
     }
 
     /// The fold a word spells, if it spells one.

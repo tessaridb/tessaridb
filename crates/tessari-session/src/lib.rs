@@ -63,6 +63,7 @@ mod kv;
 mod materialized;
 pub use feed_scan::{Scanned, scan_feeds};
 pub use materialized::{Maintained, maintain_views};
+pub use rollup::age::{Rolled, roll_up_aged_series};
 mod noticed;
 mod outcome;
 mod param;

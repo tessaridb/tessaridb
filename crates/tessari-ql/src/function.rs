@@ -222,6 +222,18 @@ pub enum Function {
     VectorEuclidean,
     /// `vector::dot(a, b)` — the inner product.
     VectorDot,
+    /// `vector::manhattan(a, b)` — the sum of the absolute differences, the
+    /// distance a grid allows.
+    VectorManhattan,
+    /// `vector::hamming(a, b)` — how many positions hold different numbers,
+    /// as an integer: the one distance in the family that is exactly
+    /// countable.
+    VectorHamming,
+    /// `vector::jaccard(a, b)` — the Jaccard distance between the supports:
+    /// one minus the share of positions where both are nonzero out of the
+    /// positions where either is. Two zero vectors share no support and
+    /// answer no distance, by the zero-vector rule `vector::cosine` keeps.
+    VectorJaccard,
     /// `search::score(field, 'query')` — how well this record answers the query,
     /// measured against the collection the field's search index summarises.
     SearchScore,
@@ -248,6 +260,13 @@ pub enum Function {
     SearchSnippet,
     /// `time::bucket(instant, 1h)` — the start of the window that instant is in.
     TimeBucket,
+    /// `time::format(instant, pattern)` — the instant as text, in UTC (the
+    /// accessors' rule), by a strftime-shaped pattern: `%Y %m %d %H %M %S`
+    /// zero-padded, `%f` the nanosecond remainder as nine digits, `%%` a
+    /// literal percent; any other character copies verbatim. A token outside
+    /// the set is refused rather than copied — a `%q` passed through would
+    /// read as a formatted answer.
+    TimeFormat,
     /// `math::log2(number)` — the base-2 logarithm, `NONE` at zero or below.
     MathLog2,
     /// `math::log10(number)` — the base-10 logarithm, `NONE` at zero or below.
@@ -335,6 +354,11 @@ pub enum Function {
     /// `uuid::instant(id)` — the instant a version-7 identifier was minted
     /// at, to the millisecond; `NONE` for any other version.
     UuidInstant,
+    /// `uuid::version(id)` — which version the identifier's own nibble says
+    /// it is, as an integer. A fact about the bytes rather than a validity
+    /// judgement, so any version answers; `NONE` for a value that is no
+    /// UUID, by [`Function::UuidInstant`]'s rule.
+    UuidVersion,
     /// `series::outliers_tukey(values)` — the indices whose numbers fall
     /// outside the Tukey fences, 1.5 interquartile ranges past either
     /// quartile.
@@ -382,6 +406,20 @@ pub enum Function {
     /// position at that level of subdivision, as a polygon: a key to group by
     /// that draws itself.
     GeoCell,
+    /// `geo::cell_parent(position, level)` — the cell one level coarser
+    /// holding the same position, drawn the same way; the root has no parent
+    /// and answers `NONE`.
+    GeoCellParent,
+    /// `geo::cell_children(position, level)` — the four cells the named cell
+    /// divides into, in curve order; the finest level answers `NONE`.
+    GeoCellChildren,
+    /// `geo::cell_neighbours(position, level)` — the cells sharing an edge
+    /// with the named cell, each drawn the same way.
+    GeoCellNeighbours,
+    /// `geo::cell_level(cell)` — which level of subdivision a polygon drawn
+    /// by `geo::cell` belongs to; a polygon that is no cell of the grid is
+    /// refused rather than assigned the nearest level.
+    GeoCellLevel,
     /// `crypto::sha256(text)` — the SHA-256 digest of the text's UTF-8 bytes,
     /// as sixty-four lowercase hexadecimal characters.
     ///

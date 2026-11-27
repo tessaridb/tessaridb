@@ -1019,7 +1019,7 @@ fn a_condition_travels_to_the_leader_with_the_askers_visibility() {
 }
 
 /// A follower of the whole database, recorded as served that way.
-fn follower_of_the_database(leader: &Store) -> Store {
+pub(crate) fn follower_of_the_database(leader: &Store) -> Store {
     let over = Reach::Database(NamespaceId::new(1), DatabaseId::new(1));
     let follower = store();
     let mut node = signed_in(leader, "node");

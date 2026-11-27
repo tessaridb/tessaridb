@@ -70,6 +70,84 @@ impl RollupFold {
     }
 }
 
+/// One `COMPUTE fold(field) AS name`, as a catalog value.
+pub(crate) fn compute_to_value(compute: &RollupCompute) -> Value {
+    let mut fields = BTreeMap::from([
+        (FIELD_NAME.to_owned(), Value::String(compute.name.clone())),
+        (
+            FIELD_FOLD.to_owned(),
+            Value::String(compute.fold.spelling().to_owned()),
+        ),
+    ]);
+    if let Some(of) = &compute.of {
+        fields.insert(FIELD_OF.to_owned(), Value::String(of.clone()));
+    }
+    if let Some(rank) = &compute.rank {
+        fields.insert(FIELD_RANK.to_owned(), Value::Number(rank.clone()));
+    }
+    Value::Object(fields)
+}
+
+/// One compute read back, or the malformed catalog entry it was not.
+pub(crate) fn compute_from_value(value: &Value) -> Result<RollupCompute> {
+    let fields = object(value, "rollup compute")?;
+    let name = match fields.get(FIELD_NAME) {
+        Some(Value::String(name)) => name.clone(),
+        other => {
+            return Err(Error::CatalogMalformed {
+                entity: "rollup compute",
+                field: FIELD_NAME,
+                found: other.map_or("none", tessari_types::Value::type_name),
+            });
+        }
+    };
+    let fold = match fields.get(FIELD_FOLD) {
+        Some(Value::String(fold)) => fold.clone(),
+        other => {
+            return Err(Error::CatalogMalformed {
+                entity: "rollup compute",
+                field: FIELD_FOLD,
+                found: other.map_or("none", tessari_types::Value::type_name),
+            });
+        }
+    };
+    let Some(fold) = RollupFold::parse(&fold) else {
+        return Err(Error::CatalogMalformed {
+            entity: "rollup compute",
+            field: FIELD_FOLD,
+            found: "a fold a rollup does not keep",
+        });
+    };
+    let of = match fields.get(FIELD_OF) {
+        None => None,
+        Some(Value::String(of)) => Some(of.clone()),
+        Some(other) => {
+            return Err(Error::CatalogMalformed {
+                entity: "rollup compute",
+                field: FIELD_OF,
+                found: other.type_name(),
+            });
+        }
+    };
+    let rank = match fields.get(FIELD_RANK) {
+        None => None,
+        Some(Value::Number(rank)) => Some(rank.clone()),
+        Some(other) => {
+            return Err(Error::CatalogMalformed {
+                entity: "rollup compute",
+                field: FIELD_RANK,
+                found: other.type_name(),
+            });
+        }
+    };
+    Ok(RollupCompute {
+        name,
+        fold,
+        of,
+        rank,
+    })
+}
+
 /// One `COMPUTE fold(field) AS name`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RollupCompute {
@@ -100,26 +178,7 @@ impl RollupDeclaration {
     /// The value written inside the source table's catalog entry.
     #[must_use]
     pub fn to_value(&self) -> Value {
-        let computes = self
-            .computes
-            .iter()
-            .map(|compute| {
-                let mut fields = BTreeMap::from([
-                    (FIELD_NAME.to_owned(), Value::String(compute.name.clone())),
-                    (
-                        FIELD_FOLD.to_owned(),
-                        Value::String(compute.fold.spelling().to_owned()),
-                    ),
-                ]);
-                if let Some(of) = &compute.of {
-                    fields.insert(FIELD_OF.to_owned(), Value::String(of.clone()));
-                }
-                if let Some(rank) = &compute.rank {
-                    fields.insert(FIELD_RANK.to_owned(), Value::Number(rank.clone()));
-                }
-                Value::Object(fields)
-            })
-            .collect();
+        let computes = self.computes.iter().map(compute_to_value).collect();
         let mut fields = BTreeMap::from([
             (FIELD_TABLE.to_owned(), number(self.table.get())),
             (FIELD_WINDOW.to_owned(), Value::Duration(self.window)),
@@ -149,25 +208,7 @@ impl RollupDeclaration {
         };
         let mut computes = Vec::with_capacity(held.len());
         for compute in held {
-            let fields = object(compute, ENTITY)?;
-            let Some(name) = text(fields, FIELD_NAME)? else {
-                return Err(malformed(FIELD_NAME, None));
-            };
-            let fold = text(fields, FIELD_FOLD)?
-                .as_deref()
-                .and_then(RollupFold::parse)
-                .ok_or_else(|| malformed(FIELD_FOLD, fields.get(FIELD_FOLD)))?;
-            let rank = match fields.get(FIELD_RANK) {
-                None => None,
-                Some(Value::Number(rank)) => Some(rank.clone()),
-                Some(other) => return Err(malformed(FIELD_RANK, Some(other))),
-            };
-            computes.push(RollupCompute {
-                name,
-                fold,
-                of: text(fields, FIELD_OF)?,
-                rank,
-            });
+            computes.push(compute_from_value(compute)?);
         }
         Ok(Self {
             table,

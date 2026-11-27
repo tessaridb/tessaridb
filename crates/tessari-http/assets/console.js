@@ -1651,8 +1651,8 @@
     const held6 = one2.about["statistics"];
     const statistics = Array.isArray(held6) ? held6.map((each) => {
       if (typeof each !== "object" || each === null || !("field" in each)) return "";
-      const row = each;
-      return `${String(row["field"])}: ${String(row["entries"] ?? "?")} held, ${String(row["distinct"] ?? "?")} distinct, age ${String(row["age"] ?? "?")}`;
+      const row2 = each;
+      return `${String(row2["field"])}: ${String(row2["entries"] ?? "?")} held, ${String(row2["distinct"] ?? "?")} distinct, age ${String(row2["age"] ?? "?")}`;
     }).filter((line) => line !== "").join("\n") : "";
     facts("table-facts", {
       identity: one2.about["identity"] ?? "",

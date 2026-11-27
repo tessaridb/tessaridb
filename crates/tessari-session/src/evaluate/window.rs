@@ -206,6 +206,91 @@ fn in_partition(
         WindowFunction::FirstValue(_) => {
             answered.resize(count, argument(members.first(), 0));
         }
+        WindowFunction::NthValue(_, n) => {
+            // The frame is the partition's start to the current record when
+            // the window is ordered, and the whole partition when it is not —
+            // `first_value`'s and `last_value`'s rule, read at a position.
+            let at = usize::try_from(*n).ok().and_then(|n| n.checked_sub(1));
+            for position in 0..count {
+                let within = if ordered {
+                    position
+                } else {
+                    count.saturating_sub(1)
+                };
+                let member = at.filter(|at| *at <= within).and_then(|at| members.get(at));
+                answered.push(argument(member, 0));
+            }
+        }
+        WindowFunction::Ntile(buckets) => {
+            // SQL's spread: the first `count mod n` buckets take one record
+            // more, so no two buckets differ by more than one.
+            let buckets = usize::try_from(*buckets).unwrap_or(usize::MAX).max(1);
+            let size = count.checked_div(buckets).unwrap_or(0);
+            let extra = count.checked_rem(buckets).unwrap_or(0);
+            let wide = size.saturating_add(1).saturating_mul(extra);
+            for position in 0..count {
+                let bucket = if position < wide {
+                    position.checked_div(size.saturating_add(1)).unwrap_or(0)
+                } else if size == 0 {
+                    position
+                } else {
+                    extra.saturating_add(
+                        position.saturating_sub(wide).checked_div(size).unwrap_or(0),
+                    )
+                };
+                answered.push(whole(bucket.saturating_add(1)));
+            }
+        }
+        WindowFunction::PercentRank | WindowFunction::CumeDist => {
+            // Both read the same tie groups `rank` does: the rank a group
+            // starts at, and the place the group ends.
+            let mut previous: Option<&[Value]> = None;
+            let mut starts: Vec<usize> = Vec::with_capacity(count);
+            let mut rank: usize = 1;
+            for (position, (keys, _)) in (1..).zip(members) {
+                if previous.is_some_and(|held| {
+                    crate::shape::by_keys(held, keys, &window.order) != core::cmp::Ordering::Equal
+                }) {
+                    rank = position;
+                }
+                previous = Some(keys.as_slice());
+                starts.push(rank);
+            }
+            // Each tie group's end, in one backward pass: a record's group
+            // ends where the next record's group starts.
+            let mut ends: Vec<usize> = vec![1; count];
+            for position in (0..count).rev() {
+                let end = if starts.get(position.saturating_add(1)) == starts.get(position)
+                    && position.saturating_add(1) < count
+                {
+                    ends.get(position.saturating_add(1)).copied().unwrap_or(1)
+                } else {
+                    position.saturating_add(1)
+                };
+                if let Some(slot) = ends.get_mut(position) {
+                    *slot = end;
+                }
+            }
+            for position in 0..count {
+                let value = if matches!(window.function, WindowFunction::PercentRank) {
+                    // (rank − 1)/(count − 1); a partition of one is at 0, by
+                    // the standard's own rule.
+                    let below = starts.get(position).copied().unwrap_or(1).saturating_sub(1);
+                    let span = count.saturating_sub(1);
+                    if span == 0 {
+                        0.0
+                    } else {
+                        crate::accumulate::count(u64::try_from(below).unwrap_or(u64::MAX))
+                            / crate::accumulate::count(u64::try_from(span).unwrap_or(u64::MAX))
+                    }
+                } else {
+                    crate::accumulate::count(
+                        u64::try_from(ends.get(position).copied().unwrap_or(1)).unwrap_or(u64::MAX),
+                    ) / crate::accumulate::count(u64::try_from(count).unwrap_or(u64::MAX))
+                };
+                answered.push(Value::Number(Number::float(value)));
+            }
+        }
         WindowFunction::LastValue(_) => {
             for position in 0..count {
                 let last = if ordered {

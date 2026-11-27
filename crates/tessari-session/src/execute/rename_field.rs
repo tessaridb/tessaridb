@@ -137,6 +137,11 @@ fn reads(assertion: &Assertion, field: &str) -> bool {
             ..
         } => rooted(path, field),
         Assertion::Compare { .. } => false,
+        Assertion::Of { route, against, .. } => {
+            route.to_string().split('.').next() == Some(field)
+                || matches!(against, tessari_types::Operand::Field(route)
+                    if route.to_string().split('.').next() == Some(field))
+        }
         Assertion::All(parts) | Assertion::Any(parts) => {
             parts.iter().any(|part| reads(part, field))
         }

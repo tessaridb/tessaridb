@@ -42,8 +42,9 @@ pub use select::{
     Timeout, Using, Version, WindowFunction, Windowed,
 };
 pub use statement::{
-    BackupForm, ConflictAction, ConflictUpdate, OnConflict, Ratio, RollupCompute, RowGuard,
-    SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, StatementKind, VaultKey,
+    BackupForm, ConflictAction, ConflictUpdate, KeepRaw, OnConflict, Ratio, RollupCompute,
+    RowGuard, SearchAsk, SearchCosts, SearchField, SearchMember, SearchOperator, StatementKind,
+    VaultKey,
 };
 pub use structure::{
     Container, FieldExpiryCondition, ListEnd, Presence, RangeEnd, ScoreCompare, ScoreRange,

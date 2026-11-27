@@ -178,11 +178,15 @@ pub enum TableChange {
 
 /// What a table's expiry declaration says (ADR-0122 A1): that its records may
 /// carry an expiry, and the lifetime a new record gets when it states none.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TableExpiry {
     /// `AFTER 7d` — the lifetime a created record gets, from its commit.
     /// `None` is a bare `EXPIRE`: records expire only when a write says so.
     pub after: Option<tessari_types::Duration>,
+    /// `WHERE status = 'done'` — the record expires only while this holds of
+    /// it, lowered where it is written into the closed form the store checks.
+    /// `None` is the unconditional form every table had before.
+    pub condition: Option<tessari_types::Assertion>,
 }
 
 /// When a table's shards are split and merged without being asked

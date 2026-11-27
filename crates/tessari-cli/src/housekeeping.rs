@@ -143,6 +143,26 @@ pub(crate) async fn keep_house(db: std::sync::Arc<Db>, stop: tokio_util::sync::C
                 )) => tracing::debug!("feeds' initial scans run where the range is led"),
                 Err(why) => tracing::warn!(error = %why, "this node cannot advance feeds' initial scans"),
             }
+            // Aged raw windows of a series that declared KEEP RAW, rolled
+            // where the range is led as ordinary committed transactions — a
+            // failover mid-pass leaves the raw window or the rolled row,
+            // never half of one, and a node that may not write refuses at
+            // the commit, which stays quiet like the materialized pass.
+            match tessari_session::roll_up_aged_series(db.store()).await {
+                Ok(done) if done.windows > 0 => tracing::info!(
+                    series = done.series,
+                    windows = done.windows,
+                    points = done.points,
+                    "rolled aged series windows"
+                ),
+                Ok(_) => {}
+                Err(tessari_session::Error::Store(
+                    tessari_storage::Error::LeaseSpent { .. }
+                    | tessari_storage::Error::NoLeadershipYet
+                    | tessari_storage::Error::WriteIsElsewhere { .. },
+                )) => tracing::debug!("aged windows are rolled where the range is led"),
+                Err(why) => tracing::warn!(error = %why, "this node cannot roll aged series windows"),
+            }
             // A series' records past its floor, removed as one range per table
             // (G044 C11). This node's own storage work: every node runs it over
             // its own copy, leader or not, because the answer already changed

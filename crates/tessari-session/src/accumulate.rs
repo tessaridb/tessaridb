@@ -74,6 +74,7 @@ pub(crate) mod exact;
 mod holding;
 mod partial;
 mod quantile;
+mod sequence;
 mod sketch;
 use rust_decimal::Decimal;
 #[cfg(test)]
@@ -83,7 +84,10 @@ use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
-pub(crate) use arithmetic::{Moments, add_exact, add_float, count, failed, middle, summable};
+pub(crate) use arithmetic::{
+    Moments, Moments2, add_exact, add_float, count, exact_ranks, failed, gini, histogram, middle,
+    summable,
+};
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
 
@@ -155,6 +159,65 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// `mad`'s numbers — `median`'s holding, read twice at the finish: once
+    /// for the middle, once for the middle of the distances from it.
+    Deviation {
+        /// The numbers so far, unsorted, as `median` holds them.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `DISTINCT` before a fold's value: every value already seen, by the
+    /// store's own `=`, and the fold only the first sighting reaches. The
+    /// set is what makes the fold's memory grow, which is why a distinct
+    /// fold is refused the constant-space exemption `count(DISTINCT …)`
+    /// keeps no exemption from either.
+    Distinctly {
+        /// Every value already offered.
+        seen: std::collections::BTreeSet<Value>,
+        /// The fold the first sighting reaches.
+        inner: Box<Accumulator>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// The keyed folds' pairs — each present value with the key it is folded
+    /// under — held whole and grouped at the finish, where each key's own
+    /// accumulator answers exactly what the plain fold would.
+    Keyed {
+        /// Which of the three the answer is read as.
+        fold: Aggregate,
+        /// The pairs, in arrival order.
+        held: Vec<(String, Value)>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// The product-analytics folds' events — the instant and the conditions
+    /// each record met — held whole because no running form knows the
+    /// longest chain before the last event has arrived.
+    Events {
+        /// Which of the four the answer is read as.
+        fold: Aggregate,
+        /// The events, in arrival order; sorted by instant at the finish.
+        held: Vec<sequence::Event>,
+        /// The window `window_funnel` keeps a chain inside, settled once.
+        window: Option<f64>,
+        /// The pattern the sequence folds read, settled and parsed once.
+        pattern: Option<Vec<sequence::Step>>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `string_agg`'s strings and the separator they join with — `collect`'s
+    /// holding, rendered once at the finish.
+    Joined {
+        /// The strings so far, in arrival order.
+        held: Vec<String>,
+        /// The separator, once a record has offered it.
+        sep: Option<String>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// The counter folds: every sample and the instant it was observed at,
     /// ordered by the instant when the group finishes (ADR-0088 §5).
     Counter {
@@ -209,6 +272,76 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// The paired folds' running sums — `corr`, `covar` and the three
+    /// `regr_` folds all answer from one bivariate update, in space that
+    /// does not grow with the group.
+    Paired {
+        /// Which of the five the answer is read as.
+        fold: Aggregate,
+        /// The sums so far.
+        running: Moments2,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `quantiles`' sketch and the ranks it answers at — one sketch, several
+    /// ranks, each answer under the same ADR-0122 C3 bound `approx_quantile`
+    /// carries.
+    Quantiles {
+        /// The sketch so far.
+        sketch: quantile::Quantile,
+        /// The ranks, once a record has offered them.
+        ranks: Option<Vec<f64>>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `exact_quantiles`' multiset and ranks — `median`'s holding, answered
+    /// at ⌊rank × (n − 1)⌋, the definition the sketch estimates.
+    ExactQuantiles {
+        /// The values so far.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// The ranks, once a record has offered them.
+        ranks: Option<Vec<f64>>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// The shape folds' central moments — `skewness` and `kurtosis` answer
+    /// from one running update, in space that does not grow with the group.
+    Shaped {
+        /// Which of the two the answer is read as.
+        fold: Aggregate,
+        /// The moments so far.
+        running: arithmetic::Shape,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `entropy`'s frequencies — how many records held each distinct value,
+    /// bounded like `count(DISTINCT …)` because the answer reads them all.
+    Frequencies {
+        /// How many records held each value.
+        held: std::collections::BTreeMap<Value, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `gini`'s multiset — `median`'s holding, read in order at the finish.
+    Gini {
+        /// The values so far.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `histogram`'s numbers and the bin count it answers at.
+    Binned {
+        /// The numbers so far.
+        held: Vec<f64>,
+        /// The bin count, once a record has offered it.
+        asked: Option<u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `state::merge`'s one accumulator: the states offered all name one fold,
     /// and this is that fold's accumulator, merged into (G102 S11).
     Merging {
@@ -230,10 +363,24 @@ impl Accumulator {
     /// producer of occurrences yields folds; anything else would still occupy
     /// its position, which is the property that matters.
     pub(crate) fn of(kind: &ExprKind) -> Self {
-        let ExprKind::Fold { fold, span, .. } = kind else {
+        let ExprKind::Fold {
+            fold,
+            distinct,
+            span,
+            ..
+        } = kind
+        else {
             return Self::Count { seen: 0 };
         };
-        Self::for_aggregate(*fold, *span)
+        let inner = Self::for_aggregate(*fold, *span);
+        if *distinct {
+            return Self::Distinctly {
+                seen: std::collections::BTreeSet::new(),
+                inner: Box::new(inner),
+                span: *span,
+            };
+        }
+        inner
     }
 
     /// The accumulator for one aggregate.
@@ -296,6 +443,45 @@ impl Accumulator {
                 span,
             },
             Aggregate::StateMerge => Self::Merging { held: None, span },
+            Aggregate::Corr
+            | Aggregate::Covar
+            | Aggregate::RegrSlope
+            | Aggregate::RegrIntercept
+            | Aggregate::RegrR2 => Self::Paired {
+                fold: aggregate,
+                running: Moments2::default(),
+                span,
+            },
+            Aggregate::Quantiles => Self::Quantiles {
+                sketch: quantile::Quantile::default(),
+                ranks: None,
+                span,
+            },
+            Aggregate::ExactQuantiles => Self::ExactQuantiles {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                ranks: None,
+                span,
+            },
+            Aggregate::Skewness | Aggregate::Kurtosis => Self::Shaped {
+                fold: aggregate,
+                running: arithmetic::Shape::default(),
+                span,
+            },
+            Aggregate::Entropy => Self::Frequencies {
+                held: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::Gini => Self::Gini {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::Histogram => Self::Binned {
+                held: Vec::new(),
+                asked: None,
+                span,
+            },
             Aggregate::Increase
             | Aggregate::Rate
             | Aggregate::Delta
@@ -306,11 +492,45 @@ impl Accumulator {
             | Aggregate::DecayedSum
             | Aggregate::DecayedMean
             | Aggregate::DecayedMax
-            | Aggregate::DecayedCount => Self::Counter {
+            | Aggregate::DecayedCount
+            | Aggregate::Changes
+            | Aggregate::Irate
+            | Aggregate::Idelta
+            | Aggregate::TsOfFirst
+            | Aggregate::TsOfLast
+            | Aggregate::TsOfMax
+            | Aggregate::TsOfMin
+            | Aggregate::MovingSum
+            | Aggregate::MovingMean => Self::Counter {
                 fold: aggregate,
                 held: Vec::new(),
                 parts: Vec::new(),
                 ahead: None,
+                span,
+            },
+            Aggregate::Mad => Self::Deviation {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::StringAgg => Self::Joined {
+                held: Vec::new(),
+                sep: None,
+                span,
+            },
+            Aggregate::SumBy | Aggregate::MinBy | Aggregate::MaxBy => Self::Keyed {
+                fold: aggregate,
+                held: Vec::new(),
+                span,
+            },
+            Aggregate::WindowFunnel
+            | Aggregate::SequenceMatch
+            | Aggregate::SequenceCount
+            | Aggregate::Retention => Self::Events {
+                fold: aggregate,
+                held: Vec::new(),
+                window: None,
+                pattern: None,
                 span,
             },
         }
@@ -324,6 +544,28 @@ impl Accumulator {
     /// that is present and is not a number.
     pub(crate) fn offer(&mut self, value: &Value) -> Result<()> {
         match self {
+            // The dedupe key is the value itself, or the value half of the
+            // packed pair a fold with a second argument is offered — the
+            // rank or separator is the statement's, not the record's, and
+            // deduplicating on it would deduplicate nothing.
+            Self::Distinctly { seen, inner, span } => {
+                let key = match (inner.second_argument(), value) {
+                    (true, Value::Array(pair)) => pair.first().cloned().unwrap_or(Value::None),
+                    _ => value.clone(),
+                };
+                if !present(&key) {
+                    return inner.offer(value);
+                }
+                if seen.insert(key) {
+                    if seen.len() > COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                    return inner.offer(value);
+                }
+            }
             Self::Count { seen } => {
                 if present(value) {
                     *seen = seen.saturating_add(1);
@@ -397,6 +639,138 @@ impl Accumulator {
                     held.push(value.clone());
                 }
             }
+            Self::Deviation { held, span, .. } => {
+                if summable(value, "mad", *span)?.is_some() {
+                    held.push(value.clone());
+                }
+            }
+            // Offered `[value, key]`: an absent value writes no key, by
+            // `sum`'s rule; a key that is not a string is refused rather than
+            // rendered, because two values that render alike would silently
+            // share one.
+            Self::Keyed { fold, held, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(key)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                // No key, no entry — an absent label writes nothing, by the
+                // same rule an absent value does; a PRESENT key of the wrong
+                // kind is a mistake in the statement.
+                if !present(key) || !present(sample) {
+                    return Ok(());
+                }
+                let Value::String(key) = key else {
+                    return Err(failed(fold.spelling(), "a key that is not a string", *span));
+                };
+                if *fold == Aggregate::SumBy && summable(sample, fold.spelling(), *span)?.is_none()
+                {
+                    return Ok(());
+                }
+                held.push((key.clone(), sample.clone()));
+            }
+            // Offered `[instant, extra, conditions]` — the window for the
+            // funnel, the pattern for the sequence folds — or the conditions
+            // alone for `retention`. The extra settles once and refuses
+            // drift, by `top_k`'s rule; a condition that is no boolean is
+            // refused rather than read as one.
+            Self::Events {
+                fold,
+                held,
+                window,
+                pattern,
+                span,
+            } => {
+                let Some((at, met, extra)) = sequence::event_of(*fold, value, *span)? else {
+                    return Ok(());
+                };
+                match (*fold, extra) {
+                    (Aggregate::WindowFunnel, Some(offered)) => {
+                        let Some(seconds) = match &offered {
+                            Value::Number(number) => crate::aggregate::approximate(number),
+                            _ => None,
+                        }
+                        .filter(|seconds| *seconds > 0.0) else {
+                            return Err(failed(
+                                fold.spelling(),
+                                "a window in seconds, more than nothing",
+                                *span,
+                            ));
+                        };
+                        match window {
+                            Some(kept) if *kept != seconds => {
+                                return Err(failed(
+                                    fold.spelling(),
+                                    "a window that differs between records",
+                                    *span,
+                                ));
+                            }
+                            Some(_) => {}
+                            None => *window = Some(seconds),
+                        }
+                    }
+                    (Aggregate::SequenceMatch | Aggregate::SequenceCount, Some(offered)) => {
+                        let Value::String(text) = &offered else {
+                            return Err(failed(
+                                fold.spelling(),
+                                "a pattern written as text, like '(1)(<1800)(2)'",
+                                *span,
+                            ));
+                        };
+                        match pattern {
+                            Some(kept) if kept != &sequence::pattern_of(text, *span)? => {
+                                return Err(failed(
+                                    fold.spelling(),
+                                    "a pattern that differs between records",
+                                    *span,
+                                ));
+                            }
+                            Some(_) => {}
+                            None => *pattern = Some(sequence::pattern_of(text, *span)?),
+                        }
+                    }
+                    _ => {}
+                }
+                held.push((at, met));
+            }
+            // Offered `[value, sep]`: the separator is the fold's second
+            // argument, settled once like `top_k`'s k; an absent value is
+            // passed over by `collect`'s rule, and a present one that is not
+            // a string is refused rather than rendered.
+            Self::Joined { held, sep, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(offered)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                let Value::String(offered) = offered else {
+                    return Err(failed(
+                        "string_agg",
+                        "a separator that is not a string",
+                        *span,
+                    ));
+                };
+                match sep {
+                    Some(kept) if kept != offered => {
+                        return Err(failed(
+                            "string_agg",
+                            "a separator that differs between records",
+                            *span,
+                        ));
+                    }
+                    Some(_) => {}
+                    None => *sep = Some(offered.clone()),
+                }
+                match sample {
+                    Value::String(text) => held.push(text.clone()),
+                    held_value if present(held_value) => {
+                        return Err(failed("string_agg", held_value.type_name(), *span));
+                    }
+                    _ => {}
+                }
+            }
             // Offered `[value, instant]`: a sample without a number is not a
             // sample, and one without an instant has no place in the order.
             Self::Counter {
@@ -437,6 +811,31 @@ impl Accumulator {
                 if present(value) {
                     held.push(value.clone());
                 }
+            }
+            // Offered `[x, y]`: a pair missing a side is not a pair and is
+            // passed over; a side of the wrong kind is refused naming the
+            // fold — `increase`'s two rules, one per side.
+            Self::Paired {
+                fold,
+                running,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (
+                    summable(x, fold.spelling(), *span)?,
+                    summable(y, fold.spelling(), *span)?,
+                ) else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (approximate(x), approximate(y)) else {
+                    return Err(failed(fold.spelling(), "a number no float can hold", *span));
+                };
+                running.offer(x, y);
             }
             Self::Unique { held, span } => {
                 if present(value) && held.insert(value.clone()) && held.len() > COUNT_DISTINCT_MOST
@@ -489,6 +888,104 @@ impl Accumulator {
                             failed("approx_quantile", "a number no float can hold", *span)
                         })?;
                     sketch.offer(held);
+                }
+            }
+            // Offered `[value, ranks]`: the ranks are the fold's second
+            // argument, an array settled once like the quantile's rank.
+            Self::Quantiles {
+                sketch,
+                ranks,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(asked)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_ranks(ranks, asked, *span)?;
+                if let Some(number) = summable(sample, "quantiles", *span)? {
+                    let held = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| failed("quantiles", "a number no float can hold", *span))?;
+                    sketch.offer(held);
+                }
+            }
+            // Offered `[value, ranks]` like `quantiles`, held like `median`.
+            Self::ExactQuantiles {
+                held,
+                runs: _,
+                ranks,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(asked)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_ranks(ranks, asked, *span)?;
+                if summable(sample, "exact_quantiles", *span)?.is_some() {
+                    held.push(sample.clone());
+                }
+            }
+            Self::Shaped {
+                fold,
+                running,
+                span,
+            } => {
+                if let Some(number) = summable(value, fold.spelling(), *span)? {
+                    let held = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| {
+                            failed(fold.spelling(), "a number no float can hold", *span)
+                        })?;
+                    running.offer(held);
+                }
+            }
+            Self::Frequencies { held, span } => {
+                if present(value) {
+                    let entry = held.entry(value.clone()).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    if held.len() > tessari_ql::COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: tessari_ql::COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                }
+            }
+            Self::Gini { held, span, .. } => {
+                if let Some(number) = summable(value, "gini", *span)? {
+                    let below_zero = number
+                        .as_decimal()
+                        .map(|held| held < Decimal::ZERO)
+                        .unwrap_or_else(|| approximate(number).is_some_and(|held| held < 0.0));
+                    if below_zero {
+                        return Err(failed(
+                            "gini",
+                            "a value below zero, which equality has no meaning over",
+                            *span,
+                        ));
+                    }
+                    held.push(value.clone());
+                }
+            }
+            // Offered `[value, bins]`: the bin count is the fold's second
+            // argument, settled once like `top_k`'s k.
+            Self::Binned { held, asked, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(wanted)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_k(asked, wanted, *span)?;
+                if let Some(number) = summable(sample, "histogram", *span)? {
+                    let held_number = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| failed("histogram", "a number no float can hold", *span))?;
+                    held.push(held_number);
                 }
             }
             // A state of one fold, merged into that fold's accumulator. The
@@ -545,6 +1042,23 @@ impl Accumulator {
         Ok(())
     }
 
+    /// Whether this accumulator's fold is offered a packed pair — the value
+    /// with its second argument beside it.
+    fn second_argument(&self) -> bool {
+        match self {
+            Self::Counter { fold, .. } => fold.second().is_some(),
+            Self::Paired { .. }
+            | Self::Quantile { .. }
+            | Self::Quantiles { .. }
+            | Self::ExactQuantiles { .. }
+            | Self::Common { .. }
+            | Self::Binned { .. }
+            | Self::Joined { .. }
+            | Self::Keyed { .. } => true,
+            _ => false,
+        }
+    }
+
     /// What this fold answers for its group.
     ///
     /// Borrows rather than consumes so the caller can walk its accumulators by
@@ -557,6 +1071,7 @@ impl Accumulator {
     /// discarded unread.
     pub(crate) fn finish(&self) -> Result<Value> {
         match self {
+            Self::Distinctly { inner, .. } => inner.finish(),
             Self::Count { seen } => Ok(Value::Number(Number::Integer(
                 i64::try_from(*seen).unwrap_or(i64::MAX),
             ))),
@@ -631,10 +1146,88 @@ impl Accumulator {
                 Ok(Value::Number(Number::float(answer)))
             }
             Self::Middle { held, runs, span } => middle(held, runs, *span),
+            Self::Deviation { held, runs, span } => arithmetic::deviation(held, runs, *span),
             // Over nothing this is the empty array, deliberately, and for the
             // reason `sum` answers zero: an answer every caller has to write
             // `?? []` after is the wrong answer.
             Self::Every { held } => Ok(Value::Array(held.clone())),
+            // Over nothing this is the empty string, by `collect`'s rule: the
+            // empty join is the join's identity, and an answer every caller
+            // has to write `?? ''` after is the wrong answer.
+            Self::Joined { held, sep, .. } => {
+                Ok(Value::String(held.join(sep.as_deref().unwrap_or_default())))
+            }
+            Self::Keyed { fold, held, span } => {
+                let inner = match fold {
+                    Aggregate::SumBy => Aggregate::Sum,
+                    Aggregate::MinBy => Aggregate::Min,
+                    _ => Aggregate::Max,
+                };
+                let mut by_key: std::collections::BTreeMap<String, Accumulator> =
+                    std::collections::BTreeMap::new();
+                for (key, value) in held {
+                    let entry = by_key
+                        .entry(key.clone())
+                        .or_insert_with(|| Accumulator::for_aggregate(inner, *span));
+                    entry.offer(value)?;
+                }
+                if by_key.len() > COUNT_DISTINCT_MOST {
+                    return Err(Error::DistinctTooMany {
+                        most: COUNT_DISTINCT_MOST,
+                        span: *span,
+                    });
+                }
+                let mut answered = std::collections::BTreeMap::new();
+                for (key, entry) in &by_key {
+                    answered.insert(key.clone(), entry.finish()?);
+                }
+                Ok(Value::Object(answered))
+            }
+            Self::Events {
+                fold,
+                held,
+                window,
+                pattern,
+                span,
+            } => match fold {
+                Aggregate::Retention => Ok(sequence::retained(held)),
+                Aggregate::WindowFunnel => {
+                    let Some(window) = window else {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a window in seconds, more than nothing",
+                            *span,
+                        ));
+                    };
+                    Ok(sequence::funnel(held, *window))
+                }
+                Aggregate::SequenceMatch | Aggregate::SequenceCount => {
+                    let Some(pattern) = pattern else {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a pattern written as text, like '(1)(<1800)(2)'",
+                            *span,
+                        ));
+                    };
+                    // A step naming a condition the statement never wrote is
+                    // refused rather than never met — the two read the same in
+                    // the answer and only one of them is true.
+                    let width = held.first().map_or(0, |(_, met)| met.len());
+                    if pattern.iter().any(|step| step.cond >= width) {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a pattern naming a condition the call does not write",
+                            *span,
+                        ));
+                    }
+                    if matches!(fold, Aggregate::SequenceMatch) {
+                        Ok(sequence::matched(held, pattern))
+                    } else {
+                        Ok(sequence::counted(held, pattern))
+                    }
+                }
+                _ => unreachable!("only a sequence fold holds events"),
+            },
             Self::Unique { held, .. } => Ok(Value::Number(Number::Integer(
                 i64::try_from(held.len()).unwrap_or(i64::MAX),
             ))),
@@ -646,6 +1239,75 @@ impl Accumulator {
                 span,
             } => counter::finish(*fold, held, parts, *ahead, *span),
             Self::Distinct { sketch } => Ok(sketch.answer()),
+            Self::Paired {
+                fold,
+                running,
+                span,
+            } => {
+                let answered = match fold {
+                    Aggregate::Corr => running.correlation(),
+                    Aggregate::Covar => running.covariance(),
+                    Aggregate::RegrSlope => running.slope(),
+                    Aggregate::RegrIntercept => running.intercept(),
+                    Aggregate::RegrR2 => running.r2(),
+                    _ => unreachable!("only a paired fold holds a Moments2"),
+                }
+                .map_err(|reason| failed(fold.spelling(), reason, *span))?;
+                Ok(answered.map_or(Value::None, |held| Value::Number(Number::float(held))))
+            }
+            Self::Quantiles { sketch, ranks, .. } => {
+                Ok(ranks.as_ref().map_or(Value::None, |ranks| {
+                    Value::Array(ranks.iter().map(|rank| sketch.answer(*rank)).collect())
+                }))
+            }
+            Self::ExactQuantiles {
+                held,
+                runs,
+                ranks,
+                span,
+            } => match ranks {
+                None => Ok(Value::None),
+                Some(ranks) => exact_ranks(held, runs, ranks, *span),
+            },
+            Self::Shaped { fold, running, .. } => {
+                let answered = match fold {
+                    Aggregate::Skewness => running.skewness(),
+                    Aggregate::Kurtosis => running.kurtosis(),
+                    _ => unreachable!("only a shape fold holds a Shape"),
+                };
+                Ok(answered.map_or(Value::None, |held| Value::Number(Number::float(held))))
+            }
+            Self::Frequencies { held, .. } => {
+                let total: u64 = held
+                    .values()
+                    .fold(0, |total, many| total.saturating_add(*many));
+                if total == 0 {
+                    return Ok(Value::None);
+                }
+                let total = count(total);
+                let bits: f64 = held
+                    .values()
+                    .map(|many| {
+                        let share = count(*many) / total;
+                        -share * share.log2()
+                    })
+                    .sum();
+                Ok(Value::Number(Number::float(bits)))
+            }
+            Self::Gini { held, runs, span } => gini(held, runs, *span),
+            Self::Binned { held, asked, span } => {
+                let Some(asked) = *asked else {
+                    return Err(failed(
+                        "histogram",
+                        "a whole number of bins to answer",
+                        *span,
+                    ));
+                };
+                if asked == 0 {
+                    return Err(failed("histogram", "at least one bin", *span));
+                }
+                Ok(histogram(held, asked))
+            }
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
@@ -715,13 +1377,25 @@ impl Accumulator {
             | Self::Sum { .. }
             | Self::Mean { .. }
             | Self::Spread { .. }
+            | Self::Paired { .. }
             // A sketch holds no value it was offered; what it keeps is
             // bounded by its own size (ADR-0122 C2, C3), not by the group's.
             | Self::Distinct { .. }
-            | Self::Quantile { .. } => 0,
+            | Self::Quantile { .. }
+            | Self::Quantiles { .. }
+            | Self::Shaped { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
-            Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Middle { held, runs, .. }
+            | Self::Deviation { held, runs, .. }
+            | Self::ExactQuantiles { held, runs, .. }
+            | Self::Gini { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Frequencies { held, .. } => held.len(),
+            Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Distinctly { seen, inner, .. } => seen.len().saturating_add(inner.held()),
+            Self::Keyed { held, .. } => held.len(),
+            Self::Events { held, .. } => held.len(),
+            Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
             Self::Counter { held, parts, .. } => held.len().saturating_add(parts.len()),
@@ -753,6 +1427,37 @@ fn settle_k(held: &mut Option<u64>, asked: &Value, span: Span) -> Result<()> {
         Some(kept) if *kept != wanted => Err(failed(
             "top_k",
             "a count that differs between records",
+            span,
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *held = Some(wanted);
+            Ok(())
+        }
+    }
+}
+
+/// The ranks a `quantiles` fold answers at, read like `top_k`'s k: an array
+/// of numbers, each from 0 to 1, settled once and refused when a later
+/// record offers a different set.
+fn settle_ranks(held: &mut Option<Vec<f64>>, asked: &Value, span: Span) -> Result<()> {
+    let Value::Array(asked) = asked else {
+        return Err(failed("quantiles", "ranks that are not an array", span));
+    };
+    let mut wanted = Vec::with_capacity(asked.len());
+    for rank in asked {
+        let Value::Number(rank) = rank else {
+            return Err(failed("quantiles", "a rank that is not a number", span));
+        };
+        let Some(rank) = approximate(rank).filter(|rank| (0.0..=1.0).contains(rank)) else {
+            return Err(failed("quantiles", "a rank outside 0 to 1", span));
+        };
+        wanted.push(rank);
+    }
+    match held {
+        Some(kept) if *kept != wanted => Err(failed(
+            "quantiles",
+            "ranks that differ between records",
             span,
         )),
         Some(_) => Ok(()),

@@ -1187,6 +1187,16 @@ pub enum Error {
         span: Span,
     },
 
+    /// `KEEP RAW` on a series whose identities carry arrival time: a window
+    /// is measured on the event's own instant, so the series must say `TIME`.
+    #[error(
+        "`KEEP RAW` needs `TIME <field>` — a window is measured on the event's own instant, and an arrival-time series does not carry one (at {span})"
+    )]
+    KeepRawNeedsTime {
+        /// Where it was written.
+        span: Span,
+    },
+
     /// A `COMPUTE` a rollup cannot keep exactly from its row and the sketches
     /// kept beside it.
     #[error(

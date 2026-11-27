@@ -270,7 +270,8 @@ impl Session<'_> {
                 if let Some(expire) = expire
                     && !existed
                 {
-                    self.declare_expiry_on(transaction, name, *expire).await?;
+                    self.declare_expiry_on(transaction, name, expire.clone())
+                        .await?;
                 }
                 Ok(defined)
             }
@@ -1185,7 +1186,7 @@ impl Session<'_> {
                                 transaction,
                                 id,
                                 &table.name.text,
-                                Some(*expire),
+                                Some(expire.clone()),
                                 table.span,
                             )
                             .await;
@@ -1732,7 +1733,8 @@ impl Session<'_> {
                 if let Some(expire) = expire
                     && !existed
                 {
-                    self.declare_expiry_on(transaction, name, *expire).await?;
+                    self.declare_expiry_on(transaction, name, expire.clone())
+                        .await?;
                 }
                 Ok(defined)
             }
@@ -1848,8 +1850,38 @@ impl Session<'_> {
                 time,
                 store,
                 partitions,
+                keep_raw,
                 if_not_exists,
             } => {
+                let keep_raw = match keep_raw {
+                    Some(declared) => {
+                        if time.is_none() {
+                            return Err(Error::KeepRawNeedsTime { span });
+                        }
+                        if declared.window.nanos() != 0 || declared.window.seconds() <= 0 {
+                            return Err(Error::RollupWindow { span });
+                        }
+                        // `rolled` is the marker the pass writes on its own
+                        // output; a computed value under that name would be
+                        // stepped over as the pass's own row.
+                        if declared
+                            .computes
+                            .iter()
+                            .any(|compute| compute.name.text == crate::rollup::age::ROLLED)
+                        {
+                            return Err(Error::RollupFold {
+                                fold: crate::rollup::age::ROLLED.to_owned(),
+                                span,
+                            });
+                        }
+                        Some(tessari_storage::KeepRawDeclaration {
+                            raw_for: declared.raw_for,
+                            window: declared.window,
+                            computes: crate::rollup::computes_of(&declared.computes)?,
+                        })
+                    }
+                    None => None,
+                };
                 self.define_table(
                     transaction,
                     name,
@@ -1860,6 +1892,7 @@ impl Session<'_> {
                             time: time.as_ref().map(|field| field.text.clone()),
                             rollups: Vec::new(),
                             rollup_of: None,
+                            keep_raw: keep_raw.clone(),
                         }),
                         // Fixed by the kind rather than offered as a clause, on the
                         // rule a vector store's width follows: the floor is a

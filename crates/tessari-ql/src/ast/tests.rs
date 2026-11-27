@@ -41,7 +41,29 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "decayed_count",
             "top_k",
             "collect",
-            "count distinct"
+            "count distinct",
+            "exact_quantiles",
+            "entropy",
+            "gini",
+            "histogram",
+            "changes",
+            "irate",
+            "idelta",
+            "ts_of_first",
+            "ts_of_last",
+            "ts_of_max",
+            "ts_of_min",
+            "mad",
+            "moving_sum",
+            "moving_mean",
+            "string_agg",
+            "window_funnel",
+            "sequence_match",
+            "sequence_count",
+            "retention",
+            "sum_by",
+            "min_by",
+            "max_by"
         ]
     );
 }

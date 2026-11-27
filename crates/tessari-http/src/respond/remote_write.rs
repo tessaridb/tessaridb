@@ -206,18 +206,18 @@ fn sample(bytes: &[u8]) -> Result<(f64, i64), String> {
 
 /// A protobuf walker: tags, varints, fixed64s and length-delimited runs, and
 /// a refusal naming anything else.
-struct Walker<'a> {
+pub(crate) struct Walker<'a> {
     bytes: &'a [u8],
     at: usize,
 }
 
 impl<'a> Walker<'a> {
-    fn new(bytes: &'a [u8]) -> Self {
+    pub(crate) fn new(bytes: &'a [u8]) -> Self {
         Self { bytes, at: 0 }
     }
 
     /// The next field's number and wire type, or `None` at the end.
-    fn tag(&mut self) -> Result<Option<(u64, u64)>, String> {
+    pub(crate) fn tag(&mut self) -> Result<Option<(u64, u64)>, String> {
         if self.at >= self.bytes.len() {
             return Ok(None);
         }
@@ -229,7 +229,7 @@ impl<'a> Walker<'a> {
         Ok(Some((held >> 3, wire)))
     }
 
-    fn varint(&mut self) -> Result<u64, String> {
+    pub(crate) fn varint(&mut self) -> Result<u64, String> {
         let mut held = 0_u64;
         let mut shift = 0_u32;
         loop {
@@ -261,7 +261,7 @@ impl<'a> Walker<'a> {
         Ok(u64::from_le_bytes(raw))
     }
 
-    fn delimited(&mut self) -> Result<&'a [u8], String> {
+    pub(crate) fn delimited(&mut self) -> Result<&'a [u8], String> {
         let len = usize::try_from(self.varint()?)
             .map_err(|_| "a length this machine cannot hold".to_string())?;
         let end = self.at.saturating_add(len);
@@ -273,12 +273,12 @@ impl<'a> Walker<'a> {
         Ok(held)
     }
 
-    fn text(&mut self) -> Result<String, String> {
+    pub(crate) fn text(&mut self) -> Result<String, String> {
         String::from_utf8(self.delimited()?.to_vec())
             .map_err(|_| "a label that is not UTF-8".to_string())
     }
 
-    fn skip(&mut self, wire: u64) -> Result<(), String> {
+    pub(crate) fn skip(&mut self, wire: u64) -> Result<(), String> {
         match wire {
             0 => {
                 self.varint()?;

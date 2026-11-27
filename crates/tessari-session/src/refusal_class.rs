@@ -177,6 +177,7 @@ impl Error {
             | Self::RollupNeedsSeries { .. }
             | Self::RollupFold { .. }
             | Self::RollupWindow { .. }
+            | Self::KeepRawNeedsTime { .. }
             | Self::RollupIsDerived { .. }
             | Self::RollupInTransaction { .. }
             | Self::FeedScanInTransaction { .. }

@@ -189,6 +189,8 @@ pub(super) fn refolded(expr: &Expr, view: &Select) -> Option<Expr> {
                 over: Some(Box::new(name)),
                 at: None,
                 ahead: None,
+                distinct: false,
+                filter: None,
                 span: expr.span,
             },
             span: expr.span,

@@ -136,6 +136,13 @@ pub(crate) fn write_index(
 /// of answer this module exists to withhold.
 pub(crate) fn assertion(constraint: &Assertion) -> Option<String> {
     match constraint {
+        Assertion::Of { route, op, against } => {
+            let right = match against {
+                Operand::Literal(held) => literal(held)?,
+                Operand::Field(route) => route.to_string(),
+            };
+            Some(format!("{route} {} {right}", op.spelling()))
+        }
         Assertion::Compare { op, against } => {
             let right = match against {
                 Operand::Literal(held) => literal(held)?,

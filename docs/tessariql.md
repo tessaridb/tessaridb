@@ -2453,6 +2453,17 @@ stores, writes and reads exactly as before, and nothing is kept per record for i
   `existing: 'unchanged'`. A new default applies to records created after it.
 - **`DROP EXPIRE` stops new instants and lets the stored ones stand** (`existing: 'still expire at their instants'`):
   a record an application promised would disappear still does. `PERSIST t:x` or `EXPIRE NONE` makes one permanent.
+- **`EXPIRE AFTER d WHERE <condition>`** makes the lifetime conditional: the record expires only while the
+  condition holds of it. The condition is settled at the leader's commit like every other instant, so a follower
+  hides the record at the same moment; an edit that meets the condition earns the instant from that commit, and
+  one that leaves the state the condition asks about gives it up — the record must not keep an instant earned in
+  a state it is no longer in. The condition is the `ASSERT` vocabulary — comparisons of the record's own fields
+  against literals or other fields, `AND`/`OR`/`NOT` — and anything outside it, or a `WHERE` with no `AFTER` to
+  count from, is refused where it is written:
+
+```
+DEFINE TABLE task (status string, title string) EXPIRE AFTER 30d WHERE status = 'done';
+```
 
 An expired record is gone to every reader at its instant: scans, point reads, every index, joins, subqueries,
 `FETCH`, a gathered read and a follower. The instant travels with the record, so a follower hides it at the same
@@ -5548,6 +5559,18 @@ series you declared, under your own grants. A series ordered by arrival time is 
 decompress is refused whole, and a label a strict series does not declare is refused by the
 series' own rule.
 
+`POST /series/{ns}/{db}/{series}/remote-read` is the other half: a
+snappy-compressed `ReadRequest` answered with a snappy-compressed
+`ReadResponse`, read from the series as the caller — their grants, field
+redaction included. `__name__` matches `metric`, every other matcher its own
+field, with `=` and `!=` answered exactly; a regular-expression matcher is
+refused rather than approximated. The read carries two declared ceilings on
+top of the caller's own — a million points and ten thousand distinct label
+sets per query — and past either the query is refused whole, naming the
+ceiling, because a truncated `QueryResult` is indistinguishable from a
+complete one on the wire. On a cluster the read is an ordinary gathered read
+under the same ceilings.
+
 `POST /series/{ns}/{db}/{series}` appends a batch of events over HTTP in one
 transaction, each through the caller's session as a `CREATE`; the protocol
 specification carries the route.
@@ -5599,6 +5622,28 @@ series, bit for bit. Any other fold over the column reads the estimates as numbe
 
 - A reader who may not see the column merges nothing from beside its rows.
 - On a store an earlier build wrote, declaring such a rollup waits for `ALTER STORE FINALIZE FORMAT` (format 7).
+
+### Rolling aged raw points away
+
+`KEEP RAW FOR <d> ROLL UP BY <span> COMPUTE …` on a series replaces each
+finished window's raw points with **one rolled row** once the window is `d`
+old — the same folds a `DEFINE ROLLUP` keeps, written into the series itself
+at the window's place in time order, marked `rolled: true`:
+
+```
+DEFINE SERIES readings RETAIN 365d TIME at
+  KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE count(*) AS n, sum(v) AS total;
+```
+
+The pass runs with housekeeping, **where the range is led**, each window as
+one ordinary committed transaction — so a failover mid-pass leaves either the
+raw window or the rolled row, never half of one, a follower converges by
+replication like any write, and a re-run finds nothing raw in a rolled window
+and changes nothing. A window still collecting points is never rolled, a
+series must declare `TIME` (a window is measured on the event's own instant),
+and a `COMPUTE` named `rolled` is refused because that name is the pass's own
+marker. Reads simply see the rolled rows: a query past the raw horizon
+aggregates rows that are already aggregates, which is the point.
 
 ### Counting per window
 
@@ -5755,6 +5800,23 @@ SELECT page, approx_distinct(visitor) AS users, approx_quantile(ms, 0.99) AS p99
 - **The same records give the same answer however the work was split.** On a split table each leader folds its own
   shards and the node merges the sketches, and the merged state is the one a single node reading every record
   reaches. A rollup merges them the same way.
+
+**Any fold takes `FILTER (WHERE …)` and most take `DISTINCT`.** The filter is
+evaluated per record before the fold sees it — only `true` offers, by `WHERE`'s
+own rule — and `DISTINCT` folds each value once, by the store's own `=` (so `3`
+and `3.0` are one), under the same 1 000 000-distinct ceiling as
+`count(DISTINCT …)`. The two compose:
+
+```
+SELECT sum(amount) FILTER (WHERE status = 'paid') AS paid FROM orders;
+SELECT sum(DISTINCT amount) AS distinct_total FROM orders;
+SELECT sum(DISTINCT amount) FILTER (WHERE status = 'paid') AS paid_distinct FROM orders;
+```
+
+`DISTINCT` is refused on a fold that reads more than its value — the counter
+family, the quantiles, `top_k`, the keyed and sequence folds — because which
+argument the word was about would be a guess. `FILTER` is accepted by every
+fold, `count(*)` included.
 
 **`variance` and `stddev` are the sample forms**, dividing by `n − 1`, because a
 table's rows are usually a sample of something — the same reason the SQL
@@ -5949,6 +6011,10 @@ partition is walked in, ties broken by identity as a read's own order is.
 | `lead(v [, n [, default]])` | the same, after |
 | `first_value(v)` | `v` of the first record of the frame |
 | `last_value(v)` | `v` of the last record of the frame |
+| `nth_value(v, n)` | `v` of the frame's `n`-th record, counted from 1; `NONE` when the frame is shorter |
+| `ntile(n)` | which of `n` buckets the record falls in, the first `count mod n` buckets one record larger |
+| `percent_rank()` | `(rank − 1) / (count − 1)`, 0 through 1; a partition of one answers 0 |
+| `cume_dist()` | the share of the partition sorting no later than the record's own ties |
 | `count`, `sum`, `mean`, `min`, `max` | the fold over the frame, with the fold's own rules — `count(*)` counts records |
 
 **The frame** runs from the partition's first record to the current one when the
@@ -6363,6 +6429,9 @@ SELECT math::floor(ratio) AS down, math::ceil(ratio) AS up FROM samples;
 SELECT type::of(name) AS what FROM users;
 SELECT vector::euclidean(embedding, $probe) AS apart FROM documents;
 SELECT vector::dot(embedding, $probe) AS aligned FROM documents;
+SELECT vector::manhattan(embedding, $probe) AS grid FROM documents;
+SELECT vector::hamming(embedding, $probe) AS differing FROM documents;
+SELECT vector::jaccard(embedding, $probe) AS supports FROM documents;
 ```
 
 The rest of the collection and number groups, on the same terms:
@@ -6677,6 +6746,7 @@ SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(
 | `time::start_of_year(at)` | midnight of the year's first day |
 | `time::unix(at)` | whole seconds since the epoch |
 | `time::from_unix(n)` | the instant a second count names |
+| `time::format(at, pattern)` | the instant as text in UTC, by a strftime-shaped pattern: `%Y %m %d %H %M %S` zero-padded, `%f` the nanosecond remainder as nine digits, `%%` a literal percent; a token outside the set is refused rather than copied through |
 | `duration::from_secs(n)` | the span `n` seconds names, whole or fractional, to the nanosecond |
 
 **Instants and spans have arithmetic of their own.** `+` and `-` move an instant
@@ -6749,6 +6819,7 @@ a statement, since a `USE` is a statement of its own.
 | `rand::uuid()` | a version-4 UUID that has never been answered before |
 | `rand::uuid7()` | a version-7 UUID — time-ordered, minted once per call |
 | `uuid::instant(id)` | the instant a version-7 identifier was minted at; `NONE` for any other version |
+| `uuid::version(id)` | which version the identifier's own nibble says it is, as an integer; `NONE` for a value that is no UUID |
 
 ### URLs and addresses, read as text
 
@@ -7241,6 +7312,20 @@ pole covers less ground than one at the equator. A count is for drawing; a
 density is `count(*) / geo::area(geo::cell(at, 10))`. Only a position has a cell: a path or an
 area spans several, and is refused by name, as is a level that is not a whole
 number from 0 to 32.
+
+A cell navigates: `geo::cell_parent(position, level)` is the cell one level
+coarser holding the same position (the root has no parent and answers `NONE`),
+`geo::cell_children(position, level)` the four cells it divides into (the finest
+level answers `NONE`), and `geo::cell_neighbours(position, level)` the cells
+sharing an edge with it — each drawn as `geo::cell` draws. The other way,
+`geo::cell_level(cell)` reads the level back off a drawn cell's polygon and
+refuses a polygon that is no cell of the grid rather than assigning the nearest
+level:
+
+```
+SELECT geo::cell_neighbours(at, 10) AS beside FROM stops LIMIT 1;
+SELECT geo::cell_level(geo::cell(at, 10)) AS level FROM stops LIMIT 1;
+```
 
 #### What is not there yet
 
@@ -12030,7 +12115,7 @@ than one flat object:
 
 ```json
 {"id": "9f2c…", "roles": ["serving", "writable"], "membership": "alone",
- "version": "0.55.0", "build": "0.55.0", "endpoints": ["db-1.internal:9000"],
+ "version": "0.56.0", "build": "0.56.0", "endpoints": ["db-1.internal:9000"],
  "cluster": {"peers": [{"name": "second", "endpoint": "db-2.internal:9000",
                         "roles": ["serving"], "node": null}],
              "revoked": [], "tombstoned": [],

@@ -31,7 +31,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use tessari_encoding::{LogRecord, RecordValue};
+use tessari_encoding::{LogRecord, RecordValue, decode_payload};
 use tessari_types::{DatabaseId, NamespaceId, TableId};
 
 use crate::catalog::{Catalog, TableExpiry};
@@ -72,6 +72,29 @@ pub(crate) async fn admit(
         let at = match lifetimes.get(&address) {
             Some(Lifetime::Cleared) => continue,
             Some(Lifetime::Carried(at)) => Some(*at),
+            // A conditional expiry is decided by the record being written,
+            // not by what the address held: the condition holding stamps the
+            // lifetime from now, and the condition failing makes the record
+            // permanent — an edit that leaves the state the condition asks
+            // about must not keep an instant earned in that state.
+            None if expire.condition.is_some() => {
+                let RecordValue::Present(payload) = mutation.value.value() else {
+                    continue;
+                };
+                let Ok(held) = decode_payload(payload) else {
+                    continue;
+                };
+                let Some(condition) = &expire.condition else {
+                    continue;
+                };
+                if condition.holds(&tessari_types::Value::None, &held) {
+                    expire
+                        .default_lifetime()
+                        .map(|lifetime| now.saturating_add(millis(lifetime)))
+                } else {
+                    None
+                }
+            }
             None => match view.read_newest_stamped(&address).await? {
                 // Still answered: its instant, if it has one, stands.
                 Some((_, held)) if !held.value().is_tombstone() && !held.is_expired_at(now) => {
@@ -128,6 +151,29 @@ pub(crate) async fn pending(
     Ok(match lifetime {
         Some(Lifetime::Cleared) => None,
         Some(Lifetime::Carried(at)) => Some(at),
+        // The conditional form, decided by the record this transaction would
+        // leave at the address — `admit`'s rule, read at this snapshot.
+        None if expire.condition.is_some() => match transaction.read_stamped_at(address).await? {
+            Some(held) if !held.value().is_tombstone() => {
+                let RecordValue::Present(payload) = held.value() else {
+                    return Ok(None);
+                };
+                let Ok(value) = decode_payload(payload) else {
+                    return Ok(None);
+                };
+                let Some(condition) = &expire.condition else {
+                    return Ok(None);
+                };
+                if condition.holds(&tessari_types::Value::None, &value) {
+                    expire
+                        .default_lifetime()
+                        .map(|lifetime| now.saturating_add(millis(lifetime)))
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        },
         None => match transaction.read_stamped_at(address).await? {
             Some(held) if !held.value().is_tombstone() && !held.is_expired_at(now) => {
                 held.expires()

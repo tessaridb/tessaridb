@@ -120,6 +120,8 @@ impl Expr {
                     over,
                     at,
                     ahead,
+                    distinct,
+                    filter,
                     ..
                 },
                 ExprKind::Fold {
@@ -127,6 +129,8 @@ impl Expr {
                     over: other_over,
                     at: other_at,
                     ahead: other_ahead,
+                    distinct: other_distinct,
+                    filter: other_filter,
                     ..
                 },
             ) => {
@@ -134,6 +138,8 @@ impl Expr {
                     && same_optional(over, other_over)
                     && same_optional(at, other_at)
                     && same_optional(ahead, other_ahead)
+                    && distinct == other_distinct
+                    && same_optional(filter, other_filter)
             }
             (
                 ExprKind::If {
@@ -255,6 +261,14 @@ pub enum ExprKind {
         /// `predict_linear(v, at, ahead)` projects to. `None` for every other
         /// fold.
         ahead: Option<Box<Expr>>,
+        /// `DISTINCT` before the value: only a value's first sighting reaches
+        /// the fold, by the store's own `=`, under the same ceiling
+        /// `count(DISTINCT …)` keeps.
+        distinct: bool,
+        /// `FILTER (WHERE …)` after the call: only a record the condition
+        /// holds for is offered at all — the condition is evaluated per
+        /// record, before the offer, and the fold never sees the rest.
+        filter: Option<Box<Expr>>,
         /// Where it was written.
         span: Span,
     },

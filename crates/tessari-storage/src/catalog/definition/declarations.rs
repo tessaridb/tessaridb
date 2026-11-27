@@ -22,6 +22,11 @@ const FIELD_SALT: &str = "salt";
 
 /// Where a series' rollups are listed in its catalog entry.
 const FIELD_ROLLUPS: &str = "rollups";
+/// Where a series' keep-raw declaration lives in its catalog entry.
+const FIELD_KEEP_RAW: &str = "keep_raw";
+const FIELD_RAW_FOR: &str = "for";
+const FIELD_WINDOW: &str = "window";
+const FIELD_COMPUTES: &str = "computes";
 /// Where a rollup's table names the series it is derived from.
 const FIELD_ROLLUP_OF: &str = "rollup_of";
 
@@ -54,6 +59,90 @@ pub struct SeriesDeclaration {
     pub rollups: Vec<super::RollupDeclaration>,
     /// For a rollup's own table, the series it is derived from.
     pub rollup_of: Option<TableId>,
+    /// `KEEP RAW FOR 7d ROLL UP BY 1h COMPUTE …` — past the raw horizon the
+    /// housekeeping pass replaces each finished window's raw points with one
+    /// rolled row per window, written as an ordinary committed transaction
+    /// where the range is led. `None` is a series that said nothing, whose
+    /// raw points stand until `RETAIN` hides them.
+    pub keep_raw: Option<KeepRawDeclaration>,
+}
+
+/// What `KEEP RAW FOR <d> ROLL UP BY <span> COMPUTE …` declared.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeepRawDeclaration {
+    /// How long a raw point stands before its window is rolled.
+    pub raw_for: Duration,
+    /// The width of a rolled window, whole seconds.
+    pub window: Duration,
+    /// What each rolled row computes, in the order written.
+    pub computes: Vec<super::RollupCompute>,
+}
+
+impl KeepRawDeclaration {
+    /// The value written inside the series' catalog entry.
+    #[must_use]
+    pub fn to_value(&self) -> Value {
+        Value::Object(BTreeMap::from([
+            (FIELD_RAW_FOR.to_owned(), Value::Duration(self.raw_for)),
+            (FIELD_WINDOW.to_owned(), Value::Duration(self.window)),
+            (
+                FIELD_COMPUTES.to_owned(),
+                Value::Array(
+                    self.computes
+                        .iter()
+                        .map(super::rollups::compute_to_value)
+                        .collect(),
+                ),
+            ),
+        ]))
+    }
+
+    /// Read a declaration back.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`Error::CatalogMalformed`] when a field is missing or of the
+    /// wrong kind.
+    pub fn from_value(value: &Value) -> Result<Self> {
+        const ENTITY: &str = "keep_raw";
+        let fields = object(value, ENTITY)?;
+        let Some(Value::Duration(raw_for)) = fields.get(FIELD_RAW_FOR) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_RAW_FOR,
+                found: fields
+                    .get(FIELD_RAW_FOR)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        let Some(Value::Duration(window)) = fields.get(FIELD_WINDOW) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_WINDOW,
+                found: fields
+                    .get(FIELD_WINDOW)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        let Some(Value::Array(held)) = fields.get(FIELD_COMPUTES) else {
+            return Err(Error::CatalogMalformed {
+                entity: ENTITY,
+                field: FIELD_COMPUTES,
+                found: fields
+                    .get(FIELD_COMPUTES)
+                    .map_or("none", tessari_types::Value::type_name),
+            });
+        };
+        let computes = held
+            .iter()
+            .map(super::rollups::compute_from_value)
+            .collect::<Result<_>>()?;
+        Ok(Self {
+            raw_for: *raw_for,
+            window: *window,
+            computes,
+        })
+    }
 }
 
 impl SeriesDeclaration {
@@ -77,6 +166,9 @@ impl SeriesDeclaration {
         }
         if let Some(source) = self.rollup_of {
             fields.insert(FIELD_ROLLUP_OF.to_owned(), number(source.get()));
+        }
+        if let Some(keep_raw) = &self.keep_raw {
+            fields.insert(FIELD_KEEP_RAW.to_owned(), keep_raw.to_value());
         }
         Value::Object(fields)
     }
@@ -128,11 +220,16 @@ impl SeriesDeclaration {
             None => None,
             Some(_) => Some(TableId::new(field_id(fields, FIELD_ROLLUP_OF, ENTITY)?)),
         };
+        let keep_raw = match fields.get(FIELD_KEEP_RAW) {
+            None => None,
+            Some(held) => Some(KeepRawDeclaration::from_value(held)?),
+        };
         Ok(Self {
             retain: *retain,
             time,
             rollups,
             rollup_of,
+            keep_raw,
         })
     }
 }

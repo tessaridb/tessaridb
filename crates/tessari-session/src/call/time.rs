@@ -190,3 +190,54 @@ pub(crate) fn instant_of(reading: std::time::SystemTime, span: Span) -> Result<D
     let seconds = i64::try_from(since.as_secs()).map_err(|_| failed("the clock is unreadable"))?;
     Datetime::new(seconds, since.subsec_nanos()).ok_or_else(|| failed("the clock is unreadable"))
 }
+
+/// The instant as text, in UTC, by a strftime-shaped pattern.
+///
+/// The token set is deliberately a subset — `%Y %m %d %H %M %S` zero-padded,
+/// `%f` the nanosecond remainder as nine digits, `%%` a literal percent — and
+/// a token outside it is refused rather than copied through: a `%q` passed
+/// verbatim would read as a formatted answer, which is the one thing a
+/// formatting function must never produce. Any other character copies as it
+/// stands. UTC because a [`Datetime`] has no zone; a zone is a rendering
+/// choice made where the text is shown, and this text is the stored moment.
+pub(crate) fn format(
+    function: Function,
+    instant: &Datetime,
+    pattern: &str,
+    span: Span,
+) -> Result<Value> {
+    let civil = instant.civil();
+    let mut written = String::with_capacity(pattern.len().saturating_add(16));
+    let mut tokens = pattern.chars();
+    while let Some(held) = tokens.next() {
+        if held != '%' {
+            written.push(held);
+            continue;
+        }
+        let Some(token) = tokens.next() else {
+            return Err(Error::CallFailed {
+                function,
+                reason: "a pattern that ends on a bare %",
+                span,
+            });
+        };
+        match token {
+            'Y' => written.push_str(&format!("{:04}", civil.year)),
+            'm' => written.push_str(&format!("{:02}", civil.month)),
+            'd' => written.push_str(&format!("{:02}", civil.day)),
+            'H' => written.push_str(&format!("{:02}", civil.hour)),
+            'M' => written.push_str(&format!("{:02}", civil.minute)),
+            'S' => written.push_str(&format!("{:02}", civil.second)),
+            'f' => written.push_str(&format!("{:09}", instant.nanos())),
+            '%' => written.push('%'),
+            _ => {
+                return Err(Error::CallFailed {
+                    function,
+                    reason: "a pattern token outside %Y %m %d %H %M %S %f %%",
+                    span,
+                });
+            }
+        }
+    }
+    Ok(Value::String(written))
+}

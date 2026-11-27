@@ -529,3 +529,201 @@ fn top_k_answers_the_most_common_values_with_their_counts() {
     let refused = accumulator.offer(&Value::Array(vec![integer(1), integer(3)]));
     assert!(refused.is_err());
 }
+
+/// The instant `second` as the value the ts_of folds answer.
+fn at(second: i64) -> Value {
+    Value::Datetime(Datetime::from_seconds(second))
+}
+
+#[test]
+fn changes_counts_the_differing_neighbours_and_one_sample_saw_none() {
+    // 1, 4, 9, 2, 5, 5, 8: every neighbour differs but the equal pair at 50.
+    let values = &series()[0];
+    assert_eq!(walked(Aggregate::Changes, values), integer(5));
+    assert_eq!(
+        walked(Aggregate::Changes, &[sample(integer(7), 10)]),
+        integer(0)
+    );
+    assert_eq!(walked(Aggregate::Changes, &[]), Value::None);
+    // The seam's change is counted by the merge itself, wherever the cut.
+    for cuts in every_cut(values) {
+        let here = merged(Aggregate::Changes, values, &cuts);
+        assert_eq!(here.finish().unwrap(), integer(5), "cut at {cuts:?}");
+    }
+}
+
+#[test]
+fn the_edge_folds_read_the_last_two_samples_by_hand() {
+    // The series ends 5 at 50 and 8 at 60: rise 3 over ten seconds.
+    let values = &series()[0];
+    assert_eq!(walked(Aggregate::Idelta, values), integer(3));
+    assert_eq!(walked(Aggregate::Irate, values), decimal("0.3"));
+    // A fall at the edge: irate counts it from zero, idelta takes it raw.
+    let fall = [sample(integer(9), 10), sample(integer(2), 20)];
+    assert_eq!(walked(Aggregate::Irate, &fall), decimal("0.2"));
+    assert_eq!(walked(Aggregate::Idelta, &fall), integer(-7));
+    // One sample names no edge; two at one instant name no rate.
+    assert_eq!(
+        walked(Aggregate::Irate, &[sample(integer(7), 10)]),
+        Value::None
+    );
+    let flat = [sample(integer(1), 10), sample(integer(2), 10)];
+    assert_eq!(walked(Aggregate::Irate, &flat), Value::None);
+    assert_eq!(walked(Aggregate::Idelta, &flat), integer(1));
+    // Floats at the edge answer a float, whatever the rest of the run held.
+    let mixed = [
+        sample(integer(1), 1),
+        sample(float(0.5), 2),
+        sample(float(2.0), 3),
+    ];
+    let answered = walked(Aggregate::Idelta, &mixed);
+    assert_eq!(format!("{answered:?}"), format!("{:?}", float(1.5)));
+    // The last two samples survive the merge, wherever the cut.
+    for cuts in every_cut(values) {
+        let here = merged(Aggregate::Irate, values, &cuts);
+        assert_eq!(
+            here.finish().unwrap(),
+            decimal("0.3"),
+            "irate cut at {cuts:?}"
+        );
+        let here = merged(Aggregate::Idelta, values, &cuts);
+        assert_eq!(here.finish().unwrap(), integer(3), "idelta cut at {cuts:?}");
+    }
+}
+
+#[test]
+fn the_instant_folds_answer_the_instant_of_the_sample_by_hand() {
+    // 1@10, 4@20, 9@30, 2@40, 5@50, 5@50, 8@60: smallest 1 at 10 — the reset
+    // low of 2 is not below it — largest 9 at 30.
+    let values = &series()[0];
+    assert_eq!(walked(Aggregate::TsOfFirst, values), at(10));
+    assert_eq!(walked(Aggregate::TsOfLast, values), at(60));
+    assert_eq!(walked(Aggregate::TsOfMax, values), at(30));
+    assert_eq!(walked(Aggregate::TsOfMin, values), at(10));
+    // One sample answers its own instant four ways; nothing answers nothing.
+    let one = [sample(integer(7), 10)];
+    assert_eq!(walked(Aggregate::TsOfMax, &one), at(10));
+    assert_eq!(walked(Aggregate::TsOfMin, &one), at(10));
+    assert_eq!(walked(Aggregate::TsOfFirst, &[]), Value::None);
+    // The extreme of equal values keeps the earlier instant, and the merge
+    // keeps it too, wherever the cut.
+    let tied = [
+        sample(integer(5), 10),
+        sample(integer(5), 20),
+        sample(integer(1), 30),
+    ];
+    assert_eq!(walked(Aggregate::TsOfMax, &tied), at(10));
+    for cuts in every_cut(values) {
+        let here = merged(Aggregate::TsOfMax, values, &cuts);
+        assert_eq!(here.finish().unwrap(), at(30), "cut at {cuts:?}");
+        let here = merged(Aggregate::TsOfMin, values, &cuts);
+        assert_eq!(here.finish().unwrap(), at(10), "cut at {cuts:?}");
+    }
+}
+
+#[test]
+fn mad_is_the_median_of_the_distances_from_the_median_by_hand() {
+    // 1, 2, 3, 4, 10: the median is 3, the distances 2, 1, 0, 1, 7 sort to
+    // 0, 1, 1, 2, 7, and their median is 1.
+    let values = [integer(1), integer(2), integer(3), integer(4), integer(10)];
+    assert_eq!(walked(Aggregate::Mad, &values), decimal("1"));
+    // An even count: median 2.5, distances 1.5, 0.5, 0.5, 1.5, median 1.
+    let even = [integer(1), integer(2), integer(3), integer(4)];
+    assert_eq!(walked(Aggregate::Mad, &even), decimal("1"));
+    // One value is exactly its own middle: the deviation is zero, truly.
+    assert_eq!(walked(Aggregate::Mad, &[integer(9)]), decimal("0"));
+    assert_eq!(walked(Aggregate::Mad, &[]), Value::None);
+    assert_eq!(
+        walked(Aggregate::Mad, &[Value::None, Value::Null]),
+        Value::None
+    );
+    // A wrong kind is refused naming the fold.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Mad, span());
+    let refused = accumulator.offer(&Value::String("wide".to_owned()));
+    assert!(format!("{:?}", refused.unwrap_err()).contains("mad"));
+    // The runs travel like a median's: any cut answers the walk.
+    for cuts in every_cut(&values) {
+        let here = merged(Aggregate::Mad, &values, &cuts);
+        assert_eq!(here.finish().unwrap(), decimal("1"), "cut at {cuts:?}");
+    }
+}
+
+#[test]
+fn the_moving_folds_answer_over_the_windows_tail_by_hand() {
+    // 1, 4, 9, 2, 5, 5, 8: the last three are 5, 5, 8 — sum 18, mean 6.
+    let values = &series()[0];
+    assert_eq!(walked_third(Aggregate::MovingSum, values, 3), integer(18));
+    assert_eq!(walked_third(Aggregate::MovingMean, values, 3), decimal("6"));
+    // The last two: 5 and 8 — sum 13, mean 6.5.
+    assert_eq!(walked_third(Aggregate::MovingSum, values, 2), integer(13));
+    assert_eq!(
+        walked_third(Aggregate::MovingMean, values, 2),
+        decimal("6.5")
+    );
+    // A window longer than the series is the whole series: sum 34 over 7.
+    assert_eq!(walked_third(Aggregate::MovingSum, values, 100), integer(34));
+    assert_eq!(
+        walked_third(Aggregate::MovingMean, values, 100),
+        decimal("4.8571428571428571428571428571")
+    );
+    // Nothing answers nothing; the parts send samples, so any cut agrees.
+    assert_eq!(walked_third(Aggregate::MovingSum, &[], 3), Value::None);
+    for cuts in every_cut(values) {
+        let parts = parts(values, &cuts);
+        let mut here = reduced_third(Aggregate::MovingSum, parts[0], 3);
+        for part in &parts[1..] {
+            let state = reduced_third(Aggregate::MovingSum, part, 3)
+                .state()
+                .expect("samples");
+            assert!(here.merge(&state).unwrap(), "cut at {cuts:?}");
+        }
+        assert_eq!(here.finish().unwrap(), integer(18), "cut at {cuts:?}");
+    }
+    // A float in the tail turns the answer to a float.
+    let mixed = [sample(integer(1), 1), sample(float(0.5), 2)];
+    let answered = walked_third(Aggregate::MovingSum, &mixed, 2);
+    assert_eq!(format!("{answered:?}"), format!("{:?}", float(1.5)));
+}
+
+#[test]
+fn string_agg_joins_the_present_strings_in_arrival_order() {
+    let offered = |values: &[Value], sep: &str| {
+        let mut accumulator = Accumulator::for_aggregate(Aggregate::StringAgg, span());
+        for value in values {
+            accumulator
+                .offer(&Value::Array(vec![
+                    value.clone(),
+                    Value::String(sep.to_owned()),
+                ]))
+                .unwrap();
+        }
+        accumulator.finish().unwrap()
+    };
+    let words = [
+        Value::from("a"),
+        Value::None,
+        Value::from("b"),
+        Value::Null,
+        Value::from("c"),
+    ];
+    assert_eq!(offered(&words, ", "), Value::String("a, b, c".to_owned()));
+    // Over nothing the empty join, by collect's rule.
+    assert_eq!(offered(&[], ", "), Value::String(String::new()));
+    // A present value that is not a string is refused naming the fold.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::StringAgg, span());
+    let refused = accumulator.offer(&Value::Array(vec![integer(1), Value::String(",".into())]));
+    assert!(format!("{:?}", refused.unwrap_err()).contains("string_agg"));
+    // A separator that differs between records is refused, by top_k's rule.
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::StringAgg, span());
+    accumulator
+        .offer(&Value::Array(vec![
+            Value::from("a"),
+            Value::String(",".into()),
+        ]))
+        .unwrap();
+    let refused = accumulator.offer(&Value::Array(vec![
+        Value::from("b"),
+        Value::String(";".into()),
+    ]));
+    assert!(format!("{:?}", refused.unwrap_err()).contains("differ"));
+}

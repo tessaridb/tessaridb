@@ -153,3 +153,142 @@ fn a_float_fold_answers_the_same_bits_in_any_order_and_any_split() {
     let answer = incrementally(Aggregate::Sum, &[float(0.1), float(0.2), float(0.3)]).unwrap();
     assert_eq!(bits(&answer), 0.6_f64.to_bits());
 }
+
+/// The shape folds against hand-checked sets.
+///
+/// `[1, 2, 3, 4, 10]`: mean 4, m₂ = 50, m₃ = 180, m₄ = 1394 — so the
+/// adjusted skewness is √20/3 · 180/50^1.5 ≈ 0.758947 and the sample excess
+/// kurtosis is 4/6 · (6·(2.788 − 3) + 6) = 3.152. `[1, 2, 3, 4, 5]` is
+/// symmetric: skewness exactly 0, and its kurtosis works out to −1.2 — a
+/// flat shape, negative as it should be. The plausible wrong answers — the
+/// population forms, Pearson's non-excess kurtosis (1.7 · 1.2 = 2.04 where
+/// −1.2 is right) — all land outside the tolerances.
+#[test]
+fn the_shape_folds_answer_the_hand_checked_sets() {
+    let skewed: Vec<Value> = [1, 2, 3, 4, 10].iter().map(|held| integer(*held)).collect();
+    let close = |aggregate: Aggregate, values: &[Value], wanted: f64, within: f64| {
+        let answered = incrementally(aggregate, values).unwrap();
+        let Value::Number(number) = &answered else {
+            panic!("{aggregate:?} answered {answered:?}");
+        };
+        let got = crate::aggregate::approximate(number).unwrap();
+        assert!(
+            (got - wanted).abs() < within,
+            "{aggregate:?} answered {got}, not {wanted}"
+        );
+    };
+    close(Aggregate::Skewness, &skewed, 0.758_947, 1e-6);
+    close(Aggregate::Kurtosis, &skewed, 3.152, 1e-6);
+    let flat: Vec<Value> = [1, 2, 3, 4, 5].iter().map(|held| integer(*held)).collect();
+    close(Aggregate::Skewness, &flat, 0.0, 1e-12);
+    close(Aggregate::Kurtosis, &flat, -1.2, 1e-9);
+}
+
+/// A shape under its sample form's floor is `NONE`, not zero: two values
+/// name no skewness, three name no kurtosis, and a constant names neither —
+/// by `variance`'s rule that an answer the data cannot give is unasked.
+#[test]
+fn a_shape_short_of_its_floor_answers_none() {
+    let two: Vec<Value> = [1, 5].iter().map(|held| integer(*held)).collect();
+    assert_eq!(
+        incrementally(Aggregate::Skewness, &two).unwrap(),
+        Value::None
+    );
+    let three: Vec<Value> = [1, 5, 9].iter().map(|held| integer(*held)).collect();
+    assert_eq!(
+        incrementally(Aggregate::Kurtosis, &three).unwrap(),
+        Value::None
+    );
+    let constant: Vec<Value> = [4, 4, 4, 4, 4].iter().map(|held| integer(*held)).collect();
+    assert_eq!(
+        incrementally(Aggregate::Skewness, &constant).unwrap(),
+        Value::None
+    );
+    assert_eq!(
+        incrementally(Aggregate::Kurtosis, &constant).unwrap(),
+        Value::None
+    );
+}
+
+/// The distribution folds against hand-checked groups.
+///
+/// `entropy`: two values twice each is one bit exactly; three-and-one is
+/// 0.811278 bits — the plausible wrong answer, natural-log units (0.5623),
+/// lands outside the tolerance. `gini`: [1,2,3,4] is exactly 0.25, [0,0,0,10]
+/// is exactly 0.75, four equals are exactly 0. `histogram`: 1 to 10 in five
+/// bins splits at 1.8 each and every bin holds two.
+#[test]
+fn the_distribution_folds_answer_the_hand_checked_groups() {
+    let close = |aggregate: Aggregate, values: &[Value], wanted: f64, within: f64| {
+        let answered = incrementally(aggregate, values).unwrap();
+        let Value::Number(number) = &answered else {
+            panic!("{aggregate:?} answered {answered:?}");
+        };
+        let got = crate::aggregate::approximate(number).unwrap();
+        assert!(
+            (got - wanted).abs() < within,
+            "{aggregate:?} answered {got}, not {wanted}"
+        );
+    };
+    let even: Vec<Value> = ["a", "a", "b", "b"]
+        .iter()
+        .map(|held| Value::String((*held).to_owned()))
+        .collect();
+    close(Aggregate::Entropy, &even, 1.0, 1e-12);
+    let uneven: Vec<Value> = ["a", "a", "a", "b"]
+        .iter()
+        .map(|held| Value::String((*held).to_owned()))
+        .collect();
+    close(Aggregate::Entropy, &uneven, 0.811_278, 1e-6);
+    let ladder: Vec<Value> = [1, 2, 3, 4].iter().map(|held| integer(*held)).collect();
+    close(Aggregate::Gini, &ladder, 0.25, 1e-12);
+    let concentrated: Vec<Value> = [0, 0, 0, 10].iter().map(|held| integer(*held)).collect();
+    close(Aggregate::Gini, &concentrated, 0.75, 1e-12);
+    let equals: Vec<Value> = [5, 5, 5, 5].iter().map(|held| integer(*held)).collect();
+    close(Aggregate::Gini, &equals, 0.0, 1e-12);
+
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Histogram, span());
+    for held in 1..=10 {
+        accumulator
+            .offer(&Value::Array(vec![integer(held), integer(5)]))
+            .unwrap();
+    }
+    let Value::Array(bins) = accumulator.finish().unwrap() else {
+        panic!("histogram answered a non-array");
+    };
+    assert_eq!(bins.len(), 5);
+    for (at, bin) in bins.iter().enumerate() {
+        let Value::Object(fields) = bin else {
+            panic!("bin {at} is not an object");
+        };
+        assert_eq!(
+            fields.get("count"),
+            Some(&integer(2)),
+            "bin {at} held {bin:?}"
+        );
+    }
+}
+
+/// The distribution folds' floors and refusals: an empty group is `NONE`
+/// from all three; all zeros name no Gini; a negative refuses rather than
+/// folding into a number that would mean nothing; zero bins is refused.
+#[test]
+fn the_distribution_folds_refuse_what_they_cannot_mean() {
+    assert_eq!(incrementally(Aggregate::Entropy, &[]).unwrap(), Value::None);
+    assert_eq!(incrementally(Aggregate::Gini, &[]).unwrap(), Value::None);
+    let zeros: Vec<Value> = [0, 0, 0].iter().map(|held| integer(*held)).collect();
+    assert_eq!(incrementally(Aggregate::Gini, &zeros).unwrap(), Value::None);
+    let negative: Vec<Value> = [1, -2, 3].iter().map(|held| integer(*held)).collect();
+    let refused = incrementally(Aggregate::Gini, &negative).unwrap_err();
+    assert!(format!("{refused}").contains("below zero"), "{refused}");
+
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Histogram, span());
+    accumulator
+        .offer(&Value::Array(vec![integer(1), integer(0)]))
+        .unwrap();
+    let refused = accumulator.finish().unwrap_err();
+    assert!(
+        format!("{refused}").contains("at least one bin"),
+        "{refused}"
+    );
+}

@@ -97,6 +97,7 @@ impl Function {
             | Self::MathDegrees
             | Self::MathRadians
             | Self::UuidInstant
+            | Self::UuidVersion
             | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
@@ -123,6 +124,7 @@ impl Function {
             | Self::TypeDatetime
             | Self::TypeUuid
             | Self::GeoArea
+            | Self::GeoCellLevel
             | Self::CryptoSha256
             | Self::SearchHighlight
             | Self::CryptoMd5
@@ -153,6 +155,10 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
+            | Self::VectorManhattan
+            | Self::VectorHamming
+            | Self::VectorJaccard
+            | Self::TimeFormat
             | Self::SearchScore
             | Self::SearchExplain
             | Self::TimeBucket
@@ -184,6 +190,9 @@ impl Function {
             | Self::ObjectHas
             | Self::ObjectMerge
             | Self::GeoCell
+            | Self::GeoCellParent
+            | Self::GeoCellChildren
+            | Self::GeoCellNeighbours
             | Self::GeoDistance
             | Self::ObjectGet
             | Self::ArrayAt
@@ -309,6 +318,8 @@ impl Function {
             | Self::MathDegrees
             | Self::MathRadians
             | Self::UuidInstant
+            | Self::UuidVersion
+            | Self::TimeFormat
             | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
@@ -326,6 +337,9 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
+            | Self::VectorManhattan
+            | Self::VectorHamming
+            | Self::VectorJaccard
             | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
@@ -339,6 +353,10 @@ impl Function {
             | Self::GeoDistance
             | Self::GeoArea
             | Self::GeoCell
+            | Self::GeoCellParent
+            | Self::GeoCellChildren
+            | Self::GeoCellNeighbours
+            | Self::GeoCellLevel
             | Self::CryptoSha256
             | Self::SearchHighlight
             | Self::CryptoMd5

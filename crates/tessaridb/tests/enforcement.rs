@@ -1337,7 +1337,16 @@ const TABLES: &[Table] = &[
         // before they are interpolated, the samples are bound as parameters,
         // and the protobuf walker and snappy frame refuse a malformed body
         // whole before any statement runs.
-        expected: 14,
+        //
+        // 15 since `POST /series/{ns}/{db}/{series}/remote-read`. Classified
+        // **enforced** on the same ground read-side: the query runs as a
+        // `SELECT` through `session_for`, the caller's own session, so the
+        // grant, the tenancy and field redaction are the script route's; the
+        // three names and every matcher name are checked to be identifiers
+        // before they are interpolated, the matcher values and the range
+        // bounds are bound as parameters, and the read refuses rather than
+        // truncates past its declared ceilings.
+        expected: 15,
         count: |text| lines_beginning(text, "(Method::"),
     },
     Table {
@@ -1563,7 +1572,10 @@ fn every_enforcement_point_table_holds_what_the_coverage_matrix_classified() {
     // 189 since the AI provider call: `Store::ai_budgets` — the token
     // buckets the `ai::` calls spend from, classified above on
     // `pool_take`'s ground.
-    assert_eq!(total, 189, "the counted tables no longer sum to 189");
+    //
+    // 190 since the remote-read half: the route, enforced on the append
+    // route's ground read-side, classified at its table above.
+    assert_eq!(total, 190, "the counted tables no longer sum to 190");
 }
 
 /// Every `.rs` file under a directory.

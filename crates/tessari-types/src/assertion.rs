@@ -61,6 +61,7 @@ const ASSERT_FIELD: &str = "field";
 const ASSERT_ALL: &str = "all";
 const ASSERT_ANY: &str = "any";
 const ASSERT_NOT: &str = "not";
+const ASSERT_OF: &str = "of";
 
 /// What a comparison is against.
 ///
@@ -97,6 +98,22 @@ pub enum Assertion {
     Any(Vec<Assertion>),
     /// The part does not hold.
     Not(Box<Assertion>),
+    /// `<route> <op> <literal or route>` — a comparison whose **left** side is
+    /// a field of the record itself.
+    ///
+    /// [`Assertion::Compare`] binds `$value`, which exists only where a field
+    /// declaration is being checked; a table's conditional expiry
+    /// (`EXPIRE AFTER 30d WHERE status = 'done'`) asks about the record as a
+    /// whole, so its comparisons name their own left side. Same [`apply`],
+    /// same absence rule, same purity — only the binding differs.
+    Of {
+        /// The route to the value on the left.
+        route: Path,
+        /// The operator, meaning exactly what it means in a `WHERE`.
+        op: BinaryOp,
+        /// What is on the right.
+        against: Operand,
+    },
 }
 
 impl Assertion {
@@ -125,6 +142,14 @@ impl Assertion {
             Self::All(parts) => parts.iter().all(|part| part.holds(value, record)),
             Self::Any(parts) => parts.iter().any(|part| part.holds(value, record)),
             Self::Not(part) => !part.holds(value, record),
+            Self::Of { route, op, against } => {
+                let left = route.resolve(record).unwrap_or(&Value::None);
+                let right = match against {
+                    Operand::Literal(held) => held,
+                    Operand::Field(route) => route.resolve(record).unwrap_or(&Value::None),
+                };
+                apply(*op, left, right)
+            }
         }
     }
 
@@ -149,6 +174,12 @@ impl Assertion {
                 ..
             } => into.push(route.to_string()),
             Self::Compare { .. } => {}
+            Self::Of { route, against, .. } => {
+                into.push(route.to_string());
+                if let Operand::Field(route) = against {
+                    into.push(route.to_string());
+                }
+            }
             Self::All(parts) | Self::Any(parts) => {
                 for part in parts {
                     part.gather_compared(into);
@@ -180,6 +211,22 @@ impl Assertion {
             Self::All(parts) => object([(ASSERT_ALL, Self::list(parts))]),
             Self::Any(parts) => object([(ASSERT_ANY, Self::list(parts))]),
             Self::Not(part) => object([(ASSERT_NOT, part.to_value())]),
+            Self::Of { route, op, against } => {
+                let op_spelling = Value::String(op.spelling().to_owned());
+                let route_text = Value::String(route.to_string());
+                match against {
+                    Operand::Literal(held) => object([
+                        (ASSERT_OF, route_text),
+                        (ASSERT_OP, op_spelling),
+                        (ASSERT_AGAINST, held.clone()),
+                    ]),
+                    Operand::Field(against) => object([
+                        (ASSERT_OF, route_text),
+                        (ASSERT_OP, op_spelling),
+                        (ASSERT_FIELD, Value::String(against.to_string())),
+                    ]),
+                }
+            }
         }
     }
 
@@ -205,6 +252,28 @@ impl Assertion {
         let Some(Value::String(spelling)) = fields.get(ASSERT_OP) else {
             return None;
         };
+        if let Some(Value::String(written)) = fields.get(ASSERT_OF) {
+            let route = Path::parse(written)?;
+            if route.is_several() {
+                return None;
+            }
+            let against = match fields.get(ASSERT_FIELD) {
+                Some(Value::String(written)) => {
+                    let route = Path::parse(written)?;
+                    if route.is_several() {
+                        return None;
+                    }
+                    Operand::Field(route)
+                }
+                Some(_) => return None,
+                None => Operand::Literal(fields.get(ASSERT_AGAINST)?.clone()),
+            };
+            return Some(Self::Of {
+                route,
+                op: BinaryOp::from_spelling(spelling)?,
+                against,
+            });
+        }
         let against = match fields.get(ASSERT_FIELD) {
             Some(Value::String(written)) => {
                 let route = Path::parse(written)?;
