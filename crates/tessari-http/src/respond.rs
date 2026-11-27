@@ -413,6 +413,7 @@ const fn name_of(path: AccessPath) -> &'static str {
 mod corpus;
 mod failure;
 mod metrics;
+pub(crate) mod remote_read;
 pub(crate) mod remote_write;
 pub(crate) mod scripts;
 pub(crate) mod series;

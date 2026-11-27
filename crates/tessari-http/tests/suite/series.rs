@@ -330,3 +330,153 @@ fn a_remote_write_refuses_what_it_cannot_land_honestly() {
     );
     assert_eq!(status, 404);
 }
+
+/// A `ReadRequest` for one query over one matcher, built to remote.proto's
+/// field numbers — the same messages the route's walker reads.
+fn read_request(start_ms: i64, end_ms: i64, name: &str, value: &str) -> Vec<u8> {
+    read_request_of_kind(start_ms, end_ms, name, value, 0)
+}
+
+/// The same, with the matcher's kind chosen — 2 is the regular expression the
+/// route refuses.
+fn read_request_of_kind(start_ms: i64, end_ms: i64, name: &str, value: &str, kind: u64) -> Vec<u8> {
+    fn varint(out: &mut Vec<u8>, mut held: u64) {
+        loop {
+            let byte = u8::try_from(held & 0x7f).unwrap_or(0);
+            held >>= 7;
+            if held == 0 {
+                out.push(byte);
+                return;
+            }
+            out.push(byte | 0x80);
+        }
+    }
+    fn field(out: &mut Vec<u8>, number: u64, wire: u64) {
+        varint(out, (number << 3) | wire);
+    }
+    fn text(out: &mut Vec<u8>, number: u64, held: &str) {
+        field(out, number, 2);
+        varint(out, u64::try_from(held.len()).unwrap_or(0));
+        out.extend_from_slice(held.as_bytes());
+    }
+    let mut matcher = Vec::new();
+    field(&mut matcher, 1, 0);
+    varint(&mut matcher, kind);
+    text(&mut matcher, 2, name);
+    text(&mut matcher, 3, value);
+    let mut query = Vec::new();
+    field(&mut query, 1, 0);
+    varint(&mut query, u64::try_from(start_ms).unwrap_or(0));
+    field(&mut query, 2, 0);
+    varint(&mut query, u64::try_from(end_ms).unwrap_or(0));
+    field(&mut query, 3, 2);
+    varint(&mut query, u64::try_from(matcher.len()).unwrap_or(0));
+    query.extend_from_slice(&matcher);
+    let mut request = Vec::new();
+    field(&mut request, 1, 2);
+    varint(&mut request, u64::try_from(query.len()).unwrap_or(0));
+    request.extend_from_slice(&query);
+    request
+}
+
+/// The response, walked far enough to name what it holds: metric names and
+/// sample values.
+fn read_response(bytes: &[u8]) -> String {
+    let plain = snap::raw::Decoder::new().decompress_vec(bytes).unwrap();
+    // A lossy walk is enough for the assertions: every label value and every
+    // fixed64 sample value appears in the bytes.
+    let mut named = String::new();
+    for piece in plain.split(|byte| *byte == 0) {
+        if let Ok(text) = std::str::from_utf8(piece) {
+            named.push_str(text);
+        }
+        named.push(' ');
+    }
+    named
+}
+
+#[test]
+fn a_remote_read_answers_what_a_remote_write_landed() {
+    let (_node, address) = node();
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE remote; USE NAMESPACE remote; DEFINE DATABASE intake; USE DATABASE intake; DEFINE SERIES hits RETAIN 36500d TIME at;",
+        None,
+    );
+    assert_eq!(status, 200);
+    let plain = write_request("cpu_load", 0.75, 1_795_651_200_500);
+    let packed = snap::raw::Encoder::new().compress_vec(&plain).unwrap();
+    let (status, body) = send_bytes(&address, "/series/remote/intake/hits/remote-write", &packed);
+    assert_eq!(status, 200, "{body}");
+    // The round trip: the query names the metric, the range spans the sample.
+    let query = read_request(1_795_651_200_000, 1_795_651_201_000, "__name__", "cpu_load");
+    let packed = snap::raw::Encoder::new().compress_vec(&query).unwrap();
+    let mut stream = TcpStream::connect(&address).unwrap();
+    let head = format!(
+        "POST /series/remote/intake/hits/remote-read HTTP/1.1\r\nHost: {address}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        packed.len()
+    );
+    stream.write_all(head.as_bytes()).unwrap();
+    stream.write_all(&packed).unwrap();
+    stream.flush().unwrap();
+    let mut reader = BufReader::new(stream);
+    let mut status_line = String::new();
+    reader.read_line(&mut status_line).unwrap();
+    let status: u16 = status_line
+        .split_whitespace()
+        .nth(1)
+        .unwrap()
+        .parse()
+        .unwrap();
+    assert_eq!(status, 200);
+    // Headers, then the binary body.
+    loop {
+        let mut line = String::new();
+        if reader.read_line(&mut line).unwrap() == 0 || line == "\r\n" {
+            break;
+        }
+    }
+    let mut body = Vec::new();
+    reader.read_to_end(&mut body).unwrap();
+    let named = read_response(&body);
+    assert!(named.contains("cpu_load"), "{named}");
+    assert!(named.contains("probe"), "{named}");
+}
+
+#[test]
+fn a_remote_read_refuses_what_it_cannot_answer_exactly() {
+    let (_node, address) = node();
+    let (status, _) = send(
+        &address,
+        "POST",
+        "/script",
+        "DEFINE NAMESPACE remote; USE NAMESPACE remote; DEFINE DATABASE intake; USE DATABASE intake; DEFINE SERIES hits RETAIN 36500d TIME at;",
+        None,
+    );
+    assert_eq!(status, 200);
+    // A regular-expression matcher: kind 2, refused rather than approximated.
+    let query = read_request_of_kind(0, 1, "__name__", "cpu.*", 2);
+    let packed = snap::raw::Encoder::new().compress_vec(&query).unwrap();
+    let (status, body) = send_bytes(&address, "/series/remote/intake/hits/remote-read", &packed);
+    assert_eq!(status, 400, "{body}");
+    assert!(body.contains("regular-expression"), "{body}");
+    // A body that is not snappy is refused whole.
+    let (status, _) = send_bytes(
+        &address,
+        "/series/remote/intake/hits/remote-read",
+        b"not snappy",
+    );
+    assert_eq!(status, 400);
+    // A series that is not there is a 404.
+    let empty = snap::raw::Encoder::new()
+        .compress_vec(&read_request(0, 1, "__name__", "m"))
+        .unwrap();
+    let (status, _) = send_bytes(
+        &address,
+        "/series/remote/intake/missing/remote-read",
+        &empty,
+    );
+    assert_eq!(status, 404);
+}

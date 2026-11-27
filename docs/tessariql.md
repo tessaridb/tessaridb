@@ -5559,6 +5559,18 @@ series you declared, under your own grants. A series ordered by arrival time is 
 decompress is refused whole, and a label a strict series does not declare is refused by the
 series' own rule.
 
+`POST /series/{ns}/{db}/{series}/remote-read` is the other half: a
+snappy-compressed `ReadRequest` answered with a snappy-compressed
+`ReadResponse`, read from the series as the caller — their grants, field
+redaction included. `__name__` matches `metric`, every other matcher its own
+field, with `=` and `!=` answered exactly; a regular-expression matcher is
+refused rather than approximated. The read carries two declared ceilings on
+top of the caller's own — a million points and ten thousand distinct label
+sets per query — and past either the query is refused whole, naming the
+ceiling, because a truncated `QueryResult` is indistinguishable from a
+complete one on the wire. On a cluster the read is an ordinary gathered read
+under the same ceilings.
+
 `POST /series/{ns}/{db}/{series}` appends a batch of events over HTTP in one
 transaction, each through the caller's session as a `CREATE`; the protocol
 specification carries the route.
