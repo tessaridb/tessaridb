@@ -99,8 +99,8 @@ impl Parser<'_> {
         } else {
             None
         };
-        let ahead = if fold.takes_ahead() {
-            self.expect_punct(Punct::Comma, "`,` and the horizon in seconds")?;
+        let ahead = if let Some(third) = fold.third() {
+            self.expect_punct(Punct::Comma, third)?;
             Some(Box::new(self.condition()?))
         } else {
             None

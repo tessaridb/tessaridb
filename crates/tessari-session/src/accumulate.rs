@@ -74,6 +74,7 @@ pub(crate) mod exact;
 mod holding;
 mod partial;
 mod quantile;
+mod sequence;
 mod sketch;
 use rust_decimal::Decimal;
 #[cfg(test)]
@@ -165,6 +166,21 @@ pub(crate) enum Accumulator {
         held: Vec<Value>,
         /// How many records held each value already settled.
         runs: std::collections::BTreeMap<Decimal, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// The product-analytics folds' events — the instant and the conditions
+    /// each record met — held whole because no running form knows the
+    /// longest chain before the last event has arrived.
+    Events {
+        /// Which of the four the answer is read as.
+        fold: Aggregate,
+        /// The events, in arrival order; sorted by instant at the finish.
+        held: Vec<sequence::Event>,
+        /// The window `window_funnel` keeps a chain inside, settled once.
+        window: Option<f64>,
+        /// The pattern the sequence folds read, settled and parsed once.
+        pattern: Option<Vec<sequence::Step>>,
         /// Where to point a refusal.
         span: Span,
     },
@@ -464,6 +480,16 @@ impl Accumulator {
                 sep: None,
                 span,
             },
+            Aggregate::WindowFunnel
+            | Aggregate::SequenceMatch
+            | Aggregate::SequenceCount
+            | Aggregate::Retention => Self::Events {
+                fold: aggregate,
+                held: Vec::new(),
+                window: None,
+                pattern: None,
+                span,
+            },
         }
     }
 
@@ -552,6 +578,70 @@ impl Accumulator {
                 if summable(value, "mad", *span)?.is_some() {
                     held.push(value.clone());
                 }
+            }
+            // Offered `[instant, extra, conditions]` — the window for the
+            // funnel, the pattern for the sequence folds — or the conditions
+            // alone for `retention`. The extra settles once and refuses
+            // drift, by `top_k`'s rule; a condition that is no boolean is
+            // refused rather than read as one.
+            Self::Events {
+                fold,
+                held,
+                window,
+                pattern,
+                span,
+            } => {
+                let Some((at, met, extra)) = sequence::event_of(*fold, value, *span)? else {
+                    return Ok(());
+                };
+                match (*fold, extra) {
+                    (Aggregate::WindowFunnel, Some(offered)) => {
+                        let Some(seconds) = match &offered {
+                            Value::Number(number) => crate::aggregate::approximate(number),
+                            _ => None,
+                        }
+                        .filter(|seconds| *seconds > 0.0) else {
+                            return Err(failed(
+                                fold.spelling(),
+                                "a window in seconds, more than nothing",
+                                *span,
+                            ));
+                        };
+                        match window {
+                            Some(kept) if *kept != seconds => {
+                                return Err(failed(
+                                    fold.spelling(),
+                                    "a window that differs between records",
+                                    *span,
+                                ));
+                            }
+                            Some(_) => {}
+                            None => *window = Some(seconds),
+                        }
+                    }
+                    (Aggregate::SequenceMatch | Aggregate::SequenceCount, Some(offered)) => {
+                        let Value::String(text) = &offered else {
+                            return Err(failed(
+                                fold.spelling(),
+                                "a pattern written as text, like '(1)(<1800)(2)'",
+                                *span,
+                            ));
+                        };
+                        match pattern {
+                            Some(kept) if kept != &sequence::pattern_of(text, *span)? => {
+                                return Err(failed(
+                                    fold.spelling(),
+                                    "a pattern that differs between records",
+                                    *span,
+                                ));
+                            }
+                            Some(_) => {}
+                            None => *pattern = Some(sequence::pattern_of(text, *span)?),
+                        }
+                    }
+                    _ => {}
+                }
+                held.push((at, met));
             }
             // Offered `[value, sep]`: the separator is the fold's second
             // argument, settled once like `top_k`'s k; an absent value is
@@ -958,6 +1048,51 @@ impl Accumulator {
             Self::Joined { held, sep, .. } => {
                 Ok(Value::String(held.join(sep.as_deref().unwrap_or_default())))
             }
+            Self::Events {
+                fold,
+                held,
+                window,
+                pattern,
+                span,
+            } => match fold {
+                Aggregate::Retention => Ok(sequence::retained(held)),
+                Aggregate::WindowFunnel => {
+                    let Some(window) = window else {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a window in seconds, more than nothing",
+                            *span,
+                        ));
+                    };
+                    Ok(sequence::funnel(held, *window))
+                }
+                Aggregate::SequenceMatch | Aggregate::SequenceCount => {
+                    let Some(pattern) = pattern else {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a pattern written as text, like '(1)(<1800)(2)'",
+                            *span,
+                        ));
+                    };
+                    // A step naming a condition the statement never wrote is
+                    // refused rather than never met — the two read the same in
+                    // the answer and only one of them is true.
+                    let width = held.first().map_or(0, |(_, met)| met.len());
+                    if pattern.iter().any(|step| step.cond >= width) {
+                        return Err(failed(
+                            fold.spelling(),
+                            "a pattern naming a condition the call does not write",
+                            *span,
+                        ));
+                    }
+                    if matches!(fold, Aggregate::SequenceMatch) {
+                        Ok(sequence::matched(held, pattern))
+                    } else {
+                        Ok(sequence::counted(held, pattern))
+                    }
+                }
+                _ => unreachable!("only a sequence fold holds events"),
+            },
             Self::Unique { held, .. } => Ok(Value::Number(Number::Integer(
                 i64::try_from(held.len()).unwrap_or(i64::MAX),
             ))),
@@ -1122,6 +1257,7 @@ impl Accumulator {
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Events { held, .. } => held.len(),
             Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),

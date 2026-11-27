@@ -238,6 +238,28 @@ pub enum Aggregate {
     /// `collect`'s rule that an answer every caller must patch is the wrong
     /// answer.
     StringAgg,
+    /// `window_funnel(<instant>, <window>, <conditions>)` — the longest
+    /// prefix of the conditions a chain of the group's events meets in order,
+    /// the whole chain inside `<window>` seconds of its first event. The
+    /// conditions are one array argument, each a boolean over the record;
+    /// the answer is a whole number from 0 to the conditions' count.
+    WindowFunnel,
+    /// `sequence_match(<instant>, <pattern>, <conditions>)` — whether the
+    /// group holds a chain of events meeting the conditions in the pattern's
+    /// order, each gap between neighbours inside the pattern's bounds: `1`
+    /// or `0`. The pattern is text like `'(1)(<1800)(2)'` — condition 1,
+    /// then condition 2 no more than 1800 seconds later; `(>n)` asks for at
+    /// least `n` seconds. A chain with gaps is not writable as nested calls,
+    /// which is why the pattern is a mini-language and not more arguments.
+    SequenceMatch,
+    /// `sequence_count(<instant>, <pattern>, <conditions>)` — how many
+    /// non-overlapping chains the group holds, found earliest first.
+    SequenceCount,
+    /// `retention(<conditions>)` — per group, one `1` or `0` per condition:
+    /// whether the anchor (the first condition) was met at all, and for each
+    /// later condition whether it was met by a group the anchor was met in.
+    /// The answer is an array of integers the conditions' length.
+    Retention,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -317,6 +339,10 @@ impl Aggregate {
         Self::MovingSum,
         Self::MovingMean,
         Self::StringAgg,
+        Self::WindowFunnel,
+        Self::SequenceMatch,
+        Self::SequenceCount,
+        Self::Retention,
     ];
 
     /// How the fold is written.
@@ -375,6 +401,10 @@ impl Aggregate {
             Self::MovingSum => "moving_sum",
             Self::MovingMean => "moving_mean",
             Self::StringAgg => "string_agg",
+            Self::WindowFunnel => "window_funnel",
+            Self::SequenceMatch => "sequence_match",
+            Self::SequenceCount => "sequence_count",
+            Self::Retention => "retention",
         }
     }
 
@@ -429,7 +459,11 @@ impl Aggregate {
             | Self::Mad
             | Self::MovingSum
             | Self::MovingMean
-            | Self::StringAgg => Retention::WholeGroup,
+            | Self::StringAgg
+            | Self::WindowFunnel
+            | Self::SequenceMatch
+            | Self::SequenceCount
+            | Self::Retention => Retention::WholeGroup,
         }
     }
 
@@ -461,21 +495,31 @@ impl Aggregate {
         )
     }
 
-    /// Whether the fold takes a third argument: the horizon, in seconds past
-    /// the last sample, that `predict_linear` projects to.
+    /// What the fold's third argument is, for a fold that takes one — the
+    /// horizon a projection or a decay is asked at, or the conditions a
+    /// sequence fold reads; `None` for a fold with no third argument.
+    #[must_use]
+    pub const fn third(self) -> Option<&'static str> {
+        match self {
+            Self::PredictLinear
+            | Self::Downsample
+            | Self::DecayedSum
+            | Self::DecayedMean
+            | Self::DecayedMax
+            | Self::DecayedCount
+            | Self::MovingSum
+            | Self::MovingMean => Some("`,` and the horizon in seconds"),
+            Self::WindowFunnel | Self::SequenceMatch | Self::SequenceCount => {
+                Some("`,` and the conditions, an array of booleans")
+            }
+            _ => None,
+        }
+    }
+
+    /// Whether the fold takes a third argument — [`Self::third`] naming it.
     #[must_use]
     pub const fn takes_ahead(self) -> bool {
-        matches!(
-            self,
-            Self::PredictLinear
-                | Self::Downsample
-                | Self::DecayedSum
-                | Self::DecayedMean
-                | Self::DecayedMax
-                | Self::DecayedCount
-                | Self::MovingSum
-                | Self::MovingMean
-        )
+        self.third().is_some()
     }
 
     /// What the fold's second argument is, for a fold that takes one: the
@@ -513,6 +557,10 @@ impl Aggregate {
             }
             Self::Histogram => Some("`,` and how many bins to answer"),
             Self::StringAgg => Some("`,` and the separator to join the values with"),
+            Self::WindowFunnel => Some("`,` and the window in seconds"),
+            Self::SequenceMatch | Self::SequenceCount => {
+                Some("`,` and the pattern, like '(1)(<1800)(2)'")
+            }
             _ => None,
         }
     }

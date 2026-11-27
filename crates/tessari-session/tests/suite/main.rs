@@ -80,6 +80,7 @@ mod fold_states;
 mod folds;
 mod follower_lag;
 mod full_tuple;
+mod funnels;
 mod fusion;
 mod fuzzy;
 mod gathered_reads;

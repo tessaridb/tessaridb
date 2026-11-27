@@ -56,7 +56,11 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "mad",
             "moving_sum",
             "moving_mean",
-            "string_agg"
+            "string_agg",
+            "window_funnel",
+            "sequence_match",
+            "sequence_count",
+            "retention"
         ]
     );
 }

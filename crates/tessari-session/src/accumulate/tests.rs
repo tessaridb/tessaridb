@@ -71,6 +71,10 @@ const EVERY: &[Aggregate] = &[
     Aggregate::MovingSum,
     Aggregate::MovingMean,
     Aggregate::StringAgg,
+    Aggregate::WindowFunnel,
+    Aggregate::SequenceMatch,
+    Aggregate::SequenceCount,
+    Aggregate::Retention,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real

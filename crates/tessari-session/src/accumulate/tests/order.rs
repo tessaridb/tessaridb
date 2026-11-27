@@ -136,6 +136,23 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
                 ])
             } else if matches!(aggregate, Aggregate::StringAgg) {
                 Value::Array(vec![Value::from("x"), Value::from(",")])
+            } else if matches!(aggregate, Aggregate::Retention) {
+                Value::Array(vec![Value::Bool(true), Value::Bool(false)])
+            } else if matches!(aggregate, Aggregate::WindowFunnel) {
+                Value::Array(vec![
+                    Value::Datetime(tessari_types::Datetime::from_seconds(held)),
+                    integer(60),
+                    Value::Array(vec![Value::Bool(true)]),
+                ])
+            } else if matches!(
+                aggregate,
+                Aggregate::SequenceMatch | Aggregate::SequenceCount
+            ) {
+                Value::Array(vec![
+                    Value::Datetime(tessari_types::Datetime::from_seconds(held)),
+                    Value::from("(1)"),
+                    Value::Array(vec![Value::Bool(true)]),
+                ])
             } else if !aggregate.takes_an_instant() && aggregate.second().is_some() {
                 Value::Array(vec![integer(held), integer(2)])
             } else if aggregate.takes_an_instant() {
