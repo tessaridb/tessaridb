@@ -53,6 +53,8 @@ const EVERY: &[Aggregate] = &[
     Aggregate::RegrSlope,
     Aggregate::RegrIntercept,
     Aggregate::RegrR2,
+    Aggregate::Quantiles,
+    Aggregate::ExactQuantiles,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real

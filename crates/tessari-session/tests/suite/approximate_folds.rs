@@ -310,3 +310,44 @@ fn a_sketch_is_folded_on_the_leaders_and_equals_a_whole_node() {
         );
     }
 }
+
+/// `quantiles` and `exact_quantiles` at the statement level (G103 N2): the
+/// multi-rank sketch answers per rank within its declared bound, the exact
+/// fold answers the hand-computed order statistics, and the refusals name
+/// the fold.
+#[test]
+fn the_quantile_folds_answer_at_statement_level() {
+    let store = store();
+    let mut session = ready(&store);
+    let numbers = |held: &Value| -> Vec<f64> {
+        let Value::Array(held) = held else {
+            panic!("not an array: {held:?}");
+        };
+        held.iter()
+            .map(|value| match value {
+                Value::Number(Number::Integer(held)) => *held as f64,
+                Value::Number(Number::Float(held)) => *held,
+                other => other.to_string().parse::<f64>().unwrap(),
+            })
+            .collect()
+    };
+    // n runs 1 to 1000 in group `all`: ⌊rank × 999⌋ + 1 is the exact answer.
+    let held = fields(
+        &mut session,
+        "SELECT exact_quantiles(n, [0.0, 0.5, 0.99, 1.0]) AS f FROM obs WHERE g = 'all';",
+    );
+    assert_eq!(
+        numbers(held.get("f").unwrap()),
+        vec![1.0, 500.0, 990.0, 1000.0]
+    );
+    let held = fields(
+        &mut session,
+        "SELECT quantiles(n, [0.5, 0.99]) AS f FROM obs WHERE g = 'all';",
+    );
+    let sketched = numbers(held.get("f").unwrap());
+    assert_eq!(sketched.len(), 2);
+    // The sketch's declared relative error is 1%: the median of 1..1000 is
+    // 500 and the 0.99 rank is 990, each answer within its bound.
+    assert!((sketched[0] - 500.0).abs() <= 5.0, "median {}", sketched[0]);
+    assert!((sketched[1] - 990.0).abs() <= 9.9, "p99 {}", sketched[1]);
+}

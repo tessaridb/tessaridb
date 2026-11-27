@@ -321,6 +321,40 @@ pub(crate) fn middle(
     Ok(exactly(&averaged))
 }
 
+/// The values at several ranks of the same multiset, exactly — the value at
+/// index ⌊rank × (n − 1)⌋ of the sorted values, which is the definition
+/// `approx_quantile`'s sketch estimates. Over nothing, `NONE` by `mean`'s
+/// rule; the answer is an array in the ranks' order, normalized like
+/// `median`'s so the same multiset answers the same whatever order the
+/// records arrived in.
+pub(crate) fn exact_ranks(
+    held: &[Value],
+    runs: &std::collections::BTreeMap<Decimal, u64>,
+    ranks: &[f64],
+    span: Span,
+) -> Result<Value> {
+    let mut counted = runs.clone();
+    for value in held {
+        let entry = counted.entry(exact(value, span)?).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    let size: u64 = counted
+        .values()
+        .fold(0, |size, many| size.saturating_add(*many));
+    if size == 0 {
+        return Ok(Value::None);
+    }
+    let last = count(size.saturating_sub(1));
+    let mut answered = Vec::with_capacity(ranks.len());
+    for rank in ranks {
+        #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+        let at = (rank * last).floor().max(0.0) as u64;
+        let held = ranked(&counted, at.min(size.saturating_sub(1))).map_or(Value::None, exactly);
+        answered.push(held);
+    }
+    Ok(Value::Array(answered))
+}
+
 /// The value at zero-based `rank` of a multiset held as value → how many.
 fn ranked(counted: &std::collections::BTreeMap<Decimal, u64>, rank: u64) -> Option<&Decimal> {
     let mut below = 0_u64;

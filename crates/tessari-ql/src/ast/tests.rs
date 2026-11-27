@@ -41,7 +41,8 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "decayed_count",
             "top_k",
             "collect",
-            "count distinct"
+            "count distinct",
+            "exact_quantiles"
         ]
     );
 }

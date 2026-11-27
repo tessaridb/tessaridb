@@ -6,7 +6,7 @@
 
 use super::super::distinct::{Distinct, SMALL};
 use super::super::quantile::{MOST, Quantile};
-use super::Value;
+use super::{Accumulator, Aggregate, Value, float as offered, span};
 use tessari_types::Number;
 
 fn whole(at: i64) -> Value {
@@ -330,4 +330,119 @@ fn the_c4_measurement_over_a_million_values_stays_within_the_declared_bounds() {
             assert!(error <= 0.01, "{name} rank {rank}: {answer} for {expected}");
         }
     }
+}
+
+/// Offer `[value, ranks]` pairs the way the parser packs a quantile fold's
+/// two arguments.
+fn ranked_at(aggregate: Aggregate, values: &[f64], ranks: &[f64]) -> super::super::Result<Value> {
+    let asked = Value::Array(ranks.iter().map(|rank| offered(*rank)).collect());
+    let mut accumulator = Accumulator::for_aggregate(aggregate, span());
+    for value in values {
+        accumulator.offer(&Value::Array(vec![offered(*value), asked.clone()]))?;
+    }
+    accumulator.finish()
+}
+
+/// The float entries of an answered array, for tolerance comparisons.
+fn answered_ranks(answered: super::super::Result<Value>, what: &str) -> Vec<f64> {
+    let answered = answered.unwrap_or_else(|e| panic!("{what} refused: {e}"));
+    let Value::Array(held) = answered else {
+        panic!("{what} answered {answered:?}, not an array");
+    };
+    held.iter()
+        .map(|value| {
+            let Value::Number(number) = value else {
+                panic!("an answered rank held {value:?}, not a number");
+            };
+            crate::aggregate::approximate(number).unwrap_or(f64::NAN)
+        })
+        .collect()
+}
+
+/// Several ranks in one pass answer what the single-rank fold answers at
+/// each — the same sketch, asked once per rank.
+#[test]
+fn quantiles_answer_what_approx_quantile_answers_at_each_rank() {
+    let values: Vec<f64> = (1..=200).map(f64::from).collect();
+    let ranks = [0.1, 0.5, 0.9, 0.99];
+    let multi = answered_ranks(
+        ranked_at(Aggregate::Quantiles, &values, &ranks),
+        "quantiles",
+    );
+    assert_eq!(multi.len(), ranks.len());
+    for (rank, answered) in ranks.iter().zip(multi.iter()) {
+        let mut accumulator = Accumulator::for_aggregate(Aggregate::ApproxQuantile, span());
+        for value in &values {
+            accumulator
+                .offer(&Value::Array(vec![offered(*value), offered(*rank)]))
+                .unwrap();
+        }
+        let one = accumulator.finish().unwrap();
+        let Value::Number(one) = one else {
+            panic!("approx_quantile answered a non-number at {rank}");
+        };
+        let one = crate::aggregate::approximate(&one).unwrap();
+        assert!(
+            (answered - one).abs() < 1e-12,
+            "quantiles at {rank} answered {answered}, approx_quantile {one}"
+        );
+    }
+}
+
+/// The exact fold answers the hand-computed order statistics: over 1 to 10,
+/// ⌊rank × 9⌋ picks indices 0, 4, 8 and 9 — the values 1, 5, 9 and 10. The
+/// plausible wrong answers — nearest-rank-with-ceiling (2 at rank 0) and an
+/// interpolated 5.5 at the median — both land outside the assertion.
+#[test]
+fn exact_quantiles_answer_the_hand_checked_order_statistics() {
+    let values: Vec<f64> = (1..=10).map(f64::from).collect();
+    let answered = answered_ranks(
+        ranked_at(Aggregate::ExactQuantiles, &values, &[0.0, 0.5, 0.9, 1.0]),
+        "exact_quantiles",
+    );
+    assert_eq!(answered, vec![1.0, 5.0, 9.0, 10.0]);
+}
+
+/// Over nothing both folds answer `NONE`, by `approx_quantile`'s rule; a
+/// rank outside 0 to 1 and a non-array second argument are refused naming
+/// the fold; ranks that differ between records are refused rather than
+/// silently settled one way.
+#[test]
+fn the_quantile_folds_refuse_what_they_cannot_mean() {
+    for aggregate in [Aggregate::Quantiles, Aggregate::ExactQuantiles] {
+        assert_eq!(
+            ranked_at(aggregate, &[], &[0.5]).unwrap(),
+            Value::None,
+            "{aggregate:?} over nothing"
+        );
+    }
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Quantiles, span());
+    let refused = accumulator
+        .offer(&Value::Array(vec![offered(1.0), offered(0.5)]))
+        .unwrap_err();
+    assert!(format!("{refused}").contains("quantiles"), "{refused}");
+
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::ExactQuantiles, span());
+    let refused = accumulator
+        .offer(&Value::Array(vec![
+            offered(1.0),
+            Value::Array(vec![offered(1.5)]),
+        ]))
+        .unwrap_err();
+    assert!(format!("{refused}").contains("0 to 1"), "{refused}");
+
+    let mut accumulator = Accumulator::for_aggregate(Aggregate::Quantiles, span());
+    accumulator
+        .offer(&Value::Array(vec![
+            offered(1.0),
+            Value::Array(vec![offered(0.5)]),
+        ]))
+        .unwrap();
+    let refused = accumulator
+        .offer(&Value::Array(vec![
+            offered(2.0),
+            Value::Array(vec![offered(0.9)]),
+        ]))
+        .unwrap_err();
+    assert!(format!("{refused}").contains("differ"), "{refused}");
 }

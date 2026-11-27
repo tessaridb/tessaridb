@@ -123,8 +123,11 @@ impl Accumulator {
             | Self::Extreme { .. }
             | Self::Distinct { .. }
             | Self::Quantile { .. }
+            | Self::Quantiles { .. }
             | Self::Merging { .. } => 0,
-            Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Middle { held, runs, .. } | Self::ExactQuantiles { held, runs, .. } => {
+                held.len().saturating_add(runs.len())
+            }
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),

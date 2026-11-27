@@ -126,9 +126,15 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
         let mut accumulator = Accumulator::for_aggregate(*aggregate, span());
         for held in 0..OFFERED {
             // A fold with a second argument is offered each value with it —
-            // the instant for the counter family, the count for `top_k` —
-            // and a fold taking a horizon with that as the third element.
-            let offered = if !aggregate.takes_an_instant() && aggregate.second().is_some() {
+            // the instant for the counter family, the count for `top_k`, the
+            // ranks for the quantile folds — and a fold taking a horizon with
+            // that as the third element.
+            let offered = if matches!(aggregate, Aggregate::Quantiles | Aggregate::ExactQuantiles) {
+                Value::Array(vec![
+                    integer(held),
+                    Value::Array(vec![float(0.5), float(0.9)]),
+                ])
+            } else if !aggregate.takes_an_instant() && aggregate.second().is_some() {
                 Value::Array(vec![integer(held), integer(2)])
             } else if aggregate.takes_an_instant() {
                 let mut pair = vec![

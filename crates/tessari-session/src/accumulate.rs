@@ -84,7 +84,7 @@ use tessari_types::{Number, Value};
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
 pub(crate) use arithmetic::{
-    Moments, Moments2, add_exact, add_float, count, failed, middle, summable,
+    Moments, Moments2, add_exact, add_float, count, exact_ranks, failed, middle, summable,
 };
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
@@ -222,6 +222,29 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// `quantiles`' sketch and the ranks it answers at — one sketch, several
+    /// ranks, each answer under the same ADR-0122 C3 bound `approx_quantile`
+    /// carries.
+    Quantiles {
+        /// The sketch so far.
+        sketch: quantile::Quantile,
+        /// The ranks, once a record has offered them.
+        ranks: Option<Vec<f64>>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `exact_quantiles`' multiset and ranks — `median`'s holding, answered
+    /// at ⌊rank × (n − 1)⌋, the definition the sketch estimates.
+    ExactQuantiles {
+        /// The values so far.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// The ranks, once a record has offered them.
+        ranks: Option<Vec<f64>>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `state::merge`'s one accumulator: the states offered all name one fold,
     /// and this is that fold's accumulator, merged into (G102 S11).
     Merging {
@@ -316,6 +339,17 @@ impl Accumulator {
             | Aggregate::RegrR2 => Self::Paired {
                 fold: aggregate,
                 running: Moments2::default(),
+                span,
+            },
+            Aggregate::Quantiles => Self::Quantiles {
+                sketch: quantile::Quantile::default(),
+                ranks: None,
+                span,
+            },
+            Aggregate::ExactQuantiles => Self::ExactQuantiles {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                ranks: None,
                 span,
             },
             Aggregate::Increase
@@ -538,6 +572,45 @@ impl Accumulator {
                     sketch.offer(held);
                 }
             }
+            // Offered `[value, ranks]`: the ranks are the fold's second
+            // argument, an array settled once like the quantile's rank.
+            Self::Quantiles {
+                sketch,
+                ranks,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(asked)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_ranks(ranks, asked, *span)?;
+                if let Some(number) = summable(sample, "quantiles", *span)? {
+                    let held = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| failed("quantiles", "a number no float can hold", *span))?;
+                    sketch.offer(held);
+                }
+            }
+            // Offered `[value, ranks]` like `quantiles`, held like `median`.
+            Self::ExactQuantiles {
+                held,
+                runs: _,
+                ranks,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(asked)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_ranks(ranks, asked, *span)?;
+                if summable(sample, "exact_quantiles", *span)?.is_some() {
+                    held.push(sample.clone());
+                }
+            }
             // A state of one fold, merged into that fold's accumulator. The
             // first state names the fold; a state of any other refuses rather
             // than mis-adds, which is the whole reason the name travels.
@@ -709,6 +782,20 @@ impl Accumulator {
                 .map_err(|reason| failed(fold.spelling(), reason, *span))?;
                 Ok(answered.map_or(Value::None, |held| Value::Number(Number::float(held))))
             }
+            Self::Quantiles { sketch, ranks, .. } => {
+                Ok(ranks.as_ref().map_or(Value::None, |ranks| {
+                    Value::Array(ranks.iter().map(|rank| sketch.answer(*rank)).collect())
+                }))
+            }
+            Self::ExactQuantiles {
+                held,
+                runs,
+                ranks,
+                span,
+            } => match ranks {
+                None => Ok(Value::None),
+                Some(ranks) => exact_ranks(held, runs, ranks, *span),
+            },
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
@@ -782,9 +869,12 @@ impl Accumulator {
             // A sketch holds no value it was offered; what it keeps is
             // bounded by its own size (ADR-0122 C2, C3), not by the group's.
             | Self::Distinct { .. }
-            | Self::Quantile { .. } => 0,
+            | Self::Quantile { .. }
+            | Self::Quantiles { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
-            Self::Middle { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Middle { held, runs, .. } | Self::ExactQuantiles { held, runs, .. } => {
+                held.len().saturating_add(runs.len())
+            }
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
@@ -817,6 +907,37 @@ fn settle_k(held: &mut Option<u64>, asked: &Value, span: Span) -> Result<()> {
         Some(kept) if *kept != wanted => Err(failed(
             "top_k",
             "a count that differs between records",
+            span,
+        )),
+        Some(_) => Ok(()),
+        None => {
+            *held = Some(wanted);
+            Ok(())
+        }
+    }
+}
+
+/// The ranks a `quantiles` fold answers at, read like `top_k`'s k: an array
+/// of numbers, each from 0 to 1, settled once and refused when a later
+/// record offers a different set.
+fn settle_ranks(held: &mut Option<Vec<f64>>, asked: &Value, span: Span) -> Result<()> {
+    let Value::Array(asked) = asked else {
+        return Err(failed("quantiles", "ranks that are not an array", span));
+    };
+    let mut wanted = Vec::with_capacity(asked.len());
+    for rank in asked {
+        let Value::Number(rank) = rank else {
+            return Err(failed("quantiles", "a rank that is not a number", span));
+        };
+        let Some(rank) = approximate(rank).filter(|rank| (0.0..=1.0).contains(rank)) else {
+            return Err(failed("quantiles", "a rank outside 0 to 1", span));
+        };
+        wanted.push(rank);
+    }
+    match held {
+        Some(kept) if *kept != wanted => Err(failed(
+            "quantiles",
+            "ranks that differ between records",
             span,
         )),
         Some(_) => Ok(()),

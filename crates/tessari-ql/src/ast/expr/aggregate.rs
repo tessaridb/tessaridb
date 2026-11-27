@@ -143,6 +143,22 @@ pub enum Aggregate {
     /// the square of the correlation, as a float. `NONE` wherever the slope
     /// is.
     RegrR2,
+    /// `quantiles(<expr>, <ranks>)` — the values at several ranks in one
+    /// pass, each within [`Self::ApproxQuantile`]'s stated relative error,
+    /// as an array in the ranks' order.
+    ///
+    /// The ranks are one array argument — `[0.5, 0.9, 0.99]` — so one sketch
+    /// answers them all; a rank outside 0 to 1, or a second argument that is
+    /// not an array of numbers, is refused rather than guessed at. Over
+    /// nothing, `NONE`, by `approx_quantile`'s rule.
+    Quantiles,
+    /// `exact_quantiles(<expr>, <ranks>)` — the values at several ranks,
+    /// exactly: the value at index ⌊rank × (n − 1)⌋ of the sorted values,
+    /// the definition the sketch estimates.
+    ///
+    /// Exact means holding the group, by `median`'s rule and under the same
+    /// memory ceiling; `quantiles` is the fold whose space does not grow.
+    ExactQuantiles,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -204,6 +220,8 @@ impl Aggregate {
         Self::RegrSlope,
         Self::RegrIntercept,
         Self::RegrR2,
+        Self::Quantiles,
+        Self::ExactQuantiles,
     ];
 
     /// How the fold is written.
@@ -244,6 +262,8 @@ impl Aggregate {
             Self::RegrSlope => "regr_slope",
             Self::RegrIntercept => "regr_intercept",
             Self::RegrR2 => "regr_r2",
+            Self::Quantiles => "quantiles",
+            Self::ExactQuantiles => "exact_quantiles",
         }
     }
 
@@ -269,6 +289,8 @@ impl Aggregate {
             Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
                 Retention::Constant
             }
+            Self::Quantiles => Retention::Constant,
+            Self::ExactQuantiles => Retention::WholeGroup,
             Self::Median
             | Self::Increase
             | Self::Rate
@@ -342,6 +364,9 @@ impl Aggregate {
             Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
                 Some("`,` and the value paired with it")
             }
+            Self::Quantiles | Self::ExactQuantiles => {
+                Some("`,` and the ranks, an array of numbers from 0 to 1")
+            }
             _ => None,
         }
     }
@@ -349,7 +374,10 @@ impl Aggregate {
     /// Whether the fold's answer is an estimate rather than exact.
     #[must_use]
     pub const fn estimates(self) -> bool {
-        matches!(self, Self::ApproxDistinct | Self::ApproxQuantile)
+        matches!(
+            self,
+            Self::ApproxDistinct | Self::ApproxQuantile | Self::Quantiles
+        )
     }
 
     /// The fold a word spells, if it spells one.
