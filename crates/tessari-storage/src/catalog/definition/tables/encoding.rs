@@ -70,7 +70,7 @@ impl TableDefinition {
                 fields.insert(FIELD_AUTO_SPLIT.to_owned(), policy.to_value());
             }
         }
-        if let Some(expire) = self.expire {
+        if let Some(expire) = self.expire.clone() {
             fields.insert(FIELD_EXPIRE.to_owned(), expire.to_value());
         }
         if !self.referenced_by.is_empty() {

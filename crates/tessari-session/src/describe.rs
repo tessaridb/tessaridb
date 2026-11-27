@@ -489,19 +489,30 @@ fn write_table(script: &mut String, definition: &TableDefinition) -> Result<(), 
 
 /// `EXPIRE [AFTER d]`, written only when the table declared it (ADR-0122 A1).
 fn write_expire(script: &mut String, definition: &TableDefinition) {
-    let Some(expire) = definition.expire else {
+    let Some(expire) = definition.expire.clone() else {
         return;
     };
     script.push_str(" EXPIRE");
     if let Some(after) = expire.after {
         let _ = write!(script, " AFTER {}", after.to_literal());
     }
+    // The condition, spelled back through the same rendering `ASSERT` uses,
+    // so a definition re-creates the clause it was declared with.
+    if let Some(condition) = &expire.condition
+        && let Some(rendered) = crate::describe::parts::assertion(condition)
+    {
+        let _ = write!(script, " WHERE {rendered}");
+    }
 }
 
 /// A retired declaration is its own statement, as an operator writes it: a
 /// table restored without it would stamp a default again (ADR-0122 A6).
 fn write_retired_expiry(script: &mut String, name: &str, definition: &TableDefinition) {
-    if definition.expire.is_some_and(|expire| expire.retired) {
+    if definition
+        .expire
+        .as_ref()
+        .is_some_and(|expire| expire.retired)
+    {
         let _ = writeln!(script, "ALTER TABLE {name} DROP EXPIRE;");
     }
 }

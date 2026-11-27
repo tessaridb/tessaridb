@@ -2453,6 +2453,17 @@ stores, writes and reads exactly as before, and nothing is kept per record for i
   `existing: 'unchanged'`. A new default applies to records created after it.
 - **`DROP EXPIRE` stops new instants and lets the stored ones stand** (`existing: 'still expire at their instants'`):
   a record an application promised would disappear still does. `PERSIST t:x` or `EXPIRE NONE` makes one permanent.
+- **`EXPIRE AFTER d WHERE <condition>`** makes the lifetime conditional: the record expires only while the
+  condition holds of it. The condition is settled at the leader's commit like every other instant, so a follower
+  hides the record at the same moment; an edit that meets the condition earns the instant from that commit, and
+  one that leaves the state the condition asks about gives it up — the record must not keep an instant earned in
+  a state it is no longer in. The condition is the `ASSERT` vocabulary — comparisons of the record's own fields
+  against literals or other fields, `AND`/`OR`/`NOT` — and anything outside it, or a `WHERE` with no `AFTER` to
+  count from, is refused where it is written:
+
+```
+DEFINE TABLE task (status string, title string) EXPIRE AFTER 30d WHERE status = 'done';
+```
 
 An expired record is gone to every reader at its instant: scans, point reads, every index, joins, subqueries,
 `FETCH`, a gathered read and a follower. The instant travels with the record, so a follower hides it at the same

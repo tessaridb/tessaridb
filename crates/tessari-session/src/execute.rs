@@ -270,7 +270,8 @@ impl Session<'_> {
                 if let Some(expire) = expire
                     && !existed
                 {
-                    self.declare_expiry_on(transaction, name, *expire).await?;
+                    self.declare_expiry_on(transaction, name, expire.clone())
+                        .await?;
                 }
                 Ok(defined)
             }
@@ -1185,7 +1186,7 @@ impl Session<'_> {
                                 transaction,
                                 id,
                                 &table.name.text,
-                                Some(*expire),
+                                Some(expire.clone()),
                                 table.span,
                             )
                             .await;
@@ -1732,7 +1733,8 @@ impl Session<'_> {
                 if let Some(expire) = expire
                     && !existed
                 {
-                    self.declare_expiry_on(transaction, name, *expire).await?;
+                    self.declare_expiry_on(transaction, name, expire.clone())
+                        .await?;
                 }
                 Ok(defined)
             }

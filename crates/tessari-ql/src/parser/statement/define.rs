@@ -439,8 +439,11 @@ impl Parser<'_> {
         })
     }
 
-    /// What follows `EXPIRE` in a table's declaration: nothing, or `AFTER` and
-    /// the lifetime a created record gets (ADR-0122 A1).
+    /// What follows `EXPIRE` in a table's declaration: nothing, `AFTER` and
+    /// the lifetime a created record gets (ADR-0122 A1), or `AFTER` with
+    /// `WHERE` and the condition the record must meet to expire at all. A
+    /// condition needs the lifetime — `EXPIRE WHERE …` alone names no `d` to
+    /// count from — so it is refused rather than read as one.
     pub(super) fn table_expiry(&mut self) -> Result<TableExpiry> {
         let after = if self.eat_word("after") {
             Some(self.positive_duration(
@@ -449,6 +452,17 @@ impl Parser<'_> {
         } else {
             None
         };
-        Ok(TableExpiry { after })
+        let condition = if self.eat_keyword(crate::token::Keyword::Where) {
+            if after.is_none() {
+                return Err(self.error_here(
+                    "`AFTER` and the lifetime first — a conditional expiry counts from it",
+                ));
+            }
+            let written = self.condition()?;
+            Some(crate::parser::assertion::lower_record(&written)?)
+        } else {
+            None
+        };
+        Ok(TableExpiry { after, condition })
     }
 }

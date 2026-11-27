@@ -46,6 +46,45 @@ pub(super) fn lower(expr: &Expr) -> Result<Assertion> {
     }
 }
 
+/// The constraint a table's conditional expiry describes — the same
+/// vocabulary as [`lower`], with the record's own routes on the left where
+/// `ASSERT` binds `$value`: `EXPIRE AFTER 30d WHERE status = 'done'` asks
+/// about the record as a whole, and there is no `$value` to bind.
+///
+/// # Errors
+///
+/// [`Error::AssertionNotAConstraint`] for anything outside the vocabulary,
+/// refused here — where it is written — for [`lower`]'s reason: the store
+/// must be incapable of meeting a condition it cannot check.
+pub(crate) fn lower_record(expr: &Expr) -> Result<Assertion> {
+    match &expr.kind {
+        ExprKind::And(left, right) => Ok(Assertion::All(vec![
+            lower_record(left)?,
+            lower_record(right)?,
+        ])),
+        ExprKind::Or(left, right) => Ok(Assertion::Any(vec![
+            lower_record(left)?,
+            lower_record(right)?,
+        ])),
+        ExprKind::Not(inner) => Ok(Assertion::Not(Box::new(lower_record(inner)?))),
+        ExprKind::Binary { op, left, right } => {
+            let ExprKind::Path(field) = &left.kind else {
+                return Err(Error::AssertionNotAConstraint { span: left.span });
+            };
+            if field.path.is_several() {
+                return Err(Error::AssertionNotAConstraint { span: left.span });
+            }
+            Ok(Assertion::Of {
+                route: field.path.clone(),
+                op: *op,
+                against: operand(right)
+                    .ok_or(Error::AssertionNotAConstraint { span: right.span })?,
+            })
+        }
+        _ => Err(Error::AssertionNotAConstraint { span: expr.span }),
+    }
+}
+
 /// The right-hand side of a comparison: a literal, or a route into the record.
 ///
 /// A route is admitted because it is the same thing a `WHERE` means by the same

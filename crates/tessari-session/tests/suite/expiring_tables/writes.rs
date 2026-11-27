@@ -12,7 +12,7 @@ use tessari_session::{Error, Outcome, Session};
 use tessari_storage::Store;
 use tessari_types::Value;
 
-use super::{field, opened, run};
+use super::{field, info, opened, run};
 
 /// A short lifetime, and a wait past it — real time, as the key-value suite
 /// does, because the clock is the transaction's own.
@@ -247,4 +247,77 @@ fn inside_a_transaction_a_record_answers_the_instant_its_commit_will_give_it() {
         "the edited record had an instant to clear: {persisted:?}"
     );
     assert_eq!(ttl(&mut session, "message:3"), Value::Null);
+}
+
+#[test]
+fn a_conditional_expiry_stamps_only_while_the_condition_holds() {
+    let store = store();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        &format!(
+            "DEFINE TABLE task (status string, title string) \
+             EXPIRE AFTER {SHORT} WHERE status = 'done';"
+        ),
+    );
+    run(
+        &mut session,
+        "CREATE task:1 = { status: 'open', title: 'a' };\n\
+         CREATE task:2 = { status: 'done', title: 'b' };",
+    );
+    // The condition decides at the write: 'open' carries no instant, 'done'
+    // carries the declared lifetime.
+    assert!(!expiring(&mut session, "task:1"));
+    assert!(expiring(&mut session, "task:2"));
+    // An edit that meets the condition earns the instant; one that leaves
+    // the state the condition asks about gives it up — the record must not
+    // keep an instant earned in a state it is no longer in.
+    run(&mut session, "UPDATE task:1 SET status = 'done';");
+    assert!(expiring(&mut session, "task:1"));
+    run(&mut session, "UPDATE task:2 SET status = 'open';");
+    assert!(!expiring(&mut session, "task:2"));
+    thread::sleep(PAST_SHORT);
+    // task:1 finished 'done' and is gone; task:2 finished 'open' and stays.
+    assert_eq!(rows(&mut session, "SELECT * FROM task;"), 1);
+    let left = run(&mut session, "SELECT status FROM task;");
+    assert!(
+        format!("{left:?}").contains("open"),
+        "the open record stays: {left:?}"
+    );
+}
+
+#[test]
+fn a_conditional_expiry_is_reported_and_recreated_by_its_definition() {
+    let store = store();
+    let mut session = opened(&store);
+    run(
+        &mut session,
+        "DEFINE TABLE task (status string) EXPIRE AFTER 7d WHERE status = 'done';",
+    );
+    let task = info(&mut session, "INFO FOR TABLE task;");
+    let expire = field(&task, "expire");
+    assert_eq!(field(&expire, "state"), Value::from("on"));
+    assert_ne!(field(&expire, "when"), Value::None, "{expire:?}");
+    let Value::String(definition) = field(&task, "definition") else {
+        panic!("no definition: {task:?}");
+    };
+    assert!(
+        definition.contains("WHERE status = 'done'"),
+        "the definition re-creates the clause: {definition}"
+    );
+}
+
+#[test]
+fn what_a_conditional_expiry_cannot_say_is_refused_where_it_is_written() {
+    let store = store();
+    let mut session = opened(&store);
+    for statement in [
+        // A condition with no lifetime to count from.
+        "DEFINE TABLE a (status string) EXPIRE WHERE status = 'done';",
+        // A condition outside the closed vocabulary the store checks.
+        "DEFINE TABLE b (title string) EXPIRE AFTER 7d WHERE string::len(title) > 2;",
+    ] {
+        let refused = session.run_now(statement);
+        assert!(refused.is_err(), "{statement} ran: {refused:?}");
+    }
 }
