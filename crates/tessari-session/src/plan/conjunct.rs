@@ -275,6 +275,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::ArrayRange
         | Function::RandUuid7
         | Function::UuidInstant
+        | Function::UuidVersion
         | Function::TimeUnix
         | Function::TimeFromUnix
         | Function::DurationFromSecs
@@ -282,6 +283,7 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::CryptoSha256
         | Function::CryptoSha512
         | Function::TimeBucket
+        | Function::TimeFormat
         | Function::TypeOf
         | Function::StateOf
         | Function::StateFinish
@@ -305,6 +307,9 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         | Function::VectorCosine
         | Function::VectorEuclidean
         | Function::VectorDot
+        | Function::VectorManhattan
+        | Function::VectorHamming
+        | Function::VectorJaccard
         | Function::SearchScore
         | Function::SearchExplain
         | Function::SearchRanks

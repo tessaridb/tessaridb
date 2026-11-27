@@ -96,6 +96,9 @@ impl Function {
         VectorCosine => "vector::cosine",
         VectorEuclidean => "vector::euclidean",
         VectorDot => "vector::dot",
+        VectorManhattan => "vector::manhattan",
+        VectorHamming => "vector::hamming",
+        VectorJaccard => "vector::jaccard",
         SearchScore => "search::score",
         SearchExplain => "search::explain",
         SearchHighlight => "search::highlight",
@@ -103,6 +106,7 @@ impl Function {
         SearchTable => "search::table_name",
         SearchSnippet => "search::snippet",
         TimeBucket => "time::bucket",
+        TimeFormat => "time::format",
         MathLog2 => "math::log2",
         MathLog10 => "math::log10",
         MathExp2 => "math::exp2",
@@ -139,6 +143,7 @@ impl Function {
         ArrayRange => "array::range",
         RandUuid7 => "rand::uuid7",
         UuidInstant => "uuid::instant",
+        UuidVersion => "uuid::version",
         SeriesOutliersTukey => "series::outliers_tukey",
         SeriesPeriodDetect => "series::period_detect",
         SeriesDecomposeStl => "series::decompose_stl",
@@ -249,6 +254,9 @@ impl Function {
                 | Self::VectorCosine
                 | Self::VectorEuclidean
                 | Self::VectorDot
+                | Self::VectorManhattan
+                | Self::VectorHamming
+                | Self::VectorJaccard
                 | Self::SearchScore
                 | Self::SearchExplain
                 | Self::SearchHighlight

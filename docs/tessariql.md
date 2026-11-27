@@ -6363,6 +6363,9 @@ SELECT math::floor(ratio) AS down, math::ceil(ratio) AS up FROM samples;
 SELECT type::of(name) AS what FROM users;
 SELECT vector::euclidean(embedding, $probe) AS apart FROM documents;
 SELECT vector::dot(embedding, $probe) AS aligned FROM documents;
+SELECT vector::manhattan(embedding, $probe) AS grid FROM documents;
+SELECT vector::hamming(embedding, $probe) AS differing FROM documents;
+SELECT vector::jaccard(embedding, $probe) AS supports FROM documents;
 ```
 
 The rest of the collection and number groups, on the same terms:
@@ -6677,6 +6680,7 @@ SELECT count(*) AS held, time::year(at) AS year FROM events GROUP BY time::year(
 | `time::start_of_year(at)` | midnight of the year's first day |
 | `time::unix(at)` | whole seconds since the epoch |
 | `time::from_unix(n)` | the instant a second count names |
+| `time::format(at, pattern)` | the instant as text in UTC, by a strftime-shaped pattern: `%Y %m %d %H %M %S` zero-padded, `%f` the nanosecond remainder as nine digits, `%%` a literal percent; a token outside the set is refused rather than copied through |
 | `duration::from_secs(n)` | the span `n` seconds names, whole or fractional, to the nanosecond |
 
 **Instants and spans have arithmetic of their own.** `+` and `-` move an instant
@@ -6749,6 +6753,7 @@ a statement, since a `USE` is a statement of its own.
 | `rand::uuid()` | a version-4 UUID that has never been answered before |
 | `rand::uuid7()` | a version-7 UUID — time-ordered, minted once per call |
 | `uuid::instant(id)` | the instant a version-7 identifier was minted at; `NONE` for any other version |
+| `uuid::version(id)` | which version the identifier's own nibble says it is, as an integer; `NONE` for a value that is no UUID |
 
 ### URLs and addresses, read as text
 

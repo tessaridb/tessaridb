@@ -60,6 +60,7 @@ pub(crate) fn distance(function: Function, left: &Value, right: &Value) -> Value
     // which is exactly what `Iterator::sum` does, so the answers are the same
     // floats to the bit.
     let (mut dot, mut squared, mut left_norm, mut right_norm) = (-0.0, -0.0, -0.0, -0.0);
+    let (mut manhattan, mut differing, mut both, mut either) = (-0.0, 0_u64, 0_u64, 0_u64);
     for (a, b) in left.iter().zip(right) {
         let (Some(a), Some(b)) = (approximate(a), approximate(b)) else {
             return unreachable_distance();
@@ -68,10 +69,40 @@ pub(crate) fn distance(function: Function, left: &Value, right: &Value) -> Value
         squared += (a - b) * (a - b);
         left_norm += a * a;
         right_norm += b * b;
+        manhattan += (a - b).abs();
+        if a != b {
+            differing = differing.saturating_add(1);
+        }
+        // The supports: the positions where each side is nonzero. Jaccard
+        // reads their overlap; a zero is no support, exactly as a zero vector
+        // points nowhere for the cosine.
+        if a != 0.0 || b != 0.0 {
+            either = either.saturating_add(1);
+            if a != 0.0 && b != 0.0 {
+                both = both.saturating_add(1);
+            }
+        }
     }
     match function {
         Function::VectorDot => Value::Number(Number::float(dot)),
         Function::VectorEuclidean => Value::Number(Number::float(squared.sqrt())),
+        Function::VectorManhattan => Value::Number(Number::float(manhattan)),
+        // The one distance in the family that is exactly countable, so it
+        // answers an integer rather than a float that could only approximate
+        // one.
+        Function::VectorHamming => Value::Number(Number::Integer(
+            i64::try_from(differing).unwrap_or(i64::MAX),
+        )),
+        Function::VectorJaccard => {
+            if either == 0 {
+                // Two zero vectors share no support, so there is nothing for
+                // an overlap to be a share of — no distance, by the same rule
+                // that gives a zero vector no angle.
+                return unreachable_distance();
+            }
+            let share = crate::accumulate::count(both) / crate::accumulate::count(either);
+            Value::Number(Number::float(1.0 - share))
+        }
         Function::VectorCosine => {
             let magnitude = left_norm.sqrt() * right_norm.sqrt();
             if magnitude == 0.0 {
@@ -301,6 +332,93 @@ mod tests {
         assert!(matches!(
             distance(Function::VectorEuclidean, &vector(&[0.0, 0.0]), &two),
             Value::Number(_)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod breadth_tests {
+    #![allow(clippy::panic)]
+
+    use tessari_ql::Function;
+    use tessari_types::{Number, Value};
+
+    use super::distance;
+
+    fn vector(components: &[f64]) -> Value {
+        Value::Array(
+            components
+                .iter()
+                .map(|held| Value::Number(Number::float(*held)))
+                .collect(),
+        )
+    }
+
+    fn near(value: &Value, expected: f64) -> bool {
+        match value {
+            Value::Number(Number::Float(held)) => (held - expected).abs() < 1e-9,
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn manhattan_is_the_sum_of_the_absolute_differences() {
+        // |1−4| + |2−0| + |−3−(−3)| = 3 + 2 + 0.
+        let left = vector(&[1.0, 2.0, -3.0]);
+        let right = vector(&[4.0, 0.0, -3.0]);
+        assert!(near(
+            &distance(Function::VectorManhattan, &left, &right),
+            5.0
+        ));
+        assert!(near(
+            &distance(Function::VectorManhattan, &left, &left),
+            0.0
+        ));
+    }
+
+    #[test]
+    fn hamming_counts_the_positions_that_differ() {
+        let left = vector(&[1.0, 2.0, -3.0]);
+        let right = vector(&[1.0, 0.0, 3.0]);
+        assert_eq!(
+            distance(Function::VectorHamming, &left, &right),
+            Value::Number(Number::Integer(2))
+        );
+        assert_eq!(
+            distance(Function::VectorHamming, &left, &left),
+            Value::Number(Number::Integer(0))
+        );
+    }
+
+    #[test]
+    fn jaccard_is_the_distance_between_the_supports() {
+        // Supports {0, 1} and {1, 2}: overlap 1 of union 3, distance 2/3.
+        let left = vector(&[5.0, 7.0, 0.0]);
+        let right = vector(&[0.0, 2.0, 9.0]);
+        assert!(near(
+            &distance(Function::VectorJaccard, &left, &right),
+            1.0 - 1.0 / 3.0
+        ));
+        // Equal supports of any weights: distance zero.
+        assert!(near(
+            &distance(Function::VectorJaccard, &left, &vector(&[1.0, 9.0, 0.0])),
+            0.0
+        ));
+        // Disjoint supports: distance one.
+        assert!(near(
+            &distance(
+                Function::VectorJaccard,
+                &vector(&[1.0, 0.0]),
+                &vector(&[0.0, 1.0])
+            ),
+            1.0
+        ));
+        // Two zero vectors share no support: no distance, by the zero-vector
+        // rule the cosine keeps.
+        let zero = vector(&[0.0, 0.0]);
+        assert!(matches!(
+            distance(Function::VectorJaccard, &zero, &zero),
+            Value::Number(Number::Float(held)) if held.is_infinite()
         ));
     }
 }

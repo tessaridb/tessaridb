@@ -129,3 +129,39 @@ CREATE visits = { page: 'b' };
 CREATE visits = { page: 'c' };
 RETURN (SELECT top_k(page, 2) AS held FROM visits)[0].held;
 --- expect: value [{ count: 3, value: 'a' }, { count: 2, value: 'b' }]
+
+--- case: the grid distance between two vectors
+RETURN vector::manhattan([1, 2, -3], [4, 0, -3]);
+--- expect: value 5
+
+--- case: how many positions hold different numbers
+RETURN vector::hamming([1, 2, -3], [1, 0, 3]);
+--- expect: value 2
+
+--- case: the distance between two supports, one shared of three
+RETURN vector::jaccard([5, 7, 0], [0, 2, 9]) > 0.66 AND vector::jaccard([5, 7, 0], [0, 2, 9]) < 0.67;
+--- expect: value true
+
+--- case: two zero vectors share no support and answer no distance
+RETURN vector::jaccard([0, 0], [0, 0]) = NONE;
+--- expect: value false
+
+--- case: an identifier names its own version
+RETURN uuid::version(rand::uuid7());
+--- expect: value 7
+
+--- case: a version-four identifier reads four
+RETURN uuid::version(rand::uuid());
+--- expect: value 4
+
+--- case: a value that is no identifier names no version
+RETURN uuid::version('not a uuid');
+--- expect: value NONE
+
+--- case: an instant as text by a pattern
+RETURN time::format(datetime '2026-01-02T03:04:05Z', '%Y-%m-%d %H:%M:%S');
+--- expect: value '2026-01-02 03:04:05'
+
+--- case: the nanosecond remainder as nine digits
+RETURN time::format(datetime '2026-01-02T03:04:05.5Z', '%S.%f');
+--- expect: value '05.500000000'

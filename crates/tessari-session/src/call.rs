@@ -548,6 +548,12 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
                 .saturating_mul(1_000_000);
             Ok(tessari_types::Datetime::new(seconds, nanos).map_or(Value::None, Value::Datetime))
         }
+        Function::UuidVersion => {
+            let Some(Value::Uuid(bytes)) = arguments.first() else {
+                return Ok(Value::None);
+            };
+            Ok(Value::Number(Number::Integer(i64::from(bytes[6] >> 4))))
+        }
         Function::SeriesOutliersTukey => series::outliers_tukey(function, arguments, span),
         Function::SeriesPeriodDetect => series::period_detect(function, arguments, span),
         Function::SeriesDecomposeStl => series::decompose_stl(function, arguments, span),
@@ -556,7 +562,17 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
             let width = duration_at(function, arguments, 1, span)?;
             bucket(function, instant, width, span)
         }
-        Function::VectorCosine | Function::VectorEuclidean | Function::VectorDot => {
+        Function::TimeFormat => {
+            let instant = datetime_at(function, arguments, 0, span)?;
+            let pattern = text_at(function, arguments, 1, span)?;
+            time::format(function, instant, pattern, span)
+        }
+        Function::VectorCosine
+        | Function::VectorEuclidean
+        | Function::VectorDot
+        | Function::VectorManhattan
+        | Function::VectorHamming
+        | Function::VectorJaccard => {
             let (Some(left), Some(right)) = (arguments.first(), arguments.get(1)) else {
                 return Err(wrong_type(function, 0, "a vector", "nothing", span));
             };

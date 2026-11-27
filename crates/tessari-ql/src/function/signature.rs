@@ -97,6 +97,7 @@ impl Function {
             | Self::MathDegrees
             | Self::MathRadians
             | Self::UuidInstant
+            | Self::UuidVersion
             | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
@@ -153,6 +154,10 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
+            | Self::VectorManhattan
+            | Self::VectorHamming
+            | Self::VectorJaccard
+            | Self::TimeFormat
             | Self::SearchScore
             | Self::SearchExplain
             | Self::TimeBucket
@@ -309,6 +314,8 @@ impl Function {
             | Self::MathDegrees
             | Self::MathRadians
             | Self::UuidInstant
+            | Self::UuidVersion
+            | Self::TimeFormat
             | Self::ArrayCompact
             | Self::SeriesOutliersTukey
             | Self::SeriesPeriodDetect
@@ -326,6 +333,9 @@ impl Function {
             | Self::VectorCosine
             | Self::VectorEuclidean
             | Self::VectorDot
+            | Self::VectorManhattan
+            | Self::VectorHamming
+            | Self::VectorJaccard
             | Self::SearchExplain
             | Self::TimeBucket
             | Self::GeoIntersects
