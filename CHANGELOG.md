@@ -16,6 +16,55 @@ catalog, not the history: `VERSION` reads and change-feed positions from before 
 move do not carry over. Going back is the same path in reverse, a snapshot taken by
 `0.36.0` restored by `0.35.3`. The embedded API is async from `0.36.0`: `Db::open`,
 `Db::in_memory` and `Db::close` return futures, called from a Tokio runtime.
+## 0.56.0 — 2026-11-27
+
+- **Correlated pairs.** `corr`, `covar` (sample), `regr_slope`,
+  `regr_intercept` and `regr_r2` over `[x, y]` pairs — one Welford-bivariate
+  running state in exact sums, `NONE` where a denominator names no line.
+- **Quantiles, plural and exact.** `quantiles(x, [0.5, 0.99])` answers
+  several ranks from one sketch under the ADR-0122 bound;
+  `exact_quantiles(x, ranks)` answers the order statistics themselves under
+  `median`'s whole-group rule.
+- **Shape and distribution.** `skewness` and `kurtosis` (sample forms),
+  `entropy` in bits, `gini` in exact decimals, and `histogram(x, bins)` with
+  declared equal-width bins.
+- **Series edge and movement.** `changes`, `irate` and `idelta` read the
+  window's last two samples; `ts_of_first/last/max/min` answer the instant
+  of the sample; `moving_sum`/`moving_mean(x, at, k)` read the k most recent;
+  `mad` is the median absolute deviation, exact by `median`'s rule;
+  `string_agg(x, sep)` joins a group's strings in arrival order.
+- **Vector distances.** `vector::manhattan`, `vector::hamming` (exact
+  integer) and `vector::jaccard` (the distance between the nonzero
+  supports), under the family's unreachable-is-infinite rule.
+- **Window ranking.** `ntile(n)`, `percent_rank()`, `cume_dist()` and
+  `nth_value(x, n)` join the `OVER` family.
+- **Product analytics.** `window_funnel(at, window, [conditions])`,
+  `sequence_match` / `sequence_count` with the `'(1)(<1800)(2)'` pattern
+  language, and `retention([conditions])` anchored on the first condition.
+- **Keyed folds.** `sum_by`, `min_by` and `max_by` answer one object mapping
+  each key to its own fold.
+- **Cell navigation.** `geo::cell_parent`, `geo::cell_children`,
+  `geo::cell_neighbours` and `geo::cell_level` over the cells `geo::cell`
+  draws.
+- **`FILTER` and `DISTINCT` on a fold.** `sum(x) FILTER (WHERE …)` offers
+  the fold only the records the condition keeps; `sum(DISTINCT x)` folds
+  each value once under the distinct ceiling; the two compose.
+- **Conditional expiry.** `EXPIRE AFTER d WHERE <condition>` expires a
+  record only while the condition holds of it, settled at the leader's
+  commit like every other instant.
+- **Age-triggered re-aggregation.** `KEEP RAW FOR d ROLL UP BY span COMPUTE
+  …` on a series replaces each finished aged window's raw points with one
+  rolled row, written by housekeeping as one committed transaction per
+  window where the range is led.
+- **Prometheus remote-read.** `POST /series/{ns}/{db}/{series}/remote-read`
+  answers a snappy `ReadRequest` as a `ReadResponse`, with `=`/`!=` matchers
+  exact, regex matchers refused, and two declared ceilings that refuse
+  rather than truncate.
+- **Identifiers and time.** `uuid::version(id)` reads the identifier's own
+  version nibble; `time::format(at, pattern)` renders an instant as text by
+  a strftime-shaped pattern whose unknown tokens refuse.
+- **1876 conformance cases** define the language and run in the build.
+
 ## 0.55.0 — 2026-11-27
 
 - **Calendar readings.** `time::day_of_week`, `time::day_of_year`, `time::week`
@@ -76,7 +125,7 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 - **Format 20** (fold states at 19, the AI providers table at 20). A store written by
   `0.54.0` opens as is and keeps its stamp until its first `fold_state` value or AI
   provider row; a pre-`0.55.0` build refuses such a store at open.
-- **1876 conformance cases** define the language and run in the build.
+- **1860 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 
