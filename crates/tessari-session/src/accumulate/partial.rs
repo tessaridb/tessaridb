@@ -22,7 +22,7 @@
 use rust_decimal::Decimal;
 use tessari_types::{Number, Value};
 
-use super::{Accumulator, ExactSum, Moments, Running, add_exact};
+use super::{Accumulator, ExactSum, Moments, Moments2, Running, add_exact};
 use crate::error::Result;
 
 /// Why a merged float total cannot answer: a part arrived without one.
@@ -72,6 +72,14 @@ impl Accumulator {
                 Value::Number(Number::Integer(i64::try_from(moments.counted).ok()?)),
                 moments.total.state()?,
                 moments.squares.state()?,
+            ])),
+            Self::Paired { running, .. } => Some(Value::Array(vec![
+                Value::Number(Number::Integer(i64::try_from(running.counted).ok()?)),
+                Value::Number(Number::float(running.mean_x)),
+                Value::Number(Number::float(running.mean_y)),
+                running.co.state()?,
+                running.xx.state()?,
+                running.yy.state()?,
             ])),
             Self::Extreme { held, .. } => Some(held.clone().unwrap_or(Value::None)),
             Self::Distinct { .. } | Self::Quantile { .. } => self.sketch_state(),
@@ -150,6 +158,12 @@ impl Accumulator {
                 if let Ok(held) = running {
                     held.absorb(&more);
                 }
+            }
+            Self::Paired { running, .. } => {
+                let Some(more) = moments2(state) else {
+                    return Ok(false);
+                };
+                running.absorb(&more);
             }
             Self::Extreme { .. } => self.offer(state)?,
             Self::Distinct { .. } | Self::Quantile { .. } => return Ok(self.merge_sketch(state)),
@@ -235,6 +249,27 @@ fn moments(state: &Value) -> Option<Moments> {
         counted: u64::try_from(whole(counted)?).ok()?,
         total: ExactSum::from_state(total)?,
         squares: ExactSum::from_state(squares)?,
+    })
+}
+
+/// A `[how many, mean x, mean y, co, xx, yy]` state — the paired folds'.
+fn moments2(state: &Value) -> Option<Moments2> {
+    let Value::Array(held) = state else {
+        return None;
+    };
+    let [counted, mean_x, mean_y, co, xx, yy] = held.as_slice() else {
+        return None;
+    };
+    let (Value::Number(mean_x), Value::Number(mean_y)) = (mean_x, mean_y) else {
+        return None;
+    };
+    Some(Moments2 {
+        counted: u64::try_from(whole(counted)?).ok()?,
+        mean_x: crate::aggregate::approximate(mean_x)?,
+        mean_y: crate::aggregate::approximate(mean_y)?,
+        co: ExactSum::from_state(co)?,
+        xx: ExactSum::from_state(xx)?,
+        yy: ExactSum::from_state(yy)?,
     })
 }
 

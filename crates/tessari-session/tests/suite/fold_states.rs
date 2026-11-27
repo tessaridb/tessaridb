@@ -220,3 +220,77 @@ fn a_field_of_states_admits_nothing_else() {
         "the wrong kind was admitted: {refused}"
     );
 }
+
+#[test]
+fn the_paired_folds_answer_and_their_states_travel() {
+    let store = store();
+    let mut session = ready(&store);
+    session
+        .run_now(
+            "DEFINE TABLE pairs SCHEMAFULL;\n\
+             DEFINE FIELD band ON pairs TYPE int;\n\
+             DEFINE FIELD x ON pairs TYPE float;\n\
+             DEFINE FIELD y ON pairs TYPE float;",
+        )
+        .unwrap();
+    let mut script = String::new();
+    for (n, (x, y)) in [(1.0, 2.0), (2.0, 1.0), (3.0, 4.0), (4.0, 3.0), (5.0, 5.0)]
+        .iter()
+        .enumerate()
+    {
+        script.push_str(&format!(
+            "CREATE pairs:{n} = {{ band: {}, x: {x:.1}, y: {y:.1} }};\n",
+            n % 2
+        ));
+    }
+    session.run_now(&script).unwrap();
+    let answered = |session: &mut Session<'_>, script: &str| -> f64 {
+        let held = rows(session, script);
+        let Some(Value::Object(fields)) = held.first() else {
+            panic!("no row for `{script}`");
+        };
+        fields
+            .get("f")
+            .unwrap_or_else(|| panic!("no f in {fields:?}"))
+            .to_string()
+            .parse::<f64>()
+            .unwrap()
+    };
+    // x = [1..5] against y = [2,1,4,3,5]: the accumulator suite's
+    // hand-checked set, asked end to end.
+    for (fold, wanted) in [
+        ("corr(x, y)", 0.8),
+        ("covar(x, y)", 2.0),
+        ("regr_slope(x, y)", 0.8),
+        ("regr_intercept(x, y)", 0.6),
+        ("regr_r2(x, y)", 0.64),
+    ] {
+        let got = answered(&mut session, &format!("SELECT {fold} AS f FROM pairs;"));
+        assert!((got - wanted).abs() < 1e-9, "{fold} answered {got}");
+    }
+    // Two halves stated separately, merged and finished — the ADR-0114
+    // part-merge property, asked of a paired fold.
+    session
+        .run_now(
+            "DEFINE TABLE pair_halves SCHEMAFULL;\n\
+             DEFINE FIELD band ON pair_halves TYPE int;\n\
+             DEFINE FIELD part ON pair_halves TYPE fold_state;",
+        )
+        .unwrap();
+    for bound in ["band = 0", "band = 1"] {
+        session
+            .run_now(&format!(
+                "INSERT INTO pair_halves (band, part) SELECT band, state::of(corr(x, y)) AS part \
+                 FROM pairs WHERE {bound} GROUP BY band;"
+            ))
+            .unwrap();
+    }
+    let merged = answered(
+        &mut session,
+        "SELECT state::finish(state::merge(part)) AS f FROM pair_halves;",
+    );
+    assert!(
+        (merged - 0.8).abs() < 1e-9,
+        "the merged paired state answered {merged}"
+    );
+}

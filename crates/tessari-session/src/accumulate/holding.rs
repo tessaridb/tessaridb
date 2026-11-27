@@ -119,6 +119,7 @@ impl Accumulator {
             | Self::Sum { .. }
             | Self::Mean { .. }
             | Self::Spread { .. }
+            | Self::Paired { .. }
             | Self::Extreme { .. }
             | Self::Distinct { .. }
             | Self::Quantile { .. }

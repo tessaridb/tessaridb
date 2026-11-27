@@ -3,6 +3,7 @@ use crate::aggregate::fold;
 
 mod holding;
 mod order;
+mod paired;
 mod sketches;
 mod spread;
 
@@ -47,6 +48,11 @@ const EVERY: &[Aggregate] = &[
     Aggregate::ApproxQuantile,
     Aggregate::CountDistinct,
     Aggregate::StateMerge,
+    Aggregate::Corr,
+    Aggregate::Covar,
+    Aggregate::RegrSlope,
+    Aggregate::RegrIntercept,
+    Aggregate::RegrR2,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real

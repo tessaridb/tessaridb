@@ -122,6 +122,27 @@ pub enum Aggregate {
     /// finishing it is `state::finish`'s job. A state of another fold is
     /// refused rather than mis-added.
     StateMerge,
+    /// `corr(<x>, <y>)` — the Pearson correlation of the pairs, as a float.
+    ///
+    /// Over fewer than two pairs, or where `x` never moves, `NONE`: a
+    /// correlation over one point, or over a constant, is not zero — it is
+    /// unasked, by `variance`'s rule.
+    Corr,
+    /// `covar(<x>, <y>)` — the **sample** covariance of the pairs, as a float,
+    /// dividing by `n − 1` for `variance`'s reason. The population form is
+    /// sayable: `covar(x, y) * (count(x) - 1) / count(x)`.
+    Covar,
+    /// `regr_slope(<x>, <y>)` — the least-squares slope of `y` over `x`, as a
+    /// float. `NONE` where `x` never moves: no line is named by a vertical
+    /// stack of points.
+    RegrSlope,
+    /// `regr_intercept(<x>, <y>)` — where that line crosses `x = 0`, as a
+    /// float. `NONE` wherever the slope is.
+    RegrIntercept,
+    /// `regr_r2(<x>, <y>)` — the coefficient of determination of that line,
+    /// the square of the correlation, as a float. `NONE` wherever the slope
+    /// is.
+    RegrR2,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -178,6 +199,11 @@ impl Aggregate {
         Self::ApproxQuantile,
         Self::CountDistinct,
         Self::StateMerge,
+        Self::Corr,
+        Self::Covar,
+        Self::RegrSlope,
+        Self::RegrIntercept,
+        Self::RegrR2,
     ];
 
     /// How the fold is written.
@@ -213,6 +239,11 @@ impl Aggregate {
             // Namespaced like a function; the parser recognises the three
             // tokens rather than one word.
             Self::StateMerge => "state::merge",
+            Self::Corr => "corr",
+            Self::Covar => "covar",
+            Self::RegrSlope => "regr_slope",
+            Self::RegrIntercept => "regr_intercept",
+            Self::RegrR2 => "regr_r2",
         }
     }
 
@@ -235,6 +266,9 @@ impl Aggregate {
             | Self::ApproxDistinct
             | Self::ApproxQuantile => Retention::Constant,
             Self::StateMerge => Retention::Constant,
+            Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
+                Retention::Constant
+            }
             Self::Median
             | Self::Increase
             | Self::Rate
@@ -305,6 +339,9 @@ impl Aggregate {
             | Self::DecayedCount => Some("`,` and the instant each value was observed at"),
             Self::ApproxQuantile => Some("`,` and the rank, a number from 0 to 1"),
             Self::TopK => Some("`,` and how many of the most common values to answer"),
+            Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
+                Some("`,` and the value paired with it")
+            }
             _ => None,
         }
     }

@@ -83,7 +83,9 @@ use tessari_types::{Number, Value};
 
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
-pub(crate) use arithmetic::{Moments, add_exact, add_float, count, failed, middle, summable};
+pub(crate) use arithmetic::{
+    Moments, Moments2, add_exact, add_float, count, failed, middle, summable,
+};
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
 
@@ -209,6 +211,17 @@ pub(crate) enum Accumulator {
         /// Where to point a failure.
         span: Span,
     },
+    /// The paired folds' running sums — `corr`, `covar` and the three
+    /// `regr_` folds all answer from one bivariate update, in space that
+    /// does not grow with the group.
+    Paired {
+        /// Which of the five the answer is read as.
+        fold: Aggregate,
+        /// The sums so far.
+        running: Moments2,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `state::merge`'s one accumulator: the states offered all name one fold,
     /// and this is that fold's accumulator, merged into (G102 S11).
     Merging {
@@ -296,6 +309,15 @@ impl Accumulator {
                 span,
             },
             Aggregate::StateMerge => Self::Merging { held: None, span },
+            Aggregate::Corr
+            | Aggregate::Covar
+            | Aggregate::RegrSlope
+            | Aggregate::RegrIntercept
+            | Aggregate::RegrR2 => Self::Paired {
+                fold: aggregate,
+                running: Moments2::default(),
+                span,
+            },
             Aggregate::Increase
             | Aggregate::Rate
             | Aggregate::Delta
@@ -437,6 +459,31 @@ impl Accumulator {
                 if present(value) {
                     held.push(value.clone());
                 }
+            }
+            // Offered `[x, y]`: a pair missing a side is not a pair and is
+            // passed over; a side of the wrong kind is refused naming the
+            // fold — `increase`'s two rules, one per side.
+            Self::Paired {
+                fold,
+                running,
+                span,
+            } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (
+                    summable(x, fold.spelling(), *span)?,
+                    summable(y, fold.spelling(), *span)?,
+                ) else {
+                    return Ok(());
+                };
+                let (Some(x), Some(y)) = (approximate(x), approximate(y)) else {
+                    return Err(failed(fold.spelling(), "a number no float can hold", *span));
+                };
+                running.offer(x, y);
             }
             Self::Unique { held, span } => {
                 if present(value) && held.insert(value.clone()) && held.len() > COUNT_DISTINCT_MOST
@@ -646,6 +693,22 @@ impl Accumulator {
                 span,
             } => counter::finish(*fold, held, parts, *ahead, *span),
             Self::Distinct { sketch } => Ok(sketch.answer()),
+            Self::Paired {
+                fold,
+                running,
+                span,
+            } => {
+                let answered = match fold {
+                    Aggregate::Corr => running.correlation(),
+                    Aggregate::Covar => running.covariance(),
+                    Aggregate::RegrSlope => running.slope(),
+                    Aggregate::RegrIntercept => running.intercept(),
+                    Aggregate::RegrR2 => running.r2(),
+                    _ => unreachable!("only a paired fold holds a Moments2"),
+                }
+                .map_err(|reason| failed(fold.spelling(), reason, *span))?;
+                Ok(answered.map_or(Value::None, |held| Value::Number(Number::float(held))))
+            }
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
@@ -715,6 +778,7 @@ impl Accumulator {
             | Self::Sum { .. }
             | Self::Mean { .. }
             | Self::Spread { .. }
+            | Self::Paired { .. }
             // A sketch holds no value it was offered; what it keeps is
             // bounded by its own size (ADR-0122 C2, C3), not by the group's.
             | Self::Distinct { .. }

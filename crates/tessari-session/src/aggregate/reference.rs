@@ -24,9 +24,10 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         Aggregate::Median => median(values, span),
         Aggregate::Collect => Ok(collect(values)),
         // No batch twin: the counter folds are checked against a hand oracle
-        // in the suite (`counters::`), and the sketches against the exact
-        // answer within their bound (`approximate_folds::`), rather than
-        // against a second copy.
+        // in the suite (`counters::`), the paired folds against hand-checked
+        // pairs (`paired::`), and the sketches against the exact answer
+        // within their bound (`approximate_folds::`), rather than against a
+        // second copy.
         Aggregate::Increase
         | Aggregate::Rate
         | Aggregate::Delta
@@ -42,6 +43,11 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         | Aggregate::ApproxDistinct
         | Aggregate::ApproxQuantile
         | Aggregate::CountDistinct
+        | Aggregate::Corr
+        | Aggregate::Covar
+        | Aggregate::RegrSlope
+        | Aggregate::RegrIntercept
+        | Aggregate::RegrR2
         // A merge of states has no batch twin either: its values are states,
         // and the statement-level suite folds real ones through it.
         | Aggregate::StateMerge => {
