@@ -76,7 +76,7 @@ move do not carry over. Going back is the same path in reverse, a snapshot taken
 - **Format 20** (fold states at 19, the AI providers table at 20). A store written by
   `0.54.0` opens as is and keeps its stamp until its first `fold_state` value or AI
   provider row; a pre-`0.55.0` build refuses such a store at open.
-- **1869 conformance cases** define the language and run in the build.
+- **1874 conformance cases** define the language and run in the build.
 
 ## 0.54.0 — 2026-11-25
 

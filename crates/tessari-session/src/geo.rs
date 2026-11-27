@@ -153,6 +153,20 @@ pub(crate) fn ground(function: Function, arguments: &[Value], span: Span) -> Res
 /// the second is not a whole number from 0 to the finest level, and
 /// [`Error::GeometryRefused`] when the position is off the sphere.
 pub(crate) fn cell(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let Some(cell) = cell_at(function, arguments, span)? else {
+        return Ok(Value::None);
+    };
+    Ok(drawn(cell).unwrap_or(Value::None))
+}
+
+/// The cell a `geo::cell` call names, read from its two arguments with
+/// `geo::cell`'s own refusals; `None` only where the cell arithmetic itself
+/// declined, which no level up to the finest reaches.
+fn cell_at(
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Option<tessari_geo::Cell>> {
     let Shape::Point(position) = shape_at(function, arguments, 0, span)? else {
         return Err(Error::WrongArgument {
             function,
@@ -180,22 +194,18 @@ pub(crate) fn cell(function: Function, arguments: &[Value], span: Span) -> Resul
             span,
         });
     };
-    let square = tessari_geo::Cell::containing(position)
-        .ancestor(level)
-        .and_then(tessari_geo::Cell::extent)
-        .and_then(|extent| {
-            let low = tessari_geo::Snapped::from_units(extent.west(), extent.south()).ok()?;
-            let high = tessari_geo::Snapped::from_units(extent.east(), extent.north()).ok()?;
-            Some((low.to_position(), high.to_position()))
-        });
-    let Some((low, high)) = square else {
-        // Every level up to the finest has an ancestor and every cell an extent
-        // inside the grid; reaching here would mean the cell arithmetic is broken,
-        // and an answer made up for it would be a wrong shape.
-        return Ok(Value::None);
-    };
+    Ok(tessari_geo::Cell::containing(position).ancestor(level))
+}
+
+/// The cell as the polygon `geo::cell` answers with — the one the index
+/// uses, so the cells of one level tile the world with nothing counted twice.
+fn drawn(cell: tessari_geo::Cell) -> Option<Value> {
+    let extent = cell.extent()?;
+    let low = tessari_geo::Snapped::from_units(extent.west(), extent.south()).ok()?;
+    let high = tessari_geo::Snapped::from_units(extent.east(), extent.north()).ok()?;
+    let (low, high) = (low.to_position(), high.to_position());
     let corner = |longitude, latitude| tessari_types::Position::new(longitude, latitude);
-    Ok(Value::Geometry(tessari_types::Geometry::Polygon(
+    Some(Value::Geometry(tessari_types::Geometry::Polygon(
         tessari_types::Polygon {
             exterior: tessari_types::Ring(vec![
                 corner(low.longitude, low.latitude),
@@ -207,4 +217,141 @@ pub(crate) fn cell(function: Function, arguments: &[Value], span: Span) -> Resul
             interiors: Vec::new(),
         },
     )))
+}
+
+/// `geo::cell_parent(position, level)` — the cell one level coarser holding
+/// the same position, drawn as `geo::cell` draws it. The root has no parent
+/// and answers `NONE`: there is no coarser cell, and saying so is the honest
+/// answer rather than handing the root back as its own.
+///
+/// # Errors
+///
+/// [`cell`]'s refusals, unchanged.
+pub(crate) fn cell_parent(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let Some(cell) = cell_at(function, arguments, span)? else {
+        return Ok(Value::None);
+    };
+    let Some(parent) = cell.level().checked_sub(1).and_then(|up| cell.ancestor(up)) else {
+        return Ok(Value::None);
+    };
+    Ok(drawn(parent).unwrap_or(Value::None))
+}
+
+/// `geo::cell_children(position, level)` — the four cells the named cell
+/// divides into, in curve order, each drawn as `geo::cell` draws it. The
+/// finest level divides no further and answers `NONE`.
+///
+/// # Errors
+///
+/// [`cell`]'s refusals, unchanged.
+pub(crate) fn cell_children(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let Some(cell) = cell_at(function, arguments, span)? else {
+        return Ok(Value::None);
+    };
+    let Some(children) = cell.children() else {
+        return Ok(Value::None);
+    };
+    Ok(Value::Array(
+        children
+            .into_iter()
+            .map(|child| drawn(child).unwrap_or(Value::None))
+            .collect(),
+    ))
+}
+
+/// `geo::cell_neighbours(position, level)` — the cells sharing an edge with
+/// the named cell, drawn as `geo::cell` draws them, in the value system's
+/// order so the answer is stable. Found by stepping one unit across each of
+/// the four edges and asking which cell holds the landing point; an edge on
+/// the grid's own boundary has no neighbour beyond it and contributes none.
+///
+/// # Errors
+///
+/// [`cell`]'s refusals, unchanged.
+pub(crate) fn cell_neighbours(
+    function: Function,
+    arguments: &[Value],
+    span: Span,
+) -> Result<Value> {
+    let Some(cell) = cell_at(function, arguments, span)? else {
+        return Ok(Value::None);
+    };
+    let Some(extent) = cell.extent() else {
+        return Ok(Value::None);
+    };
+    let middle_across = extent.south().saturating_add(extent.north()) / 2;
+    let middle_along = extent.west().saturating_add(extent.east()) / 2;
+    let mut neighbours = std::collections::BTreeSet::new();
+    for (longitude, latitude) in [
+        (extent.west().saturating_sub(1), middle_across),
+        (extent.east().saturating_add(1), middle_across),
+        (middle_along, extent.south().saturating_sub(1)),
+        (middle_along, extent.north().saturating_add(1)),
+    ] {
+        let Ok(landing) = tessari_geo::Snapped::from_units(longitude, latitude) else {
+            continue;
+        };
+        let beside = tessari_geo::Cell::containing(landing);
+        if beside != cell {
+            neighbours.insert(beside);
+        }
+    }
+    Ok(Value::Array(
+        neighbours
+            .into_iter()
+            .map(|beside| drawn(beside).unwrap_or(Value::None))
+            .collect(),
+    ))
+}
+
+/// `geo::cell_level(cell)` — which level of subdivision a drawn cell belongs
+/// to, read back off the polygon `geo::cell` answered with: the corner the
+/// polygon starts at names a finest cell, and the drawn cell is the one level
+/// whose ancestor of that finest cell covers exactly this square. A polygon
+/// no level covers exactly — not aligned, not a cell's shape — is refused
+/// rather than assigned the nearest level, because the nearest level of a
+/// shape that is not a cell is a number about nothing.
+///
+/// # Errors
+///
+/// Returns [`Error::WrongArgument`] when the argument is not a geometry or
+/// not a drawn cell, and [`Error::GeometryRefused`] when a corner is off the
+/// sphere.
+pub(crate) fn cell_level(function: Function, arguments: &[Value], span: Span) -> Result<Value> {
+    let Shape::Polygon(area) = shape_at(function, arguments, 0, span)? else {
+        return Err(Error::WrongArgument {
+            function,
+            at: 1,
+            expected: "a cell drawn by geo::cell",
+            found: arguments.first().map_or("nothing", larger_name),
+            span,
+        });
+    };
+    let refused = || Error::WrongArgument {
+        function,
+        at: 1,
+        expected: "a cell drawn by geo::cell — a grid-aligned square",
+        found: "a polygon that is no cell of this grid",
+        span,
+    };
+    let corners = &area.shell;
+    let (Some(low), Some(high)) = (corners.first(), corners.get(2)) else {
+        return Err(refused());
+    };
+    let wanted = (
+        low.longitude_units(),
+        low.latitude_units(),
+        high.longitude_units(),
+        high.latitude_units(),
+    );
+    let finest = tessari_geo::Cell::containing(*low);
+    for level in 0..=tessari_geo::ORDER {
+        let Some(extent) = finest.ancestor(level).and_then(tessari_geo::Cell::extent) else {
+            continue;
+        };
+        if (extent.west(), extent.south(), extent.east(), extent.north()) == wanted {
+            return Ok(Value::Number(Number::Integer(i64::from(level))));
+        }
+    }
+    Err(refused())
 }

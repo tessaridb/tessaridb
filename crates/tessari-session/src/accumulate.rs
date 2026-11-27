@@ -169,6 +169,17 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// The keyed folds' pairs — each present value with the key it is folded
+    /// under — held whole and grouped at the finish, where each key's own
+    /// accumulator answers exactly what the plain fold would.
+    Keyed {
+        /// Which of the three the answer is read as.
+        fold: Aggregate,
+        /// The pairs, in arrival order.
+        held: Vec<(String, Value)>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// The product-analytics folds' events — the instant and the conditions
     /// each record met — held whole because no running form knows the
     /// longest chain before the last event has arrived.
@@ -480,6 +491,11 @@ impl Accumulator {
                 sep: None,
                 span,
             },
+            Aggregate::SumBy | Aggregate::MinBy | Aggregate::MaxBy => Self::Keyed {
+                fold: aggregate,
+                held: Vec::new(),
+                span,
+            },
             Aggregate::WindowFunnel
             | Aggregate::SequenceMatch
             | Aggregate::SequenceCount
@@ -578,6 +594,32 @@ impl Accumulator {
                 if summable(value, "mad", *span)?.is_some() {
                     held.push(value.clone());
                 }
+            }
+            // Offered `[value, key]`: an absent value writes no key, by
+            // `sum`'s rule; a key that is not a string is refused rather than
+            // rendered, because two values that render alike would silently
+            // share one.
+            Self::Keyed { fold, held, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(key)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                // No key, no entry — an absent label writes nothing, by the
+                // same rule an absent value does; a PRESENT key of the wrong
+                // kind is a mistake in the statement.
+                if !present(key) || !present(sample) {
+                    return Ok(());
+                }
+                let Value::String(key) = key else {
+                    return Err(failed(fold.spelling(), "a key that is not a string", *span));
+                };
+                if *fold == Aggregate::SumBy && summable(sample, fold.spelling(), *span)?.is_none()
+                {
+                    return Ok(());
+                }
+                held.push((key.clone(), sample.clone()));
             }
             // Offered `[instant, extra, conditions]` — the window for the
             // funnel, the pattern for the sequence folds — or the conditions
@@ -1048,6 +1090,32 @@ impl Accumulator {
             Self::Joined { held, sep, .. } => {
                 Ok(Value::String(held.join(sep.as_deref().unwrap_or_default())))
             }
+            Self::Keyed { fold, held, span } => {
+                let inner = match fold {
+                    Aggregate::SumBy => Aggregate::Sum,
+                    Aggregate::MinBy => Aggregate::Min,
+                    _ => Aggregate::Max,
+                };
+                let mut by_key: std::collections::BTreeMap<String, Accumulator> =
+                    std::collections::BTreeMap::new();
+                for (key, value) in held {
+                    let entry = by_key
+                        .entry(key.clone())
+                        .or_insert_with(|| Accumulator::for_aggregate(inner, *span));
+                    entry.offer(value)?;
+                }
+                if by_key.len() > COUNT_DISTINCT_MOST {
+                    return Err(Error::DistinctTooMany {
+                        most: COUNT_DISTINCT_MOST,
+                        span: *span,
+                    });
+                }
+                let mut answered = std::collections::BTreeMap::new();
+                for (key, entry) in &by_key {
+                    answered.insert(key.clone(), entry.finish()?);
+                }
+                Ok(Value::Object(answered))
+            }
             Self::Events {
                 fold,
                 held,
@@ -1257,6 +1325,7 @@ impl Accumulator {
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Keyed { held, .. } => held.len(),
             Self::Events { held, .. } => held.len(),
             Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),

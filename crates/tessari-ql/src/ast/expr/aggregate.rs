@@ -260,6 +260,15 @@ pub enum Aggregate {
     /// later condition whether it was met by a group the anchor was met in.
     /// The answer is an array of integers the conditions' length.
     Retention,
+    /// `sum_by(<value>, <key>)` — the sum of the values under each key, as
+    /// an object mapping every key the group wrote to its own `sum`. A key
+    /// is a string, refused otherwise; a record with no value writes no key.
+    SumBy,
+    /// `min_by(<value>, <key>)` — the smallest value under each key, as an
+    /// object, in the value system's order — `min`'s reading per key.
+    MinBy,
+    /// `max_by(<value>, <key>)` — the largest, on [`Self::MinBy`]'s terms.
+    MaxBy,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -343,6 +352,9 @@ impl Aggregate {
         Self::SequenceMatch,
         Self::SequenceCount,
         Self::Retention,
+        Self::SumBy,
+        Self::MinBy,
+        Self::MaxBy,
     ];
 
     /// How the fold is written.
@@ -405,6 +417,9 @@ impl Aggregate {
             Self::SequenceMatch => "sequence_match",
             Self::SequenceCount => "sequence_count",
             Self::Retention => "retention",
+            Self::SumBy => "sum_by",
+            Self::MinBy => "min_by",
+            Self::MaxBy => "max_by",
         }
     }
 
@@ -463,7 +478,10 @@ impl Aggregate {
             | Self::WindowFunnel
             | Self::SequenceMatch
             | Self::SequenceCount
-            | Self::Retention => Retention::WholeGroup,
+            | Self::Retention
+            | Self::SumBy
+            | Self::MinBy
+            | Self::MaxBy => Retention::WholeGroup,
         }
     }
 
@@ -558,6 +576,9 @@ impl Aggregate {
             Self::Histogram => Some("`,` and how many bins to answer"),
             Self::StringAgg => Some("`,` and the separator to join the values with"),
             Self::WindowFunnel => Some("`,` and the window in seconds"),
+            Self::SumBy | Self::MinBy | Self::MaxBy => {
+                Some("`,` and the key each value is folded under")
+            }
             Self::SequenceMatch | Self::SequenceCount => {
                 Some("`,` and the pattern, like '(1)(<1800)(2)'")
             }

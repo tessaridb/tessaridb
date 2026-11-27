@@ -600,6 +600,10 @@ pub(crate) fn call(function: Function, arguments: &[Value], span: Span) -> Resul
         Function::GeoDistance => crate::geo::separation(function, arguments, span),
         Function::GeoArea => crate::geo::ground(function, arguments, span),
         Function::GeoCell => crate::geo::cell(function, arguments, span),
+        Function::GeoCellParent => crate::geo::cell_parent(function, arguments, span),
+        Function::GeoCellChildren => crate::geo::cell_children(function, arguments, span),
+        Function::GeoCellNeighbours => crate::geo::cell_neighbours(function, arguments, span),
+        Function::GeoCellLevel => crate::geo::cell_level(function, arguments, span),
         Function::TypeOf => {
             let Some(value) = arguments.first() else {
                 return Err(wrong_type(function, 0, "a value", "nothing", span));

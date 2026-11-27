@@ -70,6 +70,9 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         | Aggregate::SequenceMatch
         | Aggregate::SequenceCount
         | Aggregate::Retention
+        | Aggregate::SumBy
+        | Aggregate::MinBy
+        | Aggregate::MaxBy
         // A merge of states has no batch twin either: its values are states,
         // and the statement-level suite folds real ones through it.
         | Aggregate::StateMerge => {

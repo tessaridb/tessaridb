@@ -406,6 +406,20 @@ pub enum Function {
     /// position at that level of subdivision, as a polygon: a key to group by
     /// that draws itself.
     GeoCell,
+    /// `geo::cell_parent(position, level)` — the cell one level coarser
+    /// holding the same position, drawn the same way; the root has no parent
+    /// and answers `NONE`.
+    GeoCellParent,
+    /// `geo::cell_children(position, level)` — the four cells the named cell
+    /// divides into, in curve order; the finest level answers `NONE`.
+    GeoCellChildren,
+    /// `geo::cell_neighbours(position, level)` — the cells sharing an edge
+    /// with the named cell, each drawn the same way.
+    GeoCellNeighbours,
+    /// `geo::cell_level(cell)` — which level of subdivision a polygon drawn
+    /// by `geo::cell` belongs to; a polygon that is no cell of the grid is
+    /// refused rather than assigned the nearest level.
+    GeoCellLevel,
     /// `crypto::sha256(text)` — the SHA-256 digest of the text's UTF-8 bytes,
     /// as sixty-four lowercase hexadecimal characters.
     ///

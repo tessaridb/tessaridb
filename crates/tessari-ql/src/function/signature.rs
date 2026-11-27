@@ -124,6 +124,7 @@ impl Function {
             | Self::TypeDatetime
             | Self::TypeUuid
             | Self::GeoArea
+            | Self::GeoCellLevel
             | Self::CryptoSha256
             | Self::SearchHighlight
             | Self::CryptoMd5
@@ -189,6 +190,9 @@ impl Function {
             | Self::ObjectHas
             | Self::ObjectMerge
             | Self::GeoCell
+            | Self::GeoCellParent
+            | Self::GeoCellChildren
+            | Self::GeoCellNeighbours
             | Self::GeoDistance
             | Self::ObjectGet
             | Self::ArrayAt
@@ -349,6 +353,10 @@ impl Function {
             | Self::GeoDistance
             | Self::GeoArea
             | Self::GeoCell
+            | Self::GeoCellParent
+            | Self::GeoCellChildren
+            | Self::GeoCellNeighbours
+            | Self::GeoCellLevel
             | Self::CryptoSha256
             | Self::SearchHighlight
             | Self::CryptoMd5

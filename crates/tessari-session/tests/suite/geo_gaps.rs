@@ -432,3 +432,89 @@ fn the_nearest_few_under_a_condition_and_over_areas_are_walked_and_answer_the_sc
         }
     });
 }
+
+#[test]
+fn a_cell_navigates_to_its_parent_children_neighbours_and_level() {
+    on_each_backend(|backend| {
+        let mut session = opened(&backend.store);
+        let answer = |session: &mut Session<'_>, statement: &str| -> Value {
+            let outcome = session
+                .run_now(statement)
+                .unwrap_or_else(|error| panic!("{statement}: {error}"));
+            match outcome.last() {
+                Some(Outcome::Value(value)) => value.clone(),
+                other => panic!("{statement}: a value, got {other:?}"),
+            }
+        };
+        // The parent drawn one level coarser is the cell of that level.
+        let one = answer(
+            &mut session,
+            &format!(
+                "RETURN geo::cell_parent({}, 5) = geo::cell({}, 4);",
+                point(10.0, 20.0),
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(one, Value::Bool(true), "{}", backend.name);
+        // The root has no parent.
+        let rootless = answer(
+            &mut session,
+            &format!("RETURN geo::cell_parent({}, 0);", point(10.0, 20.0)),
+        );
+        assert_eq!(rootless, Value::None, "{}", backend.name);
+        // Four children, and the cell of one level is among the children of
+        // the level above.
+        let four = answer(
+            &mut session,
+            &format!(
+                "RETURN array::len(geo::cell_children({}, 5));",
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(four, Value::Number(Number::Integer(4)), "{}", backend.name);
+        let among = answer(
+            &mut session,
+            &format!(
+                "RETURN geo::cell_children({}, 4) CONTAINS geo::cell({}, 5);",
+                point(10.0, 20.0),
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(among, Value::Bool(true), "{}", backend.name);
+        // An interior cell has four edge-neighbours and is none of them.
+        let beside = answer(
+            &mut session,
+            &format!(
+                "RETURN array::len(geo::cell_neighbours({}, 6));",
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(
+            beside,
+            Value::Number(Number::Integer(4)),
+            "{}",
+            backend.name
+        );
+        let itself = answer(
+            &mut session,
+            &format!(
+                "RETURN geo::cell_neighbours({}, 6) CONTAINS geo::cell({}, 6);",
+                point(10.0, 20.0),
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(itself, Value::Bool(false), "{}", backend.name);
+        // The level reads back off the drawn polygon.
+        let level = answer(
+            &mut session,
+            &format!(
+                "RETURN geo::cell_level(geo::cell({}, 7));",
+                point(10.0, 20.0)
+            ),
+        );
+        assert_eq!(level, Value::Number(Number::Integer(7)), "{}", backend.name);
+        // A triangle is no cell, and is refused rather than levelled.
+        let refused = session.run_now("RETURN geo::cell_level(geometry { type: 'Polygon', coordinates: [[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [0.0, 0.0]]] });");
+        assert!(refused.is_err(), "{}: {refused:?}", backend.name);
+    });
+}

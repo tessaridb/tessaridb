@@ -136,6 +136,11 @@ fn a_whole_group_fold_holds_exactly_what_it_was_offered() {
                 ])
             } else if matches!(aggregate, Aggregate::StringAgg) {
                 Value::Array(vec![Value::from("x"), Value::from(",")])
+            } else if matches!(
+                aggregate,
+                Aggregate::SumBy | Aggregate::MinBy | Aggregate::MaxBy
+            ) {
+                Value::Array(vec![integer(held), Value::from("k")])
             } else if matches!(aggregate, Aggregate::Retention) {
                 Value::Array(vec![Value::Bool(true), Value::Bool(false)])
             } else if matches!(aggregate, Aggregate::WindowFunnel) {

@@ -142,6 +142,7 @@ impl Accumulator {
             Self::Frequencies { held, .. } => held.len(),
             Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
+            Self::Keyed { held, .. } => held.len(),
             Self::Events { held, .. } => held.len(),
             Self::Joined { held, .. } => held.len(),
             Self::Unique { held, .. } => held.len(),

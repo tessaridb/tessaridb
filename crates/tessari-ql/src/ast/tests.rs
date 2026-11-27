@@ -60,7 +60,10 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "window_funnel",
             "sequence_match",
             "sequence_count",
-            "retention"
+            "retention",
+            "sum_by",
+            "min_by",
+            "max_by"
         ]
     );
 }

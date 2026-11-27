@@ -200,9 +200,14 @@ const fn relation_of(function: Function, field_first: bool) -> Option<Relation> 
         // predicate for a box test to be a superset of; `geo::distance` is
         // served nearest-first instead, which is a different access path
         // entirely.
-        Function::GeoDisjoint | Function::GeoDistance | Function::GeoArea | Function::GeoCell => {
-            None
-        }
+        Function::GeoDisjoint
+        | Function::GeoDistance
+        | Function::GeoArea
+        | Function::GeoCell
+        | Function::GeoCellParent
+        | Function::GeoCellChildren
+        | Function::GeoCellNeighbours
+        | Function::GeoCellLevel => None,
         // Nothing else is a predicate over two shapes.
         Function::StringLen
         | Function::StringLower

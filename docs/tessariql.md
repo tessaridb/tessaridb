@@ -7251,6 +7251,20 @@ density is `count(*) / geo::area(geo::cell(at, 10))`. Only a position has a cell
 area spans several, and is refused by name, as is a level that is not a whole
 number from 0 to 32.
 
+A cell navigates: `geo::cell_parent(position, level)` is the cell one level
+coarser holding the same position (the root has no parent and answers `NONE`),
+`geo::cell_children(position, level)` the four cells it divides into (the finest
+level answers `NONE`), and `geo::cell_neighbours(position, level)` the cells
+sharing an edge with it — each drawn as `geo::cell` draws. The other way,
+`geo::cell_level(cell)` reads the level back off a drawn cell's polygon and
+refuses a polygon that is no cell of the grid rather than assigning the nearest
+level:
+
+```
+SELECT geo::cell_neighbours(at, 10) AS beside FROM stops LIMIT 1;
+SELECT geo::cell_level(geo::cell(at, 10)) AS level FROM stops LIMIT 1;
+```
+
 #### What is not there yet
 
 A nearest-first read **from** a shape larger than a position is still a scan.

@@ -165,3 +165,24 @@ RETURN time::format(datetime '2026-01-02T03:04:05Z', '%Y-%m-%d %H:%M:%S');
 --- case: the nanosecond remainder as nine digits
 RETURN time::format(datetime '2026-01-02T03:04:05.5Z', '%S.%f');
 --- expect: value '05.500000000'
+
+--- case: a cell's parent is the cell of the level above
+RETURN geo::cell_parent(geometry { type: 'Point', coordinates: [10, 20] }, 5)
+     = geo::cell(geometry { type: 'Point', coordinates: [10, 20] }, 4);
+--- expect: value true
+
+--- case: a cell divides into four children
+RETURN array::len(geo::cell_children(geometry { type: 'Point', coordinates: [10, 20] }, 5));
+--- expect: value 4
+
+--- case: an interior cell has four edge-neighbours
+RETURN array::len(geo::cell_neighbours(geometry { type: 'Point', coordinates: [10, 20] }, 6));
+--- expect: value 4
+
+--- case: the level reads back off the drawn cell
+RETURN geo::cell_level(geo::cell(geometry { type: 'Point', coordinates: [10, 20] }, 7));
+--- expect: value 7
+
+--- case: a cell's level is a whole number of none or more
+RETURN geo::cell_level(geo::cell(geometry { type: 'Point', coordinates: [10, 20] }, 0));
+--- expect: value 0

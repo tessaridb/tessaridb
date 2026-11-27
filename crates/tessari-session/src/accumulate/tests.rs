@@ -75,6 +75,9 @@ const EVERY: &[Aggregate] = &[
     Aggregate::SequenceMatch,
     Aggregate::SequenceCount,
     Aggregate::Retention,
+    Aggregate::SumBy,
+    Aggregate::MinBy,
+    Aggregate::MaxBy,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real

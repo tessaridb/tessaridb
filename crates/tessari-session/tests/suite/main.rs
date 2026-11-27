@@ -115,6 +115,7 @@ mod json_fields;
 mod judgment_set;
 mod key_routes;
 mod key_value;
+mod keyed_folds;
 mod kinds;
 mod latest;
 mod links;
