@@ -247,6 +247,68 @@ impl Moments2 {
     }
 }
 
+/// The running shape sums `skewness` and `kurtosis` answer from — the
+/// one-pass central-moment update (Pébay's recurrence), whose every step is
+/// a short chain of float products. The chain is rounded where the exact
+/// sums elsewhere are not, and that is declared: both answers are floats by
+/// `stddev`'s rule, and the alternative — raw power sums — cancels exactly
+/// where the question is asked, on data whose shape is small next to its
+/// magnitude.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub(crate) struct Shape {
+    /// How many numbers went in.
+    pub(crate) counted: u64,
+    /// The mean so far.
+    mean: f64,
+    /// The second central moment's running sum.
+    m2: f64,
+    /// The third's.
+    m3: f64,
+    /// The fourth's.
+    m4: f64,
+}
+
+impl Shape {
+    /// Fold one more number in.
+    pub(crate) fn offer(&mut self, held: f64) {
+        let earlier = count(self.counted);
+        self.counted = self.counted.saturating_add(1);
+        let step = count(self.counted);
+        let delta = held - self.mean;
+        let along = delta / step;
+        let along2 = along * along;
+        let swing = delta * along * earlier;
+        self.mean += along;
+        self.m4 += swing * along2 * (step * step - 3.0 * step + 3.0) + 6.0 * along2 * self.m2
+            - 4.0 * along * self.m3;
+        self.m3 += swing * along * (step - 2.0) - 3.0 * along * self.m2;
+        self.m2 += swing;
+    }
+
+    /// The adjusted Fisher–Pearson skewness, or `None` under three numbers:
+    /// the sample form divides by `n − 2`, and a shape one value cannot give
+    /// is not zero, it is unasked.
+    pub(crate) fn skewness(&self) -> Option<f64> {
+        if self.counted < 3 || self.m2 <= 0.0 {
+            return None;
+        }
+        let n = count(self.counted);
+        Some((n * (n - 1.0)).sqrt() / (n - 2.0) * (self.m3 / self.m2.powf(1.5)))
+    }
+
+    /// The sample excess kurtosis, or `None` under four numbers: the sample
+    /// form divides by `(n − 2)(n − 3)`. Zero is a normal shape's answer,
+    /// positive a heavier tail's, negative a flatter one's.
+    pub(crate) fn kurtosis(&self) -> Option<f64> {
+        if self.counted < 4 || self.m2 <= 0.0 {
+            return None;
+        }
+        let n = count(self.counted);
+        let plain = n * self.m4 / (self.m2 * self.m2);
+        Some((n - 1.0) / ((n - 2.0) * (n - 3.0)) * ((n + 1.0) * (plain - 3.0) + 6.0))
+    }
+}
+
 /// A count as two floats, each exact, that add to it: the high 32 bits scaled
 /// and the low 32 bits.
 fn halves(counted: u64) -> (f64, f64) {
@@ -353,6 +415,121 @@ pub(crate) fn exact_ranks(
         answered.push(held);
     }
     Ok(Value::Array(answered))
+}
+
+/// The Gini coefficient of the multiset — zero is perfect equality, one is
+/// one value holding everything — summed over the sorted runs in exact
+/// decimals: Σ i·xᵢ over 1-based positions, then one division. `NONE` over
+/// nothing and over all zeros, where equality has no denominator.
+pub(crate) fn gini(
+    held: &[Value],
+    runs: &std::collections::BTreeMap<Decimal, u64>,
+    span: Span,
+) -> Result<Value> {
+    let mut counted = runs.clone();
+    for value in held {
+        let entry = counted.entry(exact(value, span)?).or_insert(0);
+        *entry = entry.saturating_add(1);
+    }
+    let mut total = Decimal::ZERO;
+    let mut weighted = Decimal::ZERO;
+    let mut seen: u64 = 0;
+    for (value, many) in &counted {
+        // The run occupies the 1-based positions seen+1 … seen+many, whose
+        // sum is many·(2·seen + many + 1)/2.
+        let run = Decimal::from(*many);
+        let span_sum = Decimal::from(
+            seen.saturating_mul(2)
+                .saturating_add(*many)
+                .saturating_add(1),
+        );
+        let positions = run
+            .checked_mul(span_sum)
+            .and_then(|held| held.checked_div(Decimal::from(2)))
+            .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+        weighted = weighted
+            .checked_add(
+                value
+                    .checked_mul(positions)
+                    .ok_or_else(|| failed("gini", "a total outside the exact range", span))?,
+            )
+            .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+        total = total
+            .checked_add(
+                value
+                    .checked_mul(run)
+                    .ok_or_else(|| failed("gini", "a total outside the exact range", span))?,
+            )
+            .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+        seen = seen.saturating_add(*many);
+    }
+    if seen == 0 || total == Decimal::ZERO {
+        return Ok(Value::None);
+    }
+    // G = (2·Σ i·xᵢ − (n+1)·Σx) / (n·Σx).
+    let twice = weighted
+        .checked_mul(Decimal::from(2))
+        .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+    let lift = Decimal::from(seen.saturating_add(1))
+        .checked_mul(total)
+        .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+    let numerator = twice
+        .checked_sub(lift)
+        .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+    let denominator = Decimal::from(seen)
+        .checked_mul(total)
+        .ok_or_else(|| failed("gini", "a total outside the exact range", span))?;
+    let answered = numerator
+        .checked_div(denominator)
+        .ok_or_else(|| failed("gini", "a coefficient no decimal holds", span))?;
+    Ok(Value::Number(Number::Decimal(answered.normalize())))
+}
+
+/// The numbers in `bins` equal-width bins from the smallest to the largest,
+/// as `{ from, to, count }` per bin with the last bin holding its top edge;
+/// `NONE` over nothing, where no extent names a bin. The arithmetic is
+/// float, by `stddev`'s rule: the edges of an equal-width split are floats
+/// whatever the values were.
+pub(crate) fn histogram(held: &[f64], bins: u64) -> Value {
+    if held.is_empty() {
+        return Value::None;
+    }
+    let bins = usize::try_from(bins).unwrap_or(usize::MAX).max(1);
+    let low = held.iter().copied().fold(f64::INFINITY, f64::min);
+    let high = held.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let width = (high - low) / count(u64::try_from(bins).unwrap_or(u64::MAX));
+    let mut counted = vec![0_u64; bins];
+    for value in held {
+        let at = if width > 0.0 {
+            #[allow(clippy::cast_sign_loss, clippy::cast_possible_truncation)]
+            let at = ((value - low) / width).floor().max(0.0) as usize;
+            at.min(bins.saturating_sub(1))
+        } else {
+            0
+        };
+        counted[at] = counted[at].saturating_add(1);
+    }
+    let answered: Vec<Value> = counted
+        .iter()
+        .enumerate()
+        .map(|(at, many)| {
+            let from = low + width * count(u64::try_from(at).unwrap_or(u64::MAX));
+            let to = if at + 1 == bins {
+                high
+            } else {
+                low + width * count(u64::try_from(at).unwrap_or(u64::MAX).saturating_add(1))
+            };
+            let mut held = std::collections::BTreeMap::new();
+            held.insert(
+                "count".to_string(),
+                Value::Number(Number::Integer(i64::try_from(*many).unwrap_or(i64::MAX))),
+            );
+            held.insert("from".to_string(), Value::Number(Number::float(from)));
+            held.insert("to".to_string(), Value::Number(Number::float(to)));
+            Value::Object(held)
+        })
+        .collect();
+    Value::Array(answered)
 }
 
 /// The value at zero-based `rank` of a multiset held as value → how many.

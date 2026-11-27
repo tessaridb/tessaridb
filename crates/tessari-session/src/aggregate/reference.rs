@@ -50,6 +50,11 @@ pub(crate) fn fold(aggregate: Aggregate, values: &[Value], span: Span) -> Result
         | Aggregate::RegrR2
         | Aggregate::Quantiles
         | Aggregate::ExactQuantiles
+        | Aggregate::Skewness
+        | Aggregate::Kurtosis
+        | Aggregate::Entropy
+        | Aggregate::Gini
+        | Aggregate::Histogram
         // A merge of states has no batch twin either: its values are states,
         // and the statement-level suite folds real ones through it.
         | Aggregate::StateMerge => {

@@ -55,6 +55,11 @@ const EVERY: &[Aggregate] = &[
     Aggregate::RegrR2,
     Aggregate::Quantiles,
     Aggregate::ExactQuantiles,
+    Aggregate::Skewness,
+    Aggregate::Kurtosis,
+    Aggregate::Entropy,
+    Aggregate::Gini,
+    Aggregate::Histogram,
 ];
 
 /// One state a merge can be offered — a real `sum`'s, taken from a real

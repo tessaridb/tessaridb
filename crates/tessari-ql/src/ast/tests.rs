@@ -42,7 +42,10 @@ fn the_folds_that_hold_their_whole_group_are_exactly_the_ones_that_must() {
             "top_k",
             "collect",
             "count distinct",
-            "exact_quantiles"
+            "exact_quantiles",
+            "entropy",
+            "gini",
+            "histogram"
         ]
     );
 }

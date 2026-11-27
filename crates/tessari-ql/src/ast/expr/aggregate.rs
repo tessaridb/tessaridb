@@ -159,6 +159,33 @@ pub enum Aggregate {
     /// Exact means holding the group, by `median`'s rule and under the same
     /// memory ceiling; `quantiles` is the fold whose space does not grow.
     ExactQuantiles,
+    /// `skewness(<expr>)` — the adjusted Fisher–Pearson coefficient, the
+    /// sample form: √(n(n−1))/(n−2) · m₃/m₂^1.5, as a float. Symmetric data
+    /// answers near zero. `NONE` under three values, where the sample form
+    /// divides by zero — by `variance`'s rule that an answer the data cannot
+    /// give is not zero.
+    Skewness,
+    /// `kurtosis(<expr>)` — the sample **excess** kurtosis (Fisher's): a
+    /// normal shape answers near zero, a heavy-tailed one above it, a flat
+    /// one below. `NONE` under four values, by `skewness`'s rule.
+    Kurtosis,
+    /// `entropy(<expr>)` — the Shannon entropy of the group's values in
+    /// bits: how much a value drawn from the group says, `−Σ p·log₂ p` over
+    /// the distinct values' frequencies. One value throughout answers zero.
+    /// Holds every distinct value like `count(DISTINCT …)` and refuses past
+    /// the same ceiling. Over nothing, `NONE`.
+    Entropy,
+    /// `gini(<expr>)` — the Gini coefficient of the group's numbers: zero is
+    /// perfect equality, one is one value holding everything. Defined over
+    /// numbers of none or more — a negative is refused rather than folded
+    /// into a number that would mean nothing — and `NONE` over nothing or
+    /// when every value is zero, where equality has no denominator.
+    Gini,
+    /// `histogram(<expr>, <bins>)` — the group's numbers in `<bins>`
+    /// equal-width bins from the smallest to the largest, as an array of
+    /// `{ from, to, count }` with the last bin holding its top edge. Over
+    /// nothing, `NONE` — no bins can be named without an extent.
+    Histogram,
 }
 
 /// The most distinct values `count(DISTINCT …)` holds for one group.
@@ -222,6 +249,11 @@ impl Aggregate {
         Self::RegrR2,
         Self::Quantiles,
         Self::ExactQuantiles,
+        Self::Skewness,
+        Self::Kurtosis,
+        Self::Entropy,
+        Self::Gini,
+        Self::Histogram,
     ];
 
     /// How the fold is written.
@@ -264,6 +296,11 @@ impl Aggregate {
             Self::RegrR2 => "regr_r2",
             Self::Quantiles => "quantiles",
             Self::ExactQuantiles => "exact_quantiles",
+            Self::Skewness => "skewness",
+            Self::Kurtosis => "kurtosis",
+            Self::Entropy => "entropy",
+            Self::Gini => "gini",
+            Self::Histogram => "histogram",
         }
     }
 
@@ -289,8 +326,10 @@ impl Aggregate {
             Self::Corr | Self::Covar | Self::RegrSlope | Self::RegrIntercept | Self::RegrR2 => {
                 Retention::Constant
             }
-            Self::Quantiles => Retention::Constant,
-            Self::ExactQuantiles => Retention::WholeGroup,
+            Self::Quantiles | Self::Skewness | Self::Kurtosis => Retention::Constant,
+            Self::ExactQuantiles | Self::Entropy | Self::Gini | Self::Histogram => {
+                Retention::WholeGroup
+            }
             Self::Median
             | Self::Increase
             | Self::Rate
@@ -367,6 +406,7 @@ impl Aggregate {
             Self::Quantiles | Self::ExactQuantiles => {
                 Some("`,` and the ranks, an array of numbers from 0 to 1")
             }
+            Self::Histogram => Some("`,` and how many bins to answer"),
             _ => None,
         }
     }

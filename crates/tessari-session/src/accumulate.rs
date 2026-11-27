@@ -84,7 +84,8 @@ use tessari_types::{Number, Value};
 use crate::aggregate::{approximate, present};
 use crate::error::{Error, Result};
 pub(crate) use arithmetic::{
-    Moments, Moments2, add_exact, add_float, count, exact_ranks, failed, middle, summable,
+    Moments, Moments2, add_exact, add_float, count, exact_ranks, failed, gini, histogram, middle,
+    summable,
 };
 pub(crate) use exact::ExactSum;
 pub(crate) use sketch::estimated;
@@ -245,6 +246,42 @@ pub(crate) enum Accumulator {
         /// Where to point a refusal.
         span: Span,
     },
+    /// The shape folds' central moments — `skewness` and `kurtosis` answer
+    /// from one running update, in space that does not grow with the group.
+    Shaped {
+        /// Which of the two the answer is read as.
+        fold: Aggregate,
+        /// The moments so far.
+        running: arithmetic::Shape,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `entropy`'s frequencies — how many records held each distinct value,
+    /// bounded like `count(DISTINCT …)` because the answer reads them all.
+    Frequencies {
+        /// How many records held each value.
+        held: std::collections::BTreeMap<Value, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `gini`'s multiset — `median`'s holding, read in order at the finish.
+    Gini {
+        /// The values so far.
+        held: Vec<Value>,
+        /// How many records held each value already settled.
+        runs: std::collections::BTreeMap<Decimal, u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
+    /// `histogram`'s numbers and the bin count it answers at.
+    Binned {
+        /// The numbers so far.
+        held: Vec<f64>,
+        /// The bin count, once a record has offered it.
+        asked: Option<u64>,
+        /// Where to point a refusal.
+        span: Span,
+    },
     /// `state::merge`'s one accumulator: the states offered all name one fold,
     /// and this is that fold's accumulator, merged into (G102 S11).
     Merging {
@@ -350,6 +387,25 @@ impl Accumulator {
                 held: Vec::new(),
                 runs: std::collections::BTreeMap::new(),
                 ranks: None,
+                span,
+            },
+            Aggregate::Skewness | Aggregate::Kurtosis => Self::Shaped {
+                fold: aggregate,
+                running: arithmetic::Shape::default(),
+                span,
+            },
+            Aggregate::Entropy => Self::Frequencies {
+                held: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::Gini => Self::Gini {
+                held: Vec::new(),
+                runs: std::collections::BTreeMap::new(),
+                span,
+            },
+            Aggregate::Histogram => Self::Binned {
+                held: Vec::new(),
+                asked: None,
                 span,
             },
             Aggregate::Increase
@@ -611,6 +667,65 @@ impl Accumulator {
                     held.push(sample.clone());
                 }
             }
+            Self::Shaped {
+                fold,
+                running,
+                span,
+            } => {
+                if let Some(number) = summable(value, fold.spelling(), *span)? {
+                    let held = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| {
+                            failed(fold.spelling(), "a number no float can hold", *span)
+                        })?;
+                    running.offer(held);
+                }
+            }
+            Self::Frequencies { held, span } => {
+                if present(value) {
+                    let entry = held.entry(value.clone()).or_insert(0);
+                    *entry = entry.saturating_add(1);
+                    if held.len() > tessari_ql::COUNT_DISTINCT_MOST {
+                        return Err(Error::DistinctTooMany {
+                            most: tessari_ql::COUNT_DISTINCT_MOST,
+                            span: *span,
+                        });
+                    }
+                }
+            }
+            Self::Gini { held, span, .. } => {
+                if let Some(number) = summable(value, "gini", *span)? {
+                    let below_zero = number
+                        .as_decimal()
+                        .map(|held| held < Decimal::ZERO)
+                        .unwrap_or_else(|| approximate(number).is_some_and(|held| held < 0.0));
+                    if below_zero {
+                        return Err(failed(
+                            "gini",
+                            "a value below zero, which equality has no meaning over",
+                            *span,
+                        ));
+                    }
+                    held.push(value.clone());
+                }
+            }
+            // Offered `[value, bins]`: the bin count is the fold's second
+            // argument, settled once like `top_k`'s k.
+            Self::Binned { held, asked, span } => {
+                let Value::Array(pair) = value else {
+                    return Ok(());
+                };
+                let (Some(sample), Some(wanted)) = (pair.first(), pair.get(1)) else {
+                    return Ok(());
+                };
+                settle_k(asked, wanted, *span)?;
+                if let Some(number) = summable(sample, "histogram", *span)? {
+                    let held_number = approximate(number)
+                        .filter(|held| held.is_finite())
+                        .ok_or_else(|| failed("histogram", "a number no float can hold", *span))?;
+                    held.push(held_number);
+                }
+            }
             // A state of one fold, merged into that fold's accumulator. The
             // first state names the fold; a state of any other refuses rather
             // than mis-adds, which is the whole reason the name travels.
@@ -796,6 +911,45 @@ impl Accumulator {
                 None => Ok(Value::None),
                 Some(ranks) => exact_ranks(held, runs, ranks, *span),
             },
+            Self::Shaped { fold, running, .. } => {
+                let answered = match fold {
+                    Aggregate::Skewness => running.skewness(),
+                    Aggregate::Kurtosis => running.kurtosis(),
+                    _ => unreachable!("only a shape fold holds a Shape"),
+                };
+                Ok(answered.map_or(Value::None, |held| Value::Number(Number::float(held))))
+            }
+            Self::Frequencies { held, .. } => {
+                let total: u64 = held
+                    .values()
+                    .fold(0, |total, many| total.saturating_add(*many));
+                if total == 0 {
+                    return Ok(Value::None);
+                }
+                let total = count(total);
+                let bits: f64 = held
+                    .values()
+                    .map(|many| {
+                        let share = count(*many) / total;
+                        -share * share.log2()
+                    })
+                    .sum();
+                Ok(Value::Number(Number::float(bits)))
+            }
+            Self::Gini { held, runs, span } => gini(held, runs, *span),
+            Self::Binned { held, asked, span } => {
+                let Some(asked) = *asked else {
+                    return Err(failed(
+                        "histogram",
+                        "a whole number of bins to answer",
+                        *span,
+                    ));
+                };
+                if asked == 0 {
+                    return Err(failed("histogram", "at least one bin", *span));
+                }
+                Ok(histogram(held, asked))
+            }
             Self::Quantile { sketch, rank, .. } => {
                 Ok(rank.map_or(Value::None, |rank| sketch.answer(rank)))
             }
@@ -870,11 +1024,14 @@ impl Accumulator {
             // bounded by its own size (ADR-0122 C2, C3), not by the group's.
             | Self::Distinct { .. }
             | Self::Quantile { .. }
-            | Self::Quantiles { .. } => 0,
+            | Self::Quantiles { .. }
+            | Self::Shaped { .. } => 0,
             Self::Extreme { held, .. } => usize::from(held.is_some()),
-            Self::Middle { held, runs, .. } | Self::ExactQuantiles { held, runs, .. } => {
-                held.len().saturating_add(runs.len())
-            }
+            Self::Middle { held, runs, .. }
+            | Self::ExactQuantiles { held, runs, .. }
+            | Self::Gini { held, runs, .. } => held.len().saturating_add(runs.len()),
+            Self::Frequencies { held, .. } => held.len(),
+            Self::Binned { held, .. } => held.len(),
             Self::Every { held } => held.len(),
             Self::Unique { held, .. } => held.len(),
             Self::Common { held, .. } => held.len(),
